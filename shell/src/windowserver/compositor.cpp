@@ -246,8 +246,7 @@ void Compositor::dropShadow(Win *w)
     w->shadowKind = NoShadow;
 }
 
-// A blurred rectangle the window's size, a little under it: the product of its blurred edges
-// across and down, as an alpha mask
+// The window's shadow, a little under it, as an alpha mask
 void Compositor::makeShadow(Win *w, int kind)
 {
     dropShadow(w);
@@ -264,27 +263,68 @@ void Compositor::makeShadow(Win *w, int kind)
         }
         return v;
     };
-    const std::vector<double> across = blurred(sw, left, left + ww);
-    const std::vector<double> down = blurred(sh, top + p.dy, top + p.dy + wh);
+    // the mask's rows of bytes, padded to 32 bits
+    const int stride = (sw + 3) & ~3;
+    std::vector<uint8_t> mask(size_t(stride) * size_t(sh));
+    // A translucent window (a menu with round corners, the Dock's menu and its arrow) casts its own
+    // outline's shadow: its alpha, blurred. The others, a blurred rectangle: the product of its
+    // blurred edges across and down.
+    xcb_get_image_reply_t *image = nullptr;
+    if (w->alpha && ww * wh <= 1 << 20)
+        image = xcb_get_image_reply(
+            m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, w->id, 0, 0, uint16_t(ww), uint16_t(wh), ~0u), nullptr);
+    if (image && image->depth == 32 && xcb_get_image_data_length(image) >= ww * wh * 4) {
+        const uint8_t *pixels = xcb_get_image_data(image);
+        std::vector<float> kernel(size_t(2 * reach + 1));
+        float sum = 0;
+        for (int i = -reach; i <= reach; ++i)
+            sum += kernel[size_t(i + reach)] = float(std::exp(-0.5 * i * i / (p.sigma * p.sigma)));
+        for (float &k : kernel)
+            k /= sum;
+        // across first (the window's rows only), then down
+        std::vector<float> rowsBlurred(size_t(sw) * size_t(wh));
+        for (int y = 0; y < wh; ++y)
+            for (int x = 0; x < sw; ++x) {
+                float v = 0;
+                for (int i = -reach; i <= reach; ++i) {
+                    const int sx = x - left + i;
+                    if (sx >= 0 && sx < ww)
+                        v += kernel[size_t(i + reach)] * pixels[(size_t(y) * size_t(ww) + size_t(sx)) * 4 + 3];
+                }
+                rowsBlurred[size_t(y) * size_t(sw) + size_t(x)] = v;
+            }
+        const int firstRow = top + int(p.dy);   // the window's first row in the mask
+        for (int y = 0; y < sh; ++y)
+            for (int x = 0; x < sw; ++x) {
+                float v = 0;
+                for (int i = -reach; i <= reach; ++i) {
+                    const int sy = y - firstRow + i;
+                    if (sy >= 0 && sy < wh)
+                        v += kernel[size_t(i + reach)] * rowsBlurred[size_t(sy) * size_t(sw) + size_t(x)];
+                }
+                mask[size_t(y) * size_t(stride) + size_t(x)] = uint8_t(std::lround(p.density * v));
+            }
+    } else {
+        const std::vector<double> across = blurred(sw, left, left + ww);
+        const std::vector<double> down = blurred(sh, top + p.dy, top + p.dy + wh);
+        for (int y = 0; y < sh; ++y) {
+            const double d = 255 * p.density * down[size_t(y)];
+            for (int x = 0; x < sw; ++x)
+                mask[size_t(y) * size_t(stride) + size_t(x)] = uint8_t(std::lround(d * across[size_t(x)]));
+        }
+    }
+    free(image);
 
     const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
     xcb_create_pixmap(m_conn, 8, pixmap, m_root, uint16_t(sw), uint16_t(sh));
     const xcb_gcontext_t gc = xcb_generate_id(m_conn);
     xcb_create_gc(m_conn, gc, pixmap, 0, nullptr);
-    // rows of bytes padded to 32 bits, sent a few at a time (a request has a longest length)
-    const int stride = (sw + 3) & ~3;
+    // sent a few rows at a time (a request has a longest length)
     const int rowsAtOnce = qMax(1, 60000 / stride);
-    std::vector<uint8_t> rows(size_t(stride) * size_t(rowsAtOnce));
     for (int y = 0; y < sh; y += rowsAtOnce) {
         const int n = qMin(rowsAtOnce, sh - y);
-        for (int r = 0; r < n; ++r) {
-            uint8_t *row = rows.data() + size_t(r) * size_t(stride);
-            const double d = 255 * p.density * down[size_t(y + r)];
-            for (int x = 0; x < sw; ++x)
-                row[x] = uint8_t(std::lround(d * across[size_t(x)]));
-        }
         xcb_put_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, gc, uint16_t(sw), uint16_t(n), 0, int16_t(y), 0, 8,
-                      uint32_t(stride * n), rows.data());
+                      uint32_t(stride * n), mask.data() + size_t(y) * size_t(stride));
     }
     xcb_free_gc(m_conn, gc);
     w->shadow = xcb_generate_id(m_conn);
@@ -332,6 +372,11 @@ void Compositor::handleEvent(xcb_generic_event_t *ev)
             xcb_damage_subtract(m_conn, w->damage, XCB_NONE, m_scratch);
             xcb_xfixes_translate_region(m_conn, m_scratch, int16_t(w->geometry.x()), int16_t(w->geometry.y()));
             xcb_xfixes_union_region(m_conn, m_damage, m_scratch, m_damage);
+            // a translucent menu's shadow is its outline's: again once it has drawn itself
+            if (w->alpha && w->menu > 0 && w->mapped) {
+                dropShadow(w);
+                damageWindow(w);
+            }
             schedule();
         }
         return;
