@@ -53,6 +53,20 @@ bool WindowServer::start()
     }
     QCoreApplication::instance()->installNativeEventFilter(this);
 
+    // The compositor: the windows' shadows. A frame's is the key window's or another window's, a
+    // panel's the other style's; none in full screen. Without it (no Composite, or another
+    // compositor) the windows are drawn by the server as before.
+    m_compositor.start(m_conn, m_root, [this](xcb_window_t w) {
+        Client *c = find(w);
+        if (!c || c->frame != w)
+            return -1;
+        if (c->fullscreen)
+            return int(Compositor::NoShadow);
+        if (c->floating)
+            return int(Compositor::PanelShadow);
+        return int(c == m_active ? Compositor::KeyShadow : Compositor::WindowShadow);
+    });
+
     // EWMH: who we are, what we do
     m_check = xcb_generate_id(m_conn);
     xcb_create_window(m_conn, XCB_COPY_FROM_PARENT, m_check, m_root, -1, -1, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_ONLY,
@@ -343,7 +357,7 @@ void WindowServer::applyGeometry(Client *c)
 
 // The frame's outline (CoreUI's CreateWindowPath): its top corners rounded, radius 4, its bottom ones
 // too for a textured window; whole pixels, those whose centre is in the corner's circle. The shadows
-// (AppKit's __NSSetWindowShadow) want a compositor: AquaKit draws them on Wayland
+// (AppKit's __NSSetWindowShadow) are the compositor's (compositor.cpp); AquaKit draws them on Wayland
 void WindowServer::applyShape(Client *c)
 {
     const QRect &g = c->geometry;
@@ -518,6 +532,7 @@ void WindowServer::focus(Client *c)
         paintTitle(old);
     if (c)
         paintTitle(c);
+    m_compositor.damageAll();   // the key window's shadow is deeper
     xcb_flush(m_conn);
 }
 
@@ -742,6 +757,7 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
     if (type != "xcb_generic_event_t")
         return false;
     auto *ev = static_cast<xcb_generic_event_t *>(message);
+    m_compositor.handleEvent(ev);
     switch (ev->response_type & ~0x80) {
     case XCB_MAP_REQUEST: {
         auto *e = reinterpret_cast<xcb_map_request_event_t *>(ev);

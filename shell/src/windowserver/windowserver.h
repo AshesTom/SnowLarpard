@@ -6,6 +6,8 @@
 // screen. Command (Super) + W, M, H, Q and Tab as on the Mac.
 #pragma once
 
+#include "compositor.h"
+
 #include <QAbstractNativeEventFilter>
 #include <QElapsedTimer>
 #include <QHash>
@@ -104,4 +106,5 @@ private:
     QElapsedTimer m_lastTitleClick;
     xcb_window_t m_lastTitleWindow = 0;
     int m_cascade = 0;
+    Compositor m_compositor;   // the windows put together, with their shadows
 };

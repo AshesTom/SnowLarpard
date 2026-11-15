@@ -58,7 +58,8 @@ shell/src/prefs    System Preferences.app, on AquaKit: Show All, every pane from
 shell/src/loginwindow  loginwindow's About This Mac, on AquaKit: its nib, filled as AboutThisMacController does
 shell/src/preview  Preview.app, on AquaKit: PDFs (poppler) and pictures, the toolbar from CommonToolbar.proplist,
                    the sidebar; the Dock's stacks open their documents in it (Apps::openFile)
-shell/src/windowserver  WindowServer: the window manager, 10.6's title bars
+shell/src/windowserver  WindowServer: the window manager, 10.6's title bars; its compositor (compositor.cpp:
+                   Composite, Damage and Render), which puts the windows together over their shadows
 shell/src/menubar/appmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu
 session/           snowleopard-session: the X session
 ```
@@ -67,7 +68,8 @@ The programs talk through X11 only (the active window, the client list, struts) 
 `~/.config/snowleopard/*.conf`, which they watch (the Apple menu's Dock ▸ writes `dock.conf`, the
 Dock reloads it).
 
-Without a compositor the Dock and the menu bar draw the desktop picture under themselves
+WindowServer is the display's compositor (`_NET_WM_CM_S0`). Without one (another window manager, a
+server without Composite) the Dock and the menu bar draw the desktop picture under themselves
 (pseudo-transparency); the Dock and its stacks are shaped (X's SHAPE) to what they draw so that the windows
 under them show around it (`X11::shapeToContent`); with one they are translucent windows. Windows
 stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKAREA`), which AquaKit's
@@ -75,7 +77,7 @@ stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKARE
 
 ## Next steps
 
-1. **WindowServer's compositor**: the windows' shadows on X11 (AquaKit draws them on Wayland), the genie and scale effects (the Dock's
+1. **WindowServer's compositor** is there with the windows' shadows; next the genie and scale effects (the Dock's
    `MINIMIZE_USING`), minimized windows in the Dock, sheets, the unified toolbars. The window
    manager itself is there (docs/reverse-status.md, section 5).
 2. **The global menu** is there (section 6); GTK 4 and GNOME applications (org.gtk.Menus) are next.

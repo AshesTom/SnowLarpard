@@ -149,7 +149,9 @@ target_compile_options(FinderWindows PRIVATE -Wall -Wextra)
 set_target_properties(FinderWindows PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Finder.app/Contents/MacOS")
 
 # The window manager: a program of its own, as the Mac's WindowServer is
-add_executable(WindowServer src/windowserver/main.cpp src/windowserver/windowserver.cpp src/windowserver/windowserver.h)
-target_link_libraries(WindowServer PRIVATE aquashell)
+pkg_check_modules(XCB_COMPOSITOR REQUIRED IMPORTED_TARGET xcb-composite xcb-damage xcb-render xcb-xfixes)
+add_executable(WindowServer src/windowserver/main.cpp src/windowserver/windowserver.cpp src/windowserver/windowserver.h
+               src/windowserver/compositor.cpp src/windowserver/compositor.h)
+target_link_libraries(WindowServer PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
 target_compile_options(WindowServer PRIVATE -Wall -Wextra)
 set_target_properties(WindowServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")

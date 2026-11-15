@@ -47,7 +47,7 @@ It follows the same idea as Winedows' native shell (XP) and the Aqua session of 
 |---|---|---|
 | **SystemUIServer** | The menu bar: the Apple menu, the applications' menus, the menu extras | Qt 6 |
 | **Dock** | The 3D glass Dock, Stacks, magnification, its dark menus | Qt 6 |
-| **WindowServer** | The window manager, with 10.6's title bars | Qt 6, xcb |
+| **WindowServer** | The window manager and compositor: 10.6's title bars and shadows | Qt 6, xcb |
 | **Finder** | The desktop picture, and the browser windows in all four views | Qt 6 / AquaKit |
 | **System Preferences** | Show All and every pane, built from its own nib | AquaKit |
 | **Preview** | PDFs and pictures in 10.6's document window | AquaKit, poppler |
@@ -60,8 +60,8 @@ drawn by CoreUI's own renderer (reversed), on Wayland or X11.
 <div align="center">
 <table>
 <tr>
-<td align="center" valign="top"><img src="docs/images/system-preferences.png" alt="System Preferences, Show All" width="440"><br><sub><b>System Preferences</b>, every pane from its own nib</sub></td>
-<td align="center" valign="top"><img src="docs/images/preview.png" alt="Preview showing a PDF" width="340"><br><sub><b>Preview</b>, PDFs drawn by poppler</sub></td>
+<td align="center" valign="top"><img src="docs/images/system-preferences.png" alt="System Preferences, Show All" width="460"><br><sub><b>System Preferences</b>, every pane from its own nib</sub></td>
+<td align="center" valign="top"><img src="docs/images/preview.png" alt="Preview showing a PDF" width="360"><br><sub><b>Preview</b>, PDFs drawn by poppler</sub></td>
 </tr>
 </table>
 </div>
@@ -145,9 +145,13 @@ Restart and Shut Down only act on the computer with `SNOWLEOPARD_POWER=1`.
 windows grey), moving, resizing from the corner, double-click to minimize, zoom, full screen,
 ⌘W ⌘M ⌘H ⌘Q ⌘Tab (Super is Command).
 
+It is the display's compositor too: 10.6's **shadows** under the windows (the key window's
+deeper than the others', with AppKit's own values), under the panels and the menus, and real
+translucency for the Dock and its stacks.
+
 ### The Finder
 
-<div align="center"><img src="docs/images/finder.png" alt="A Finder window in icon view, with its sidebar, toolbar and status bar" width="620"></div>
+<div align="center"><img src="docs/images/finder.png" alt="A Finder window in icon view, with its sidebar, toolbar and status bar" width="680"></div>
 
 - **The desktop**: the desktop picture with its placement, and its contextual menu (New Folder,
   Change Desktop Background…).

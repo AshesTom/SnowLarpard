@@ -36,13 +36,14 @@ for dir in /usr/lib/gtk-3.0/modules /usr/lib/x86_64-linux-gnu/gtk-3.0/modules; d
     fi
 done
 if [[ ${1:-} != --inside ]]; then
-    # A compositor first (the menu bar's and the Dock's translucency), then a window manager.
-    for c in picom compton xcompmgr; do
-        command -v $c >/dev/null && { $c >"$state/compositor.log" 2>&1 & pids+=($!); break; }
-    done
+    # WindowServer is the window manager and the compositor (the windows' shadows, the Dock's
+    # translucency); without it, a compositor then a window manager.
     if [[ -x $apps/WindowServer ]]; then
         "$apps/WindowServer" >"$state/WindowServer.log" 2>&1 & pids+=($!)
     else
+        for c in picom compton xcompmgr; do
+            command -v $c >/dev/null && { $c >"$state/compositor.log" 2>&1 & pids+=($!); break; }
+        done
         for wm in kwin_x11 xfwm4 openbox marco metacity fluxbox; do
             command -v $wm >/dev/null && { $wm >"$state/wm.log" 2>&1 & pids+=($!); break; }
         done
