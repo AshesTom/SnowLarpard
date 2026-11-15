@@ -19,8 +19,9 @@ struct ShadowParams {
 };
 const ShadowParams shadowParams[] = {{0, 0, 0}, {20, 0.49, 15}, {10, 0.44, 10}, {8, 0.5, 6}};
 
-// the room any shadow takes around its window: what moves with it
-constexpr int ShadowReach = 70;
+// the room any shadow takes around its window (the key window's: a tent of 34 and 15 under): what
+// moves with it
+constexpr int ShadowReach = 52;
 
 xcb_atom_t internAtom(xcb_connection_t *c, const char *name)
 {
@@ -246,74 +247,109 @@ void Compositor::dropShadow(Win *w)
     w->shadowKind = NoShadow;
 }
 
-// The window's shadow, a little under it, as an alpha mask
+// One pass of the window server's tent blur (CGSOffsetTentBlur8): each value becomes the mean of its
+// neighbours less than `radius` away, weighted radius - distance (the weights' sum: radius squared).
+// A tent is a box blurred by a box, so two running sums do it.
+static void tentBlur(float *values, int count, int step, int radius, std::vector<float> &scratch)
+{
+    if (radius < 2)
+        return;
+    scratch.assign(size_t(count), 0.f);
+    float sum = 0;
+    for (int i = 0; i < count; ++i) {   // the `radius` values ending here
+        sum += values[size_t(i) * size_t(step)];
+        if (i >= radius)
+            sum -= values[size_t(i - radius) * size_t(step)];
+        scratch[size_t(i)] = sum;
+    }
+    sum = 0;
+    const float scale = 1.f / (float(radius) * float(radius));
+    for (int i = count - 1; i >= 0; --i) {   // the `radius` sums starting here
+        sum += scratch[size_t(i)];
+        if (i + radius < count)
+            sum -= scratch[size_t(i + radius)];
+        values[size_t(i) * size_t(step)] = sum * scale;
+    }
+}
+
+// The window's shadow as an alpha mask, made as 10.6's window server makes it (CGXWindowShadowGet,
+// CoreGraphics 0x2b74e1): the window's outline, blurred by a tent 1.7 standard deviations wide
+// across then down, times the density, moved under the window; a rim one pixel around the outline
+// (CGSMergeShadowRim: an eighth and a thirty-second of it, or an eighth less a sixty-fourth around
+// a window that isn't key); nothing under the window itself (CGSSubtractMaskWithThreshold, 0x40);
+// then the server's gamma table (the 1.23 power, to a level).
 void Compositor::makeShadow(Win *w, int kind)
 {
     dropShadow(w);
     const ShadowParams &p = shadowParams[kind];
-    const int reach = int(std::ceil(2.5 * p.sigma));
-    const int left = reach, top = qMax(0, reach - int(p.dy)), bottom = reach + int(p.dy);
+    const int radius = int(std::lround(1.7 * p.sigma)), dy = int(p.dy);
+    const int margin = radius + 1;
     const int ww = w->geometry.width(), wh = w->geometry.height();
-    const int sw = ww + 2 * left, sh = wh + top + bottom;
-    auto blurred = [&p](int n, double from, double to) {
-        std::vector<double> v(static_cast<size_t>(n));
-        for (int i = 0; i < n; ++i) {
-            const double x = i + 0.5;
-            v[size_t(i)] = 0.5 * (std::erf((x - from) / (p.sigma * M_SQRT2)) - std::erf((x - to) / (p.sigma * M_SQRT2)));
-        }
-        return v;
+    const int sw = ww + 2 * margin, sh = wh + 2 * margin + dy;
+
+    // The outline, 0 to 255, with the shadow's room around it: a translucent window's alpha (a menu
+    // and its round corners, the Dock's menu and its arrow), the others' shape (a frame's corners)
+    std::vector<uint8_t> outline(size_t(sw) * size_t(sh), 0);
+    auto fill = [&](int x, int y, int width, int height) {
+        const int x0 = qMax(0, x), y0 = qMax(0, y), x1 = qMin(ww, x + width), y1 = qMin(wh, y + height);
+        for (int row = y0; row < y1; ++row)
+            if (x1 > x0)
+                memset(outline.data() + size_t(row + margin) * size_t(sw) + size_t(x0 + margin), 255, size_t(x1 - x0));
     };
+    bool known = false;
+    if (w->alpha && ww * wh <= 1 << 20) {
+        auto *image = xcb_get_image_reply(
+            m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, w->id, 0, 0, uint16_t(ww), uint16_t(wh), ~0u), nullptr);
+        if (image && image->depth == 32 && xcb_get_image_data_length(image) >= ww * wh * 4) {
+            const uint8_t *pixels = xcb_get_image_data(image);
+            for (int y = 0; y < wh; ++y)
+                for (int x = 0; x < ww; ++x)
+                    outline[size_t(y + margin) * size_t(sw) + size_t(x + margin)] = pixels[(size_t(y) * size_t(ww) + size_t(x)) * 4 + 3];
+            known = true;
+        }
+        free(image);
+    } else if (auto *shape = xcb_shape_get_rectangles_reply(
+                   m_conn, xcb_shape_get_rectangles(m_conn, w->id, XCB_SHAPE_SK_BOUNDING), nullptr)) {
+        const xcb_rectangle_t *rects = xcb_shape_get_rectangles_rectangles(shape);
+        for (int i = 0; i < xcb_shape_get_rectangles_rectangles_length(shape); ++i)
+            fill(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+        known = xcb_shape_get_rectangles_rectangles_length(shape) > 0;
+        free(shape);
+    }
+    if (!known)
+        fill(0, 0, ww, wh);
+
+    // blurred across then down, and moved under the window
+    std::vector<float> blurred(size_t(sw) * size_t(sh), 0.f);
+    for (int y = 0; y < wh; ++y)
+        for (int x = 0; x < ww; ++x)
+            blurred[size_t(y + margin + dy) * size_t(sw) + size_t(x + margin)] = outline[size_t(y + margin) * size_t(sw) + size_t(x + margin)];
+    std::vector<float> scratch;
+    for (int y = margin + dy; y < margin + dy + wh; ++y)
+        tentBlur(blurred.data() + size_t(y) * size_t(sw), sw, 1, radius, scratch);
+    for (int x = 0; x < sw; ++x)
+        tentBlur(blurred.data() + size_t(x), sh, sw, radius, scratch);
+
+    uint8_t gamma[256];
+    for (int i = 0; i < 256; ++i)
+        gamma[i] = uint8_t(std::lround(255 * std::pow(i / 255.0, 1.23)));
+    const bool key = kind != WindowShadow;
     // the mask's rows of bytes, padded to 32 bits
     const int stride = (sw + 3) & ~3;
     std::vector<uint8_t> mask(size_t(stride) * size_t(sh));
-    // A translucent window (a menu with round corners, the Dock's menu and its arrow) casts its own
-    // outline's shadow: its alpha, blurred. The others, a blurred rectangle: the product of its
-    // blurred edges across and down.
-    xcb_get_image_reply_t *image = nullptr;
-    if (w->alpha && ww * wh <= 1 << 20)
-        image = xcb_get_image_reply(
-            m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, w->id, 0, 0, uint16_t(ww), uint16_t(wh), ~0u), nullptr);
-    if (image && image->depth == 32 && xcb_get_image_data_length(image) >= ww * wh * 4) {
-        const uint8_t *pixels = xcb_get_image_data(image);
-        std::vector<float> kernel(size_t(2 * reach + 1));
-        float sum = 0;
-        for (int i = -reach; i <= reach; ++i)
-            sum += kernel[size_t(i + reach)] = float(std::exp(-0.5 * i * i / (p.sigma * p.sigma)));
-        for (float &k : kernel)
-            k /= sum;
-        // across first (the window's rows only), then down
-        std::vector<float> rowsBlurred(size_t(sw) * size_t(wh));
-        for (int y = 0; y < wh; ++y)
-            for (int x = 0; x < sw; ++x) {
-                float v = 0;
-                for (int i = -reach; i <= reach; ++i) {
-                    const int sx = x - left + i;
-                    if (sx >= 0 && sx < ww)
-                        v += kernel[size_t(i + reach)] * pixels[(size_t(y) * size_t(ww) + size_t(sx)) * 4 + 3];
-                }
-                rowsBlurred[size_t(y) * size_t(sw) + size_t(x)] = v;
-            }
-        const int firstRow = top + int(p.dy);   // the window's first row in the mask
-        for (int y = 0; y < sh; ++y)
-            for (int x = 0; x < sw; ++x) {
-                float v = 0;
-                for (int i = -reach; i <= reach; ++i) {
-                    const int sy = y - firstRow + i;
-                    if (sy >= 0 && sy < wh)
-                        v += kernel[size_t(i + reach)] * rowsBlurred[size_t(sy) * size_t(sw) + size_t(x)];
-                }
-                mask[size_t(y) * size_t(stride) + size_t(x)] = uint8_t(std::lround(p.density * v));
-            }
-    } else {
-        const std::vector<double> across = blurred(sw, left, left + ww);
-        const std::vector<double> down = blurred(sh, top + p.dy, top + p.dy + wh);
-        for (int y = 0; y < sh; ++y) {
-            const double d = 255 * p.density * down[size_t(y)];
-            for (int x = 0; x < sw; ++x)
-                mask[size_t(y) * size_t(stride) + size_t(x)] = uint8_t(std::lround(d * across[size_t(x)]));
+    for (int y = 0; y < sh; ++y)
+        for (int x = 0; x < sw; ++x) {
+            const size_t at = size_t(y) * size_t(sw) + size_t(x);
+            if (outline[at] >= 0x40)
+                continue;   // under the window: none
+            int around = 0;   // the outline grown by a pixel: the rim
+            for (int ny = qMax(0, y - 1); ny <= qMin(sh - 1, y + 1); ++ny)
+                for (int nx = qMax(0, x - 1); nx <= qMin(sw - 1, x + 1); ++nx)
+                    around = qMax(around, int(outline[size_t(ny) * size_t(sw) + size_t(nx)]));
+            const int rim = (around >> 3) + (key ? around >> 5 : -(around >> 6));
+            const int value = int(std::lround(p.density * blurred[at])) + rim;
+            mask[size_t(y) * size_t(stride) + size_t(x)] = gamma[qBound(0, value, 255)];
         }
-    }
-    free(image);
 
     const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
     xcb_create_pixmap(m_conn, 8, pixmap, m_root, uint16_t(sw), uint16_t(sh));
@@ -331,7 +367,7 @@ void Compositor::makeShadow(Win *w, int kind)
     xcb_render_create_picture(m_conn, w->shadow, pixmap, m_a8, 0, nullptr);
     xcb_free_pixmap(m_conn, pixmap);   // the picture keeps it
     w->shadowKind = kind;
-    w->shadowRect = QRect(-left, -top, sw, sh);
+    w->shadowRect = QRect(-margin, -margin, sw, sh);
 }
 
 void Compositor::damageRect(QRect r)

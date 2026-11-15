@@ -297,9 +297,12 @@ public:
     xdg_surface *xdg() const { return m_xdg; }
 
 private:
-    // The surface has room for the shadow (AppKit's __NSSetWindowShadow, CGSSetWindowShadowAndRim-
-    // ParametersWithStretch): the key window's, standard deviation 20 and density 0.49 15 points under
-    // it, two deviations wide; another window's (10, 0.44, 10 under it) in the same room
+    // The surface has room for the shadow, made as 10.6's window server makes it (AppKit's
+    // __NSSetWindowShadow gives CGSSetWindowShadowAndRimParametersWithStretch the key window's
+    // standard deviation 20 and density 0.49, 15 points under it, another window's 10, 0.44 and 10;
+    // CoreGraphics' CGXWindowShadowGet blurs the window's outline by a tent 1.7 deviations wide,
+    // adds a rim one pixel around it and applies its gamma, the 1.23 power): the same as
+    // WindowServer's compositor does on X11 (windowserver/compositor.cpp)
     static constexpr int ShadowLeft = 40, ShadowRight = 40, ShadowTop = 25, ShadowBottom = 55;
     bool hasShadow() const { return kind == Window::Titled; }
     int bufferWidth() const { return int(m_size.w) + (hasShadow() ? ShadowLeft + ShadowRight : 0); }
@@ -309,25 +312,34 @@ private:
         if (m_shadow)
             return m_shadow;
         const int bw = bufferWidth(), bh = bufferHeight();
-        const double sigma = m_active ? 20 : 10, density = m_active ? 0.49 : 0.44, dy = m_active ? 15 : 10;
-        // a blurred rectangle: the product of the blurred edges across and down
-        auto blurred = [sigma](int n, double from, double to) {
+        const double sigma = m_active ? 20 : 10, density = m_active ? 0.49 : 0.44;
+        const int dy = m_active ? 15 : 10, radius = int(std::lround(1.7 * sigma));
+        // a rectangle blurred by the tent: the product of its blurred edges across and down
+        auto blurred = [radius](int n, int from, int to) {
             std::vector<double> v(static_cast<size_t>(n));
             for (int i = 0; i < n; ++i) {
-                const double x = i + 0.5;
-                v[size_t(i)] = 0.5 * (std::erf((x - from) / (sigma * M_SQRT2)) - std::erf((x - to) / (sigma * M_SQRT2)));
+                double sum = 0;
+                for (int d = 1 - radius; d < radius; ++d)
+                    if (i + d >= from && i + d < to)
+                        sum += radius - std::abs(d);
+                v[size_t(i)] = sum / (double(radius) * radius);
             }
             return v;
         };
-        const std::vector<double> across = blurred(bw, ShadowLeft, ShadowLeft + m_size.w);
-        const std::vector<double> down = blurred(bh, ShadowTop + dy, ShadowTop + dy + m_size.h);
+        const int right = ShadowLeft + int(m_size.w), bottom = ShadowTop + int(m_size.h);
+        const std::vector<double> across = blurred(bw, ShadowLeft, right);
+        const std::vector<double> down = blurred(bh, ShadowTop + dy, bottom + dy);
         m_shadow = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, bw, bh);
         unsigned char *data = cairo_image_surface_get_data(m_shadow);
         const int stride = cairo_image_surface_get_stride(m_shadow);
+        const int rim = m_active ? (255 >> 3) + (255 >> 5) : (255 >> 3) - (255 >> 6);
         for (int y = 0; y < bh; ++y) {
             auto *row = reinterpret_cast<uint32_t *>(data + size_t(y) * size_t(stride));
-            for (int x = 0; x < bw; ++x)
-                row[x] = uint32_t(std::lround(255 * density * across[size_t(x)] * down[size_t(y)])) << 24;   // black
+            for (int x = 0; x < bw; ++x) {
+                const bool around = x >= ShadowLeft - 1 && x <= right && y >= ShadowTop - 1 && y <= bottom;
+                const int value = int(std::lround(255 * density * across[size_t(x)] * down[size_t(y)])) + (around ? rim : 0);
+                row[x] = uint32_t(std::lround(255 * std::pow(std::min(value, 255) / 255.0, 1.23))) << 24;   // black
+            }
         }
         cairo_surface_mark_dirty(m_shadow);
         return m_shadow;

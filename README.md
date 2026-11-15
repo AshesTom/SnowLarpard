@@ -145,9 +145,10 @@ Restart and Shut Down only act on the computer with `SNOWLEOPARD_POWER=1`.
 windows grey), moving, resizing from the corner, double-click to minimize, zoom, full screen,
 ⌘W ⌘M ⌘H ⌘Q ⌘Tab (Super is Command).
 
-It is the display's compositor too: 10.6's **shadows** under the windows (the key window's
-deeper than the others', with AppKit's own values), under the panels and the menus, and real
-translucency for the Dock and its stacks.
+It is the display's compositor too: 10.6's **shadows** under the windows, the panels and the
+menus, made as 10.6's window server makes them (the outline blurred by its tent filter, its rim
+and its gamma, the key window's deeper than the others'), and real translucency for the Dock
+and its stacks.
 
 ### The Finder
 
