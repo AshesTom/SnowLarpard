@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Text as AppKit sets it on 10.6: Lucida Grande (the DVD's), sizes in points (one point a pixel),
-// unhinted outlines with fractional advances, dilated as Quartz's font smoothing dilates them, grey
-// antialiasing.
+// unhinted outlines with fractional advances, dilated as Quartz's font smoothing dilates them, and its
+// LCD smoothing on a window's pixels (grey where they can't be read).
 #pragma once
 
 #include "graphics.h"

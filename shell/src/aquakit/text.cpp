@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "text.h"
 
+#include "quartztext.h"
+
 #include <pango/pangocairo.h>
 
 #include <algorithm>
@@ -43,64 +45,75 @@ PangoLayout *layout(const std::string &text, const Font &font)
     return l;
 }
 
-// The layout's glyphs at the current point, as Quartz draws them with font smoothing: unhinted
-// outlines, dilated (CGFontCreateGlyphBitmap32, with the medium smoothing style's
-// CGFontGetDilationParametersForStyle: 0.0121 and 0.015125 of the size, 0.3 pixel at most). The
-// dilation is path_dilator_iterate's: every segment of the outline is moved, across by the first
-// outwards (to the right when it goes up, to the left when it goes down) and, when it runs along the
-// top of a stroke, up by twice the second; those along the bottom stay.
+// The layout's glyphs at the current point, as Quartz draws them with font smoothing
+// (common/quartztext.h): the unhinted outlines, dilated, then on an image whose pixels can be read
+// (a window's) the LCD coverage mixed into the pixels under the text; elsewhere (a group, a clip
+// that isn't rectangles, smoothing turned off) the dilated outlines filled in grey.
 void showLayout(cairo_t *cr, PangoLayout *l, double size)
 {
-    const double dx = std::min(0.3, 0.0121 * size), dy = std::min(0.3, 0.015125 * size);
-    struct Point {
-        double x, y;
-    };
+    cairo_surface_t *target = cairo_get_group_target(cr);
+    double offsetX = 0, offsetY = 0;
+    cairo_surface_get_device_offset(target, &offsetX, &offsetY);
     cairo_save(cr);
     cairo_set_tolerance(cr, 0.02);
     pango_cairo_layout_path(cr, l);
     cairo_path_t *flat = cairo_copy_path_flat(cr);
     cairo_new_path(cr);
-    std::vector<std::vector<Point>> contours;
+    // in the target's own pixels
+    QuartzText::Contours contours;
     for (int i = 0; i < flat->num_data; i += flat->data[i].header.length) {
         const cairo_path_data_t *d = &flat->data[i];
+        if (d->header.type != CAIRO_PATH_MOVE_TO && d->header.type != CAIRO_PATH_LINE_TO)
+            continue;
+        double x = d[1].point.x, y = d[1].point.y;
+        cairo_user_to_device(cr, &x, &y);
         if (d->header.type == CAIRO_PATH_MOVE_TO)
-            contours.push_back({{d[1].point.x, d[1].point.y}});
-        else if (d->header.type == CAIRO_PATH_LINE_TO && !contours.empty())
-            contours.back().push_back({d[1].point.x, d[1].point.y});
+            contours.emplace_back();
+        if (!contours.empty())
+            contours.back().push_back({x + offsetX, y + offsetY});
     }
     cairo_path_destroy(flat);
-    // the way the outer contours turn: as Quartz's own orientation pass leaves them
-    double area = 0;
-    for (std::vector<Point> &c : contours) {
-        if (c.size() > 1 && c.front().x == c.back().x && c.front().y == c.back().y)
-            c.pop_back();
-        for (size_t i = 0; i < c.size(); ++i) {
-            const Point &a = c[i], &b = c[(i + 1) % c.size()];
-            area += a.x * b.y - b.x * a.y;
+    double scale = 1, unused = 0;
+    cairo_user_to_device_distance(cr, &scale, &unused);
+    contours = QuartzText::dilatedForSize(std::move(contours), size * std::fabs(scale));
+
+    bool drawn = false;
+    double r = 0, g = 0, b = 0, a = 1;
+    const cairo_format_t format =
+        cairo_surface_get_type(target) == CAIRO_SURFACE_TYPE_IMAGE ? cairo_image_surface_get_format(target) : CAIRO_FORMAT_INVALID;
+    if (QuartzText::smoothing() && (format == CAIRO_FORMAT_RGB24 || format == CAIRO_FORMAT_ARGB32) &&
+        cairo_pattern_get_rgba(cairo_get_source(cr), &r, &g, &b, &a) == CAIRO_STATUS_SUCCESS) {
+        cairo_rectangle_list_t *clip = cairo_copy_clip_rectangle_list(cr);
+        if (clip->status == CAIRO_STATUS_SUCCESS) {
+            const QuartzText::Mask mask = QuartzText::lcdMask(contours);
+            cairo_surface_flush(target);
+            for (int i = 0; i < clip->num_rectangles && mask.w > 0; ++i) {
+                double x0 = clip->rectangles[i].x, y0 = clip->rectangles[i].y;
+                double x1 = x0 + clip->rectangles[i].width, y1 = y0 + clip->rectangles[i].height;
+                cairo_user_to_device(cr, &x0, &y0);
+                cairo_user_to_device(cr, &x1, &y1);
+                QuartzText::blend(reinterpret_cast<uint32_t *>(cairo_image_surface_get_data(target)),
+                                  cairo_image_surface_get_stride(target), cairo_image_surface_get_width(target),
+                                  cairo_image_surface_get_height(target), format == CAIRO_FORMAT_ARGB32,
+                                  int(std::lround(x0 + offsetX)), int(std::lround(y0 + offsetY)), int(std::lround(x1 + offsetX)),
+                                  int(std::lround(y1 + offsetY)), mask, r, g, b, a);
+            }
+            if (mask.w > 0)
+                cairo_surface_mark_dirty_rectangle(target, mask.x, mask.y, mask.w, mask.h);
+            drawn = true;
         }
+        cairo_rectangle_list_destroy(clip);
     }
-    for (std::vector<Point> &c : contours) {
-        if (area > 0)
-            std::reverse(c.begin(), c.end());
-        bool first = true;
-        for (size_t i = 0; i < c.size(); ++i) {
-            const Point &a = c[i], &b = c[(i + 1) % c.size()];
-            const double across = b.x - a.x, down = b.y - a.y;
-            if (across == 0 && down == 0)
-                continue;
-            const double ox = down < 0 ? dx : down > 0 ? -dx : 0, oy = across > 0 ? 0 : across < 0 ? -2 * dy : -dy;
-            if (first)
-                cairo_move_to(cr, a.x + ox, a.y + oy);
-            else
-                cairo_line_to(cr, a.x + ox, a.y + oy);
-            cairo_line_to(cr, b.x + ox, b.y + oy);
-            first = false;
-        }
-        if (!first)
+    if (!drawn) {
+        cairo_identity_matrix(cr);
+        for (const std::vector<QuartzText::Point> &c : contours) {
+            for (size_t i = 0; i < c.size(); ++i)
+                (i ? cairo_line_to : cairo_move_to)(cr, c[i].x - offsetX, c[i].y - offsetY);
             cairo_close_path(cr);
+        }
+        cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
+        cairo_fill(cr);
     }
-    cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
-    cairo_fill(cr);
     cairo_restore(cr);
 }
 

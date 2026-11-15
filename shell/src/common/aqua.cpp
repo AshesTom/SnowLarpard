@@ -5,11 +5,13 @@
 #include "artfile.h"
 #include "aquastyle.h"
 #include "assets.h"
+#include "quartztext.h"
 #include "x11.h"
 
 #include <QApplication>
 #include <QFontMetricsF>
 #include <QMenu>
+#include <QPaintEngine>
 #include <QPainter>
 #include <QPainterPath>
 #include <algorithm>
@@ -78,45 +80,8 @@ void prepareMenu(QMenu *menu)
         }
 }
 
-// Quartz's dilation of a glyph's outline (path_dilator_iterate): every segment is moved, across by
-// dx outwards (to the right when it goes up, to the left when it goes down) and, when it runs along
-// the top of a stroke, up by twice dy; those along the bottom stay. The outer contours turn the way
-// Quartz's own orientation pass leaves them.
-static QPainterPath dilatedOutline(const QPainterPath &glyphs, qreal dx, qreal dy)
-{
-    constexpr qreal fine = 16;   // the curves flattened sixteen times finer than a pixel
-    QList<QPolygonF> contours = glyphs.toSubpathPolygons(QTransform::fromScale(fine, fine));
-    qreal area = 0;
-    for (QPolygonF &c : contours) {
-        if (c.size() > 1 && c.first() == c.last())
-            c.removeLast();
-        for (int i = 0; i < c.size(); ++i) {
-            const QPointF a = c[i], b = c[(i + 1) % c.size()];
-            area += a.x() * b.y() - b.x() * a.y();
-        }
-    }
-    QPainterPath out;
-    out.setFillRule(Qt::WindingFill);
-    for (QPolygonF c : contours) {
-        if (area > 0)
-            std::reverse(c.begin(), c.end());
-        QPolygonF moved;
-        for (int i = 0; i < c.size(); ++i) {
-            const QPointF a = c[i] / fine, b = c[(i + 1) % c.size()] / fine;
-            const qreal across = b.x() - a.x(), down = b.y() - a.y();
-            if (across == 0 && down == 0)
-                continue;
-            const QPointF by(down < 0 ? dx : down > 0 ? -dx : 0, across > 0 ? 0 : across < 0 ? -2 * dy : -dy);
-            moved << a + by << b + by;
-        }
-        if (moved.size() > 2) {
-            out.addPolygon(moved);
-            out.closeSubpath();
-        }
-    }
-    return out;
-}
-
+// As Quartz draws it with font smoothing (quartztext.h): on an image (a widget's backing store, a title
+// bar's) the LCD coverage mixed into the pixels under the text; elsewhere the dilated outlines in grey.
 void drawText(QPainter &p, const QRectF &rect, int flags, const QString &text)
 {
     QString line = text;
@@ -143,10 +108,52 @@ void drawText(QPainter &p, const QRectF &rect, int flags, const QString &text)
     QPainterPath glyphs;
     glyphs.addText(QPointF(x, baseline), font, line);
     const qreal size = font.pixelSize() > 0 ? font.pixelSize() : fm.height();
-    const QPainterPath dilated = dilatedOutline(glyphs, qMin(0.3, 0.0121 * size), qMin(0.3, 0.015125 * size));
+    // the outlines in the device's pixels, the curves flattened sixteen times finer than a pixel
+    constexpr qreal fine = 16;
+    const QTransform device = p.deviceTransform();
+    const bool plain = device.type() <= QTransform::TxTranslate;
+    QuartzText::Contours contours;
+    for (const QPolygonF &polygon : glyphs.toSubpathPolygons((plain ? device : QTransform()) * QTransform::fromScale(fine, fine))) {
+        contours.emplace_back();
+        for (const QPointF &point : polygon)
+            contours.back().push_back({point.x() / fine, point.y() / fine});
+    }
+    contours = QuartzText::dilatedForSize(std::move(contours), size);
+
+    const QColor colour = p.pen().color();
+    QPaintDevice *target = p.paintEngine() ? p.paintEngine()->paintDevice() : nullptr;
+    if (QuartzText::smoothing() && plain && target && target->devType() == QInternal::Image) {
+        auto *image = static_cast<QImage *>(target);
+        const bool alpha = image->format() == QImage::Format_ARGB32_Premultiplied;
+        if ((alpha || image->format() == QImage::Format_RGB32) && image->isDetached()) {
+            QRegion clip(image->rect());
+            if (p.hasClipping())
+                clip &= device.map(p.clipRegion());
+            const QRegion system = p.paintEngine()->systemClip();
+            if (!system.isEmpty())
+                clip &= system;
+            const QuartzText::Mask mask = QuartzText::lcdMask(contours);
+            for (const QRect &r : clip)
+                QuartzText::blend(reinterpret_cast<uint32_t *>(image->bits()), int(image->bytesPerLine()), image->width(),
+                                  image->height(), alpha, r.left(), r.top(), r.right() + 1, r.bottom() + 1, mask, colour.redF(),
+                                  colour.greenF(), colour.blueF(), colour.alphaF() * p.opacity());
+            return;
+        }
+    }
+    QPainterPath filled;
+    filled.setFillRule(Qt::WindingFill);
+    for (const std::vector<QuartzText::Point> &c : contours) {
+        QPolygonF polygon;
+        for (const QuartzText::Point &point : c)
+            polygon << QPointF(point.x, point.y);
+        filled.addPolygon(polygon);
+        filled.closeSubpath();
+    }
     p.save();
+    if (plain)
+        p.setWorldTransform(device.inverted(), true);   // the outlines are the device's already
     p.setRenderHint(QPainter::Antialiasing);
-    p.fillPath(dilated, p.pen().color());
+    p.fillPath(filled, colour);
     p.restore();
 }
 

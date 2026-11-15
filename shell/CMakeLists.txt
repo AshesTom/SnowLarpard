@@ -20,6 +20,7 @@ add_library(aquashell STATIC
     src/common/art.cpp src/common/art.h
     src/common/artfile.cpp src/common/artfile.h
     src/common/assets.cpp src/common/assets.h
+    src/common/quartztext.h
     src/common/desktopsettings.cpp src/common/desktopsettings.h
     src/common/session.cpp src/common/session.h
     src/common/x11.cpp src/common/x11.h)
@@ -60,6 +61,7 @@ add_library(aquakit STATIC
     src/aquakit/toolbar.cpp src/aquakit/toolbar.h
     src/aquakit/typedstream.cpp)
 target_include_directories(aquakit PUBLIC src/aquakit)
+target_include_directories(aquakit PRIVATE src/common)   # quartztext.h, shared with the Qt programs
 target_link_libraries(aquakit PUBLIC PkgConfig::AQUAKIT)
 target_compile_options(aquakit PRIVATE -Wall -Wextra)
 set_target_properties(aquakit PROPERTIES AUTOMOC OFF)

@@ -169,6 +169,8 @@ public:
             X->windows.erase(std::remove(X->windows.begin(), X->windows.end(), this), X->windows.end());
             ungrab();
             cairo_surface_destroy(m_surface);
+            if (m_back)
+                cairo_surface_destroy(m_back);
             xcb_destroy_window(X->conn, m_id);
         }
     }
@@ -213,18 +215,27 @@ public:
         ungrab();
         xcb_unmap_window(X->conn, m_id);
     }
+    // The window is drawn in an image, then put on the display at once: its pixels can be read while
+    // it is drawn (the text's LCD smoothing mixes with what is under it)
     cairo_t *beginPaint() override
     {
-        cairo_t *cr = cairo_create(m_surface);
-        cairo_push_group(cr);
-        return cr;
+        const int w = std::max(1, int(m_size.w)), h = std::max(1, int(m_size.h));
+        if (!m_back || cairo_image_surface_get_width(m_back) != w || cairo_image_surface_get_height(m_back) != h) {
+            if (m_back)
+                cairo_surface_destroy(m_back);
+            m_back = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w, h);
+        }
+        return cairo_create(m_back);
     }
     void endPaint(cairo_t *cr) override
     {
-        cairo_pop_group_to_source(cr);
-        cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-        cairo_paint(cr);
         cairo_destroy(cr);
+        cairo_surface_flush(m_back);
+        cairo_t *out = cairo_create(m_surface);
+        cairo_set_source_surface(out, m_back, 0, 0);
+        cairo_set_operator(out, CAIRO_OPERATOR_SOURCE);
+        cairo_paint(out);
+        cairo_destroy(out);
         cairo_surface_flush(m_surface);
     }
     Point toScreen(Point p) const override
@@ -341,6 +352,7 @@ private:
     Point m_at;
     xcb_window_t m_id = 0;
     cairo_surface_t *m_surface = nullptr;
+    cairo_surface_t *m_back = nullptr;   // what is drawn, before it goes to the display
     bool m_grabbed = false;
     bool m_resizable = false;
 };
