@@ -1,0 +1,3 @@
+# Everything taken from your DVD and everything built: never in the repository
+/.local/
+__pycache__/

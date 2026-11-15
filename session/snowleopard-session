@@ -1,0 +1,61 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# The Snow Leopard session on the current X display: the Finder's desktop, the Dock and
+# SystemUIServer's menu bar, over a window manager. The session ends with SystemUIServer (Log Out).
+#
+#   snowleopard-session [--inside]     --inside: keep the current desktop's window manager
+#
+# The windows are managed by WindowServer (10.6's title bars); without it, by whichever EWMH window
+# manager is installed.
+set -uo pipefail
+root=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
+apps=${SNOWLEOPARD_APPS:-$root/.local/build/apps}
+export SNOWLEOPARD_ASSETS=${SNOWLEOPARD_ASSETS:-$root/.local/assets}
+[[ -x $apps/Dock.app/Contents/MacOS/Dock ]] || { echo "Build it first: $root/shell/build.sh" >&2; exit 1; }
+[[ -e $SNOWLEOPARD_ASSETS/.complete ]] || echo "No DVD files in $SNOWLEOPARD_ASSETS (tools/extract.py): plain stand-ins instead" >&2
+if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v dbus-run-session >/dev/null; then
+    exec dbus-run-session -- "$0" "$@"
+fi
+state=${XDG_STATE_HOME:-$HOME/.local/state}/snowleopard
+mkdir -p "$state"
+pids=()
+cleanup() { ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null; }
+trap cleanup EXIT
+trap 'exit 143' TERM INT HUP
+
+export XDG_CURRENT_DESKTOP=SnowLeopard XDG_SESSION_DESKTOP=SnowLeopard
+export QT_QPA_PLATFORM=xcb
+# an X session: AquaKit's applications (System Preferences) on its display too, under WindowServer
+export AQUAKIT_PLATFORM=x11
+# The applications' menus go to the menu bar (SystemUIServer is com.canonical.AppMenu.Registrar):
+# Qt does it by itself when the registrar is there, GTK 2 and 3 through appmenu-gtk-module.
+for dir in /usr/lib/gtk-3.0/modules /usr/lib/x86_64-linux-gnu/gtk-3.0/modules; do
+    if [[ -e $dir/libappmenu-gtk-module.so ]]; then
+        export GTK_MODULES=${GTK_MODULES:+$GTK_MODULES:}appmenu-gtk-module UBUNTU_MENUPROXY=1
+        break
+    fi
+done
+if [[ ${1:-} != --inside ]]; then
+    # A compositor first (the menu bar's and the Dock's translucency), then a window manager.
+    for c in picom compton xcompmgr; do
+        command -v $c >/dev/null && { $c >"$state/compositor.log" 2>&1 & pids+=($!); break; }
+    done
+    if [[ -x $apps/WindowServer ]]; then
+        "$apps/WindowServer" >"$state/WindowServer.log" 2>&1 & pids+=($!)
+    else
+        for wm in kwin_x11 xfwm4 openbox marco metacity fluxbox; do
+            command -v $wm >/dev/null && { $wm >"$state/wm.log" 2>&1 & pids+=($!); break; }
+        done
+    fi
+    # until it has the display, so that the shell's windows are managed from the start
+    for _ in $(seq 40); do
+        xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q 'window id' && break
+        sleep 0.05
+    done
+fi
+# SystemUIServer first: its registrar must be there before applications start
+"$apps/SystemUIServer.app/Contents/MacOS/SystemUIServer" >"$state/SystemUIServer.log" 2>&1 &
+menubar=$!
+"$apps/Finder.app/Contents/MacOS/Finder" >"$state/Finder.log" 2>&1 & pids+=($!)
+"$apps/Dock.app/Contents/MacOS/Dock" >"$state/Dock.log" 2>&1 & pids+=($!)
+wait $menubar
