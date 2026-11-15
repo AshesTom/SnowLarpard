@@ -70,7 +70,7 @@ int ClockExtra::width(const QFontMetrics &fm) const { return fm.horizontalAdvanc
 void ClockExtra::paint(QPainter &p, const QRect &r, bool highlighted)
 {
     p.setPen(highlighted ? Qt::white : Qt::black);
-    p.drawText(r, Qt::AlignCenter, text());
+    Aqua::drawText(p, r, Qt::AlignCenter, text());
 }
 
 QMenu *ClockExtra::menu()
@@ -142,7 +142,7 @@ void VolumeExtra::paint(QPainter &p, const QRect &r, bool highlighted)
         return;
     }
     p.setPen(highlighted ? Qt::white : Qt::black);
-    p.drawText(r, Qt::AlignCenter, QString::fromUtf8("♪"));
+    Aqua::drawText(p, r, Qt::AlignCenter, QString::fromUtf8("♪"));
 }
 
 QWidget *VolumeExtra::popup()

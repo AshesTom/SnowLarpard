@@ -509,7 +509,7 @@ void Dock::paintDock(QPainter &p)
         p.drawRoundedRect(label, h / 2, h / 2);
         p.setFont(f);
         p.setPen(Qt::white);
-        p.drawText(label, Qt::AlignCenter, t.label);
+        Aqua::drawText(p, label, Qt::AlignCenter, t.label);
     }
 }
 

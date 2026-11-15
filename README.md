@@ -57,6 +57,9 @@ It follows the same idea as Winedows' native shell (XP) and the Aqua session of 
 **AquaKit** is a small AppKit without Qt: AppKit's skeleton on cairo and pango, with controls
 drawn by CoreUI's own renderer (reversed), on Wayland or X11.
 
+**Text** is drawn as Quartz draws it: Lucida Grande's unhinted outlines, made heavier by Quartz's
+own font smoothing dilation (reversed from CoreGraphics), which gives 10.6's text its weight.
+
 <div align="center">
 <table>
 <tr>

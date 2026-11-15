@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+#include "aqua.h"
 #include "aquastyle.h"
 
 #include "artfile.h"
@@ -307,11 +308,11 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         p->setPen(text);
         p->setFont(mi->font);
         if (mi->checked)
-            p->drawText(QRect(r.left() + 6, r.top(), 14, r.height()), Qt::AlignCenter, QString::fromUtf8("✓"));
+            Aqua::drawText(*p, QRect(r.left() + 6, r.top(), 14, r.height()), Qt::AlignCenter, QString::fromUtf8("✓"));
         const QString label = mi->text.section('\t', 0, 0), shortcut = mi->text.section('\t', 1);
-        p->drawText(r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextShowMnemonic, label);
+        Aqua::drawText(*p, r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextShowMnemonic, label);
         if (!shortcut.isEmpty())
-            p->drawText(r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignRight, shortcut);
+            Aqua::drawText(*p, r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignRight, shortcut);
         if (mi->menuItemType == QStyleOptionMenuItem::SubMenu) {
             // the submenu's triangle
             p->save();
@@ -357,7 +358,7 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         if (!tab)
             break;
         p->setPen((opt->state & State_Enabled) ? Qt::black : QColor(0, 0, 0, 100));
-        p->drawText(opt->rect.adjusted(0, -1, 0, -1), Qt::AlignCenter, tab->text);
+        Aqua::drawText(*p, opt->rect.adjusted(0, -1, 0, -1), Qt::AlignCenter, tab->text);
         return;
     }
     default:

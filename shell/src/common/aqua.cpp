@@ -8,7 +8,12 @@
 #include "x11.h"
 
 #include <QApplication>
+#include <QFontMetricsF>
 #include <QMenu>
+#include <QPainter>
+#include <QPainterPath>
+#include <algorithm>
+#include <cmath>
 
 namespace Aqua {
 
@@ -71,6 +76,78 @@ void prepareMenu(QMenu *menu)
             a->menu()->setProperty("aquaMenu", menu->property("aquaMenu"));
             prepareMenu(a->menu());
         }
+}
+
+// Quartz's dilation of a glyph's outline (path_dilator_iterate): every segment is moved, across by
+// dx outwards (to the right when it goes up, to the left when it goes down) and, when it runs along
+// the top of a stroke, up by twice dy; those along the bottom stay. The outer contours turn the way
+// Quartz's own orientation pass leaves them.
+static QPainterPath dilatedOutline(const QPainterPath &glyphs, qreal dx, qreal dy)
+{
+    constexpr qreal fine = 16;   // the curves flattened sixteen times finer than a pixel
+    QList<QPolygonF> contours = glyphs.toSubpathPolygons(QTransform::fromScale(fine, fine));
+    qreal area = 0;
+    for (QPolygonF &c : contours) {
+        if (c.size() > 1 && c.first() == c.last())
+            c.removeLast();
+        for (int i = 0; i < c.size(); ++i) {
+            const QPointF a = c[i], b = c[(i + 1) % c.size()];
+            area += a.x() * b.y() - b.x() * a.y();
+        }
+    }
+    QPainterPath out;
+    out.setFillRule(Qt::WindingFill);
+    for (QPolygonF c : contours) {
+        if (area > 0)
+            std::reverse(c.begin(), c.end());
+        QPolygonF moved;
+        for (int i = 0; i < c.size(); ++i) {
+            const QPointF a = c[i] / fine, b = c[(i + 1) % c.size()] / fine;
+            const qreal across = b.x() - a.x(), down = b.y() - a.y();
+            if (across == 0 && down == 0)
+                continue;
+            const QPointF by(down < 0 ? dx : down > 0 ? -dx : 0, across > 0 ? 0 : across < 0 ? -2 * dy : -dy);
+            moved << a + by << b + by;
+        }
+        if (moved.size() > 2) {
+            out.addPolygon(moved);
+            out.closeSubpath();
+        }
+    }
+    return out;
+}
+
+void drawText(QPainter &p, const QRectF &rect, int flags, const QString &text)
+{
+    QString line = text;
+    if (flags & Qt::TextShowMnemonic)
+        line.remove(QLatin1Char('&'));
+    if (line.isEmpty())
+        return;
+    QFont font = p.font();
+    font.setHintingPreference(QFont::PreferNoHinting);
+    const QFontMetricsF fm(font);
+    const qreal width = fm.horizontalAdvance(line), height = fm.ascent() + fm.descent();
+    qreal x = rect.left();
+    if (flags & Qt::AlignHCenter)
+        x = rect.left() + (rect.width() - width) / 2;
+    else if (flags & Qt::AlignRight)
+        x = rect.right() - width;
+    qreal top = rect.top();
+    if (flags & Qt::AlignVCenter)
+        top = rect.top() + (rect.height() - height) / 2;
+    else if (flags & Qt::AlignBottom)
+        top = rect.bottom() - height;
+    const qreal baseline = std::round(top + fm.ascent());
+
+    QPainterPath glyphs;
+    glyphs.addText(QPointF(x, baseline), font, line);
+    const qreal size = font.pixelSize() > 0 ? font.pixelSize() : fm.height();
+    const QPainterPath dilated = dilatedOutline(glyphs, qMin(0.3, 0.0121 * size), qMin(0.3, 0.015125 * size));
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillPath(dilated, p.pen().color());
+    p.restore();
 }
 
 } // namespace Aqua

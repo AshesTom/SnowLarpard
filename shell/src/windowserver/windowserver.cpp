@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+#include "aqua.h"
 #include "windowserver.h"
 
 #include "artfile.h"
@@ -487,9 +488,9 @@ void WindowServer::paintTitle(Client *c)
         }
         QRect r(x + iconRoom, 0, w - x - iconRoom, th - 1);
         p.setPen(QColor(255, 255, 255, 120));
-        p.drawText(r.translated(0, 1), Qt::AlignLeft | Qt::AlignVCenter, text);
+        Aqua::drawText(p, r.translated(0, 1), Qt::AlignLeft | Qt::AlignVCenter, text);
         p.setPen(active ? QColor(0x26, 0x26, 0x26) : QColor(0x7F, 0x7F, 0x7F));
-        p.drawText(r, Qt::AlignLeft | Qt::AlignVCenter, text);
+        Aqua::drawText(p, r, Qt::AlignLeft | Qt::AlignVCenter, text);
     }
     // to the frame, a band of rows at a time within the request's limit
     const uint32_t maxBytes = xcb_get_maximum_request_length(m_conn) * 4 - 64;

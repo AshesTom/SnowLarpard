@@ -265,17 +265,17 @@ void MenuBar::paintEvent(QPaintEvent *)
             QFont f = Assets::uiFont(17);
             p.setFont(f);
             p.setPen(open ? Qt::white : Qt::black);
-            p.drawText(i.rect.adjusted(0, -1, 0, -1), Qt::AlignCenter, QString(QChar(0xF8FF)));
+            Aqua::drawText(p, i.rect.adjusted(0, -1, 0, -1), Qt::AlignCenter, QString(QChar(0xF8FF)));
             continue;
         }
         p.setFont(i.bold ? Assets::uiFont(14, true) : font());
         // the engraved white under the text, as on the Mac
         if (!open) {
             p.setPen(QColor(255, 255, 255, 140));
-            p.drawText(i.rect.translated(0, 1).adjusted(0, 0, 0, -1), Qt::AlignCenter, i.title);
+            Aqua::drawText(p, i.rect.translated(0, 1).adjusted(0, 0, 0, -1), Qt::AlignCenter, i.title);
         }
         p.setPen(open ? Qt::white : Qt::black);
-        p.drawText(i.rect.adjusted(0, 0, 0, -1), Qt::AlignCenter, i.title);
+        Aqua::drawText(p, i.rect.adjusted(0, 0, 0, -1), Qt::AlignCenter, i.title);
     }
 }
 

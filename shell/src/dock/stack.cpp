@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+#include "aqua.h"
 #include "stack.h"
 
 #include "assets.h"
@@ -510,7 +511,7 @@ void Popup::paintFan(QPainter &p)
         lozenge.addRoundedRect(c.label, 11, 11);
         p.fillPath(lozenge, i == m_hover ? QColor(30, 80, 190, 235) : QColor(28, 28, 28, 200));
         p.setPen(Qt::white);
-        p.drawText(c.label.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignHCenter,
+        Aqua::drawText(p, c.label.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignHCenter,
                    QFontMetrics(font()).elidedText(c.item.name, Qt::ElideMiddle, int(c.label.width() - 16)));
         if (!c.image.isNull())
             p.drawImage(c.icon, c.image);
@@ -555,11 +556,11 @@ void Popup::paintGrid(QPainter &p)
     QFont title = Assets::uiFont(13, true);
     p.setFont(title);
     p.setPen(Qt::white);
-    p.drawText(QRectF(Inset, Inset + 2, W - 2 * Inset, 24), Qt::AlignCenter, name(m_folder));
+    Aqua::drawText(p, QRectF(Inset, Inset + 2, W - 2 * Inset, 24), Qt::AlignCenter, name(m_folder));
     p.setFont(font());
     if (!m_backButton.isNull()) {
         p.setPen(QColor(255, 255, 255, 220));
-        p.drawText(m_backButton, Qt::AlignVCenter | Qt::AlignLeft, QString::fromUtf8("◀ ") + name(m_root));
+        Aqua::drawText(p, m_backButton, Qt::AlignVCenter | Qt::AlignLeft, QString::fromUtf8("◀ ") + name(m_root));
     }
     // the items, scrolled inside the body
     p.save();
@@ -590,9 +591,9 @@ void Popup::paintGrid(QPainter &p)
             second = fm.elidedText(text.mid(cut), Qt::ElideMiddle, int(cell.label.width()));
             text = text.left(cut).trimmed();
         }
-        p.drawText(QRectF(cell.label.left(), cell.label.top(), cell.label.width(), 14), Qt::AlignHCenter | Qt::AlignTop, text);
+        Aqua::drawText(p, QRectF(cell.label.left(), cell.label.top(), cell.label.width(), 14), Qt::AlignHCenter | Qt::AlignTop, text);
         if (!second.isEmpty())
-            p.drawText(QRectF(cell.label.left(), cell.label.top() + 14, cell.label.width(), 14), Qt::AlignHCenter | Qt::AlignTop, second);
+            Aqua::drawText(p, QRectF(cell.label.left(), cell.label.top() + 14, cell.label.width(), 14), Qt::AlignHCenter | Qt::AlignTop, second);
     }
     p.restore();
     // the scroller's thumb on the right when it scrolls
@@ -610,7 +611,7 @@ void Popup::paintGrid(QPainter &p)
     const bool hot = m_hover == -2;
     p.setPen(hot ? Qt::white : QColor(255, 255, 255, 200));
     const QString open = Assets::tr("/System/Library/CoreServices/Dock.app", "Localizable", "SHOW_IN_FINDER", "Open in Finder");
-    p.drawText(m_finderButton.adjusted(0, 0, -24, 0), Qt::AlignVCenter | Qt::AlignRight, open);
+    Aqua::drawText(p, m_finderButton.adjusted(0, 0, -24, 0), Qt::AlignVCenter | Qt::AlignRight, open);
     // the Dock's openinfinder art: the curved arrow in its circle
     static const QImage arrow = piece("openinfinder.png").scaled(48, 48, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
