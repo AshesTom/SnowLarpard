@@ -214,6 +214,21 @@ Preview's own `CommonToolbar.proplist`, the pages one under the other with their
 Preview's zoom steps, the sidebar's thumbnails, table of contents and search results, text
 selection and links. The Dock's stacks open their PDFs and pictures in it.
 
+### Mail
+
+Early, but it reads and sends mail, and it is in the Dock. The first launch shows the Welcome
+assistant built from Mail's own nibs (the stamp and its veil, then the manual server pages when the
+guessed servers don't answer). The viewer: the toolbar laid out by Mail's `MainWindow.toolbar`, the
+mailboxes with Mail's icons and unread badges, the list, the message (MIME, quoted-printable,
+base64, any charset, HTML made plain, the attachments named). New Message, Reply, Reply All,
+Forward, Delete (to the server's Trash), Junk, search, and 10.6's shortcuts (⌘N, ⇧⌘N, ⌘R, ⇧⌘R,
+⇧⌘F, ⇧⌘D, ⌫). IMAP and SMTP through libcurl, TLS required except on localhost; the password in the
+desktop's keyring (libsecret), never in a file; the messages kept as 10.6 keeps them (`.emlx` in
+`<mailbox>.imapmbox/Messages`, under `~/.local/share/snowleopard/Mail`). Not yet: Notes and To Dos,
+attachments to open or add, rich text, threads, rules. [docs/mail-reverse.md](docs/mail-reverse.md)
+has what was recovered from 10.6's Mail and how it is tested (`tools/mail/fakemail.py`, a local
+IMAP and SMTP server).
+
 ### Mac applications, Linux programs
 
 Mac applications stand for the Linux programs that do their job: **Safari** is your browser,

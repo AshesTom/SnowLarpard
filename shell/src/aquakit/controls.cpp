@@ -725,6 +725,13 @@ void TextField::keyDown(Event &e)
         onChange(text);
 }
 
+TextField::~TextField()
+{
+    // a field gone with its window while it had the keyboard: its caret's timer goes with it
+    if (m_blink)
+        App::shared().removeTimer(m_blink);
+}
+
 void TextField::focusChanged()
 {
     // the caret blinks while the field has the keyboard

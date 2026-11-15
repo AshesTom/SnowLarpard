@@ -162,6 +162,7 @@ class TextField : public View {
 public:
     enum Style { Plain, Bezel, Search };
     TextField() { clipsToBounds = false; }
+    ~TextField() override;
     Style style = Bezel;
     bool inToolbar = false;       // the search field's toolbar art
     bool secure = false;
