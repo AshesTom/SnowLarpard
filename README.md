@@ -12,6 +12,10 @@ each one a program of its own, laid out as on the Mac.
 ![C++ / Qt 6 / cairo](https://img.shields.io/badge/C%2B%2B-Qt%206%20%C2%B7%20cairo%20%C2%B7%20pango-orange.svg)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-yellow.svg)
 
+<br>
+
+<img src="docs/images/desktop.jpg" alt="The Snow Leopard desktop on Linux: the menu bar, a Finder window and the Dock" width="900">
+
 </div>
 
 ---
@@ -52,6 +56,15 @@ It follows the same idea as Winedows' native shell (XP) and the Aqua session of 
 
 **AquaKit** is a small AppKit without Qt: AppKit's skeleton on cairo and pango, with controls
 drawn by CoreUI's own renderer (reversed), on Wayland or X11.
+
+<div align="center">
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/images/system-preferences.png" alt="System Preferences, Show All" width="440"><br><sub><b>System Preferences</b>, every pane from its own nib</sub></td>
+<td align="center" valign="top"><img src="docs/images/preview.png" alt="Preview showing a PDF" width="340"><br><sub><b>Preview</b>, PDFs drawn by poppler</sub></td>
+</tr>
+</table>
+</div>
 
 ## Quick start
 
@@ -114,6 +127,8 @@ Restart and Shut Down only act on the computer with `SNOWLEOPARD_POWER=1`.
 
 ### The Dock
 
+<div align="center"><img src="docs/images/dock.png" alt="The Dock: its glass floor, the applications, the stacks and the Trash" width="600"></div>
+
 - The 3D glass floor and its front line, the reflections, the separator, the running lights,
   the names over the icons, magnification and hiding, the bounce while an application starts.
 - **Stacks** (Applications, Documents, Downloads): the pile of the latest documents with the
@@ -131,6 +146,8 @@ windows grey), moving, resizing from the corner, double-click to minimize, zoom,
 ⌘W ⌘M ⌘H ⌘Q ⌘Tab (Super is Command).
 
 ### The Finder
+
+<div align="center"><img src="docs/images/finder.png" alt="A Finder window in icon view, with its sidebar, toolbar and status bar" width="620"></div>
 
 - **The desktop**: the desktop picture with its placement, and its contextual menu (New Folder,
   Change Desktop Background…).
