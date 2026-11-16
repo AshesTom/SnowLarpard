@@ -47,6 +47,8 @@ public:
     // MainMenu.nib's keyedobjects.nib (or the .nib folder)
     bool load(const std::string &nib);
     const std::vector<MainMenuItem> &menus() const { return m_menus; }
+    // ...to change before publishing them (items the application's code adds, menus it removes)
+    std::vector<MainMenuItem> &menus() { return m_menus; }
 
     // Enabled or not (an action the application doesn't know: disabled); may set its check and title
     std::function<bool(const MainMenuItem &, MenuValidation &)> validate;

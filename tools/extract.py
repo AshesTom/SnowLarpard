@@ -57,6 +57,14 @@ WANTED = {
         "./System/Library/PreferencePanes/ParentalControls.prefPane/Contents/Resources/English.lproj/*",
     ],
     "Essentials.pkg": [
+        # Calculator (shell/src/calculator): its LCD, the tape's button, the keys' pictures, its nibs,
+        # strings and the conversions' tables
+        "./Applications/Calculator.app/Contents/Resources/*.tif",
+        "./Applications/Calculator.app/Contents/Resources/*.plist",
+        "./Applications/Calculator.app/Contents/Resources/*.xml",
+        "./Applications/Calculator.app/Contents/Resources/English.lproj/*",
+        "./Applications/Calculator.app/Contents/PlugIns/*.calcview/Contents/Info.plist",
+        "./Applications/Calculator.app/Contents/PlugIns/*.calcview/Contents/Resources/*",
         # Photo Booth (shell/src/photobooth): its pictures, sounds, nibs and strings, and the system's
         # compositions its effects are (composition_images takes their embedded pictures out)
         "./Applications/Photo Booth.app/Contents/Resources/*.png",

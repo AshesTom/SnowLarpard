@@ -428,6 +428,27 @@ photo selected, deleted (to the trash), the library read again at the next launc
 | The menus' key equivalents: ⌘T, ⌘R, ⌘F, ⇧⌘F, ⌘1 / 2 / 3, ⌘→ / ⌘←, ⇧⌘R, Delete; the arrows select in the tray | `MainMenu.nib` | Done (the menus themselves: AquaKit has no menu bar yet) |
 | Movies (`PBQTMovieController`, the Fez H.264 / AAC recorders), the backdrops (`Backdrops.qtz`, pages 3 and 4), printing (`PBPrinting`'s WebKit templates), Export, the slideshow, copy and drag | | Missing |
 
+## 15. Calculator
+
+Binaries: `/Applications/Calculator.app/Contents/MacOS/Calculator` and its plug-in
+`PlugIns/BasicAndSci.calcview` (Essentials.pkg; universal, their x86_64 slices clear), decompiled with
+REA's Ghidra provider. The window is `Calculator.nib`'s, the keys `BasicAdvanced.nib`'s, the functions
+`Functions.xml`'s, the LCD the `lcd-*.tif` pictures: all read at run time. Port:
+[`calculator/`](../shell/src/calculator) on AquaKit. Verified in Xvfb under WindowServer and
+SystemUIServer: 2 + 3 × 4 = 14, 200 + 10 % = 220, 1 ÷ 0, 1 ÷ 3, sin 90 in degrees, (2 + 3) × 4,
+2 ^ 10, 5!, Basic and Scientific from the View menu (⌘1, ⌘2).
+
+| Item | Source | Status |
+|---|---|---|
+| The engine: numbers and functions into a postfix list, the binary operators on a stack, popped onto the list while the top's precedence is at least the new one's (+ − 3, × ÷ yˣ ˣ√y 4), the list then evaluated and its result left as its last number; a number typed after a result or another number replaces it, an operator after another replaces it; a function of precedence 99 applies at once to the number shown (after an operator, to the number before it); % also takes the number before it (200 + 10 % is 200 + 20); = closes the open parentheses, pops every operator and evaluates, and pressed again repeats the last operation with its last operand; an operation short of operands takes the last number seen (2 + = is 4) | `-[AlgebraicEngine userEnteredToken:]` (0xca22), `evaluateTOS` (0xc6ae), `immediateFunction:` (0xc3bf), `processOperationResult:` (0xbf7f), `-[CalculatorEngine userEnteredToken:]` (0xaacd), `Functions.xml` | Done (on long double, not NSDecimalNumber's 38 digits) |
+| The memory: M+ and M− add the number shown (the one being typed first), MC, MR; the M on the LCD | `-[CalculatorEngine performMemoryOperation:]` (0xb43a) | Done |
+| The errors: "Not a number", "Division by zero", "Overflow" (Localizable.strings) until a number or C | `processOperationResult:`, `handleOperationException:` | Done (which exception gives which text: estimated) |
+| The window: textured (the nib's style 0x10f), as wide as the keys' boxes and 14 more (Basic 204: 218; Scientific 205 + 204: 423), as high as the box (197), the LCD and 8 more; the boxes at (7, 7) from the bottom left, Scientific's at the left | `-[CalculatorController setCurrentView:]` (0x10000506e), `-[BasicAdvancedController normalSize:]` (0x52c6), `addView:toWindow:atPoint:` (0x4e96) | Done (the textured background as the unified gradient over the whole window) |
+| The keys: the nib's frames, each 2 points lower at its top (-[BasicAdvancedController awakeFromNib] 0x53bc), textured square bezels, their titles in Lucida Grande 13, x² x³ yˣ with a superscript; 2nd shows the inverse functions (sin⁻¹..., eˣ, 10ˣ, 2ˣ, ∛, ˣ√y); Rad / Deg; the keys typed show pressed a moment | `BasicAdvanced.nib`, `awakeFromNib` | Done (the second functions' titles from the plug-in's pictures' names; the superscripts' size and offset by eye) |
+| The LCD: 56 high without the RPN stack (`_hideRegRPNView` takes 76 off the nib's 132), its nine pieces, the number in Lucida Grande 14 at the right, M, ( ) and Deg / Rad in 11 under it; 12 decimal places at first (`setPrecision: 12`) | `-[LCDController awakeFromNib]` (0x100001cf6), `Calculator.nib` | Done (the text's places from the nib's fields, by the box's bottom) |
+| The menus: `Calculator.nib`'s main menu in the menu bar (Debug taken off), View's Basic, Scientific, Programmer (⌘1 to ⌘3), Show Thousands Separators, Decimal Places (0 to 15); Copy, Paste, Clear; the settings kept (`calculator.conf`: ViewDefaultsKey, Precision, ShowSeparators) | `Calculator.nib`, `initItemsWithStoredDefaults` | Done |
+| Programmer (Hexadecimal.calcview), RPN, the paper tape, conversions, speech, Large Type | | Missing (disabled in the menus) |
+
 ## Next
 
 - `_CUIGetTheme` and the Graphite appearance (AppleAquaColorVariant).

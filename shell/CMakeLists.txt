@@ -115,6 +115,13 @@ else()
     message(STATUS "Preview: not built (no poppler-glib)")
 endif()
 
+# Calculator.app, on AquaKit: Calculator 4.5's algebraic engine and its Basic and Scientific keys
+# (docs/reverse-status.md, section 15)
+add_executable(Calculator src/calculator/main.cpp src/calculator/engine.cpp src/calculator/engine.h)
+target_link_libraries(Calculator PRIVATE aquakit)
+target_compile_options(Calculator PRIVATE -Wall -Wextra)
+set_target_properties(Calculator PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Calculator.app/Contents/MacOS")
+
 # Mail.app, on AquaKit: IMAP and SMTP by libcurl, the passwords in the keyring by libsecret
 # (docs/mail-reverse.md); Preview's reader of NeXT plists for its *.toolbar files
 pkg_check_modules(MAIL IMPORTED_TARGET libcurl libsecret-1)
