@@ -2,9 +2,12 @@
 // Preview.app, on AquaKit (no Qt): PDFs and pictures in 10.6's document window (PVDocument.nib), its
 // toolbar the one CommonToolbar.proplist lays out, its pages drawn by poppler.
 //   Preview [file.pdf|picture...]
-// Without a file Preview opens no window (-[PVApplication applicationShouldOpenUntitledFile:],
-// 0x100002a65, answers NO); the shell only knows an application by its windows, so File > Open…'s
-// panel (-[PVDocumentController openDocument:], 0x10002f0ca) is run then.
+// Without a file Preview opens no window and no panel (-[PVApplication
+// applicationShouldOpenUntitledFile:], 0x100002a65, answers NO; applicationDidFinishLaunching:
+// only seeds random()): it is in front with its menus alone, File > Open… (-[PVDocumentController
+// openDocument:], 0x10002f0ca) runs the panel. Its last window closed, it keeps running (PVApplication
+// has no applicationShouldTerminateAfterLastWindowClosed:). One Preview: launched again, it hands
+// its files to the running one (or brings it forward, as the Dock's click does).
 #include "controls.h"
 #include "document.h"
 #include "foundation.h"
@@ -24,6 +27,8 @@
 
 #include <fcntl.h>
 #include <spawn.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -101,8 +106,27 @@ void runDialog(std::vector<std::string> argv, std::function<void(bool ran, std::
     for (std::string &a : argv)
         args.push_back(a.data());
     args.push_back(nullptr);
+    // The chooser on this session's display, in its own process: no desktop portal (on the host's
+    // Plasma, KDE's and GTK's dialogs go through xdg-desktop-portal, whose window opens on the host's
+    // desktop, not in the Snow Leopard session), the toolkits' own dialogs on X11
+    std::vector<std::string> env;
+    for (char **e = environ; *e; ++e) {
+        const std::string v = *e;
+        const std::string name = v.substr(0, v.find('='));
+        if (name == "QT_QPA_PLATFORM" || name == "QT_QPA_PLATFORMTHEME" || name == "GTK_USE_PORTAL" || name == "GDK_BACKEND" ||
+            name == "KDE_FULL_SESSION" || name == "PLASMA_INTEGRATION_USE_PORTAL" || name == "GDK_DEBUG")
+            continue;
+        env.push_back(v);
+    }
+    for (const char *v : {"QT_QPA_PLATFORM=xcb", "QT_QPA_PLATFORMTHEME=generic", "PLASMA_INTEGRATION_USE_PORTAL=0", "GTK_USE_PORTAL=0",
+                          "GDK_BACKEND=x11", "GDK_DEBUG=no-portals"})
+        env.push_back(v);
+    std::vector<char *> envp;
+    for (std::string &v : env)
+        envp.push_back(v.data());
+    envp.push_back(nullptr);
     pid_t pid = 0;
-    const int err = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
+    const int err = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), envp.data());
     posix_spawn_file_actions_destroy(&fa);
     close(out[1]);
     if (err != 0) {
@@ -676,6 +700,52 @@ private:
 
 } // namespace
 
+// ---- one Preview by user and display: an abstract socket; a second launch sends its files, one
+// path a line (none: just come forward), and quits
+
+sockaddr_un instanceAddress(socklen_t &length)
+{
+    const char *display = std::getenv("DISPLAY");
+    const char *wayland = std::getenv("WAYLAND_DISPLAY");
+    const std::string name = "snowleopard-preview-" + std::to_string(getuid()) + "-" +
+                             (wayland && *wayland ? wayland : display ? display : "");
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const size_t n = std::min(name.size(), sizeof addr.sun_path - 1);
+    std::memcpy(addr.sun_path + 1, name.data(), n);   // sun_path[0] = 0: abstract
+    length = socklen_t(offsetof(sockaddr_un, sun_path) + 1 + n);
+    return addr;
+}
+
+// The running Preview took the files: true
+bool handToRunning(const std::vector<std::string> &files)
+{
+    socklen_t length = 0;
+    const sockaddr_un addr = instanceAddress(length);
+    const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return false;
+    if (connect(fd, reinterpret_cast<const sockaddr *>(&addr), length) != 0) {
+        close(fd);
+        return false;
+    }
+    std::string msg = "open\n";
+    for (const std::string &f : files) {
+        // the path whole: the running Preview has its own working directory
+        char *whole = realpath(f.c_str(), nullptr);
+        msg += (whole ? std::string(whole) : f) + "\n";
+        std::free(whole);
+    }
+    for (size_t done = 0; done < msg.size();) {
+        const ssize_t n = write(fd, msg.data() + done, msg.size() - done);
+        if (n <= 0)
+            break;
+        done += size_t(n);
+    }
+    close(fd);
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     App &app = App::shared();
@@ -683,6 +753,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i)
         if (argv[i][0] != '-')
             files.push_back(argv[i]);
+    if (handToRunning(files))
+        return 0;
     if (!app.open()) {
         std::fprintf(stderr, "Preview: no display (Wayland or X11)\n");
         return 1;
@@ -729,29 +801,49 @@ int main(int argc, char **argv)
             windows.push_back(std::make_unique<DocumentWindow>(std::move(doc)));
             windows.back()->onKeyEquivalent = [&menu](Event &e) { menu.performKeyEquivalent(e); };
             windows.back()->onClose = [&windows, &app](DocumentWindow *w) {
-                // the last window closed: Preview quits (the shell knows an application by its windows)
+                // the last window closed: Preview stays, in front with its menus
                 app.later([&windows, &app, w] {
                     windows.erase(std::remove_if(windows.begin(), windows.end(), [w](const auto &p) { return p.get() == w; }), windows.end());
                     if (windows.empty())
-                        app.quit();
+                        app.setFrontWithoutWindows(true);
                 });
             };
         }
     };
-    openPanel = [&windows, &app, openFiles] {
-        runOpenPanel([&windows, &app, openFiles](std::vector<std::string> chosen) {
-            openFiles(chosen);
-            if (windows.empty())
-                app.quit(chosen.empty() ? 0 : 1);   // cancelled with nothing open
-        });
-    };
+    openPanel = [openFiles] { runOpenPanel([openFiles](std::vector<std::string> chosen) { openFiles(chosen); }); };
     menu.publish();
-    if (files.empty()) {
-        openPanel();
-        return app.run();
+
+    // the other launches' files (the Finder's, the Dock's): open, or come forward
+    socklen_t length = 0;
+    const sockaddr_un addr = instanceAddress(length);
+    const int server = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (server >= 0 && bind(server, reinterpret_cast<const sockaddr *>(&addr), length) == 0 && listen(server, 4) == 0) {
+        app.watch(server, [server, &windows, &app, openFiles] {
+            for (int c; (c = accept4(server, nullptr, nullptr, SOCK_CLOEXEC)) >= 0;) {
+                std::string text;
+                char buf[4096];
+                for (ssize_t n; (n = read(c, buf, sizeof buf)) > 0;)
+                    text.append(buf, size_t(n));
+                close(c);
+                std::vector<std::string> paths;
+                size_t from = text.find('\n');
+                while (from != std::string::npos && from + 1 < text.size()) {
+                    const size_t to = text.find('\n', from + 1);
+                    const std::string line = text.substr(from + 1, (to == std::string::npos ? text.size() : to) - from - 1);
+                    if (!line.empty())
+                        paths.push_back(line);
+                    from = to;
+                }
+                openFiles(paths);
+                if (windows.empty())
+                    app.setFrontWithoutWindows(true);
+            }
+        });
     }
     openFiles(files);
     if (windows.empty())
-        return 1;
-    return app.run();
+        app.setFrontWithoutWindows(true);
+    const int code = app.run();
+    app.setFrontWithoutWindows(false);
+    return code;
 }

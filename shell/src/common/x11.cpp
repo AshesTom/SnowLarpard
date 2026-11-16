@@ -454,7 +454,7 @@ bool Watcher::nativeEventFilter(const QByteArray &type, void *message, qintptr *
     case XCB_PROPERTY_NOTIFY: {
         auto *p = reinterpret_cast<xcb_property_notify_event_t *>(ev);
         if (p->window == root() && (p->atom == atom("_NET_ACTIVE_WINDOW") || p->atom == atom("_NET_CLIENT_LIST") ||
-                                    p->atom == atom("_NET_CLIENT_LIST_STACKING")))
+                                    p->atom == atom("_NET_CLIENT_LIST_STACKING") || p->atom == atom("_SNOWLEOPARD_FRONT_APP")))
             m_coalesce.start();
         break;
     }

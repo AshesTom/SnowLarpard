@@ -102,13 +102,34 @@ void MenuBar::activeChanged()
     for (uint32_t t : X11::cardinals(active, X11::atom("_NET_WM_WINDOW_TYPE"), XCB_ATOM_ATOM))
         desktop |= t == X11::atom("_NET_WM_WINDOW_TYPE_DESKTOP");
     App app = active && !desktop ? Apps::forWindow(X11::wmClass(active), X11::wmInstance(active), X11::pid(active)) : Apps::finder();
+    // An application in front without a window (Preview launched alone, its last window closed): its
+    // menus, until another window becomes active
+    uint32_t serial = 0;
+    const uint32_t frontPid = Apps::frontWithoutWindows(&serial);
+    bool windowless = false;
+    if (frontPid && serial != m_frontSerial) {
+        m_frontSerial = serial;
+        m_frontOver = active;   // the window active when it came forward
+    }
+    if (frontPid && (active == m_frontOver || !active || desktop) && X11::pid(active) != frontPid) {
+        const App front = Apps::forPid(frontPid);
+        if (front.valid()) {
+            app = front;
+            active = 0;
+            desktop = false;
+            windowless = true;
+        }
+    }
     m_active = active;
     // the window's own menus, when it publishes them
     auto menu = active && !desktop ? m_registrar->menuFor(active) : QPair<QString, QString>();
     QString key = menu.first.isEmpty() ? QString() : menu.first + menu.second;
     // ...or the shell's AquaKit applications' (their MainMenu.nib, aquakitmenus.h)
     int aquaKitPid = 0;
-    if (key.isEmpty() && active && !desktop) {
+    if (windowless) {
+        aquaKitPid = int(frontPid);
+        key = "aquakit:" + QString::number(frontPid);
+    } else if (key.isEmpty() && active && !desktop) {
         const int pid = int(X11::pid(active));
         if (pid == m_aquaKitPid || AquaKitMenus::available(pid)) {
             aquaKitPid = pid;

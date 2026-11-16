@@ -58,6 +58,11 @@ public:
     // the screen less the menu bar and the Dock (their struts: _NET_WORKAREA); the screen when unknown
     virtual Rect visibleFrame() const { return screenFrame(); }
 
+    // The application in front without a window (a Mac application keeps its menu bar with none
+    // open): the root's _SNOWLEOPARD_FRONT_APP, [pid, serial], which the menu bar and the Dock read;
+    // false takes it off (when it is this application's) or, quitting, lets them look again
+    virtual void setFrontWithoutWindows(bool) {}
+
     static std::unique_ptr<Platform> wayland();   // null without a compositor (or without the backend built)
     static std::unique_ptr<Platform> x11();       // null without a display
 };

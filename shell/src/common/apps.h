@@ -36,4 +36,12 @@ bool launch(const App &app, const QStringList &files = {});
 // A document opened as the Finder opens it: PDFs and pictures in Preview
 bool openFile(const QString &path);
 
+// The shell's AquaKit applications running on this display (their menus' sockets,
+// "snowleopard-menus-<pid>"), with or without windows: by pid
+QVector<QPair<uint32_t, App>> aquaKitApps();
+// The application that came in front without a window (the root's _SNOWLEOPARD_FRONT_APP: its pid,
+// and a serial that changes each time it comes forward); 0 when none (or it is gone)
+uint32_t frontWithoutWindows(uint32_t *serial = nullptr);
+App forPid(uint32_t pid);
+
 } // namespace Apps

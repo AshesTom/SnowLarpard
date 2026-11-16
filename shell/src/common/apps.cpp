@@ -2,6 +2,7 @@
 #include "apps.h"
 
 #include "assets.h"
+#include "x11.h"
 
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -12,10 +13,13 @@
 #include <QHash>
 #include <QIcon>
 #include <QProcess>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QUrl>
+
+#include <signal.h>
 
 namespace {
 
@@ -346,6 +350,57 @@ bool openFile(const QString &path)
             return true;
     }
     return QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+QVector<QPair<uint32_t, App>> aquaKitApps()
+{
+    // the abstract sockets' names in /proc/net/unix ("@snowleopard-menus-<pid>"), the processes of
+    // this display
+    QVector<QPair<uint32_t, App>> out;
+    QFile f(QStringLiteral("/proc/net/unix"));
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    const QByteArray display = qgetenv("DISPLAY");
+    QSet<uint32_t> seen;
+    for (const QByteArray &line : f.readAll().split('\n')) {
+        const int at = line.indexOf("@snowleopard-menus-");
+        if (at < 0)
+            continue;
+        const uint32_t pid = line.mid(at + 19).trimmed().toUInt();
+        if (!pid || seen.contains(pid) || kill(pid_t(pid), 0) != 0)
+            continue;
+        seen.insert(pid);
+        QFile env(QStringLiteral("/proc/%1/environ").arg(pid));
+        if (!env.open(QIODevice::ReadOnly))
+            continue;
+        bool same = false;
+        for (const QByteArray &v : env.readAll().split('\0'))
+            if (v.startsWith("DISPLAY="))
+                same = v.mid(8) == display;
+        if (!same)
+            continue;
+        const App a = forPid(pid);
+        if (a.valid())
+            out.append({pid, a});
+    }
+    return out;
+}
+
+App forPid(uint32_t pid)
+{
+    // AquaKit names its windows by the executable (WM_CLASS): the same name finds the application
+    const QString exe = QFileInfo(QFile::symLinkTarget(QStringLiteral("/proc/%1/exe").arg(pid))).fileName();
+    return exe.isEmpty() ? App{} : forWindow(exe, exe, pid);
+}
+
+uint32_t frontWithoutWindows(uint32_t *serial)
+{
+    const QVector<uint32_t> v = X11::cardinals(X11::root(), X11::atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
+    if (v.size() < 2 || kill(pid_t(v[0]), 0) != 0)
+        return 0;
+    if (serial)
+        *serial = v[1];
+    return v[0];
 }
 
 } // namespace Apps

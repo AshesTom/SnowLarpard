@@ -193,6 +193,8 @@ public:
     void quit(int code = 0);
     Rect screenFrame() const;
     Rect visibleFrame() const;   // without the menu bar and the Dock ([NSScreen visibleFrame])
+    // In front with no window: the menu bar shows its menus, the Dock its light (X11)
+    void setFrontWithoutWindows(bool front);
     Platform *platform() const { return m_platform.get(); }
     std::string platformName() const;
 

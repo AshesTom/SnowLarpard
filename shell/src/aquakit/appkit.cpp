@@ -665,6 +665,12 @@ Rect App::screenFrame() const { return m_platform->screenFrame(); }
 
 Rect App::visibleFrame() const { return m_platform->visibleFrame(); }
 
+void App::setFrontWithoutWindows(bool front)
+{
+    if (m_platform)
+        m_platform->setFrontWithoutWindows(front);
+}
+
 int App::addTimer(double seconds, bool repeat, std::function<void()> fire)
 {
     const int id = m_nextTimer++;

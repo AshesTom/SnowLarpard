@@ -191,6 +191,17 @@ void Dock::refreshWindows()
     for (xcb_window_t w : X11::clientWindows())
         if (minimized.contains(w) && !m_minimized.contains(w))
             m_minimized.append(w);
+    // the shell's applications that run without a window (Preview launched alone): a Mac application
+    // keeps its light with no window open
+    QSet<QString> windowless;
+    for (const auto &[pid, a] : Apps::aquaKitApps()) {
+        Q_UNUSED(pid);
+        if (running.contains(a.id))
+            continue;
+        order << a.id;
+        running.insert(a.id, a);
+        windowless.insert(a.id);
+    }
     QHash<QString, qint64> bouncing;
     for (const Tile &t : m_tiles)
         if (t.bounceStart >= 0 && !windows.contains(t.app.id))
@@ -200,7 +211,8 @@ void Dock::refreshWindows()
     QSet<QString> shown;
     auto add = [&](Tile t) {
         t.windows = windows.value(t.app.id);
-        t.bounceStart = bouncing.value(t.app.id, -1);
+        t.running = !t.windows.isEmpty() || windowless.contains(t.app.id);
+        t.bounceStart = t.running && t.windows.isEmpty() ? -1 : bouncing.value(t.app.id, -1);
         t.label = t.app.name;
         shown.insert(t.app.id);
         tiles.append(t);
@@ -550,7 +562,7 @@ void Dock::paintDock(QPainter &p)
         p.setOpacity(1);
         // the light under running applications
         // (the Finder always runs on the Mac: its light is always on)
-        if (t.kind == Tile::Application && (!t.windows.isEmpty() || t.app.id == "finder")) {
+        if (t.kind == Tile::Application && (t.running || t.app.id == "finder")) {
             const QImage &ind = m_tileSize >= 60 ? indicatorLarge : m_tileSize >= 40 ? indicator : indicatorSmall;
             if (!ind.isNull()) {
                 QSizeF s = ind.size();
@@ -713,6 +725,8 @@ void Dock::activate(Tile &t)
             Apps::launch(finder, {QDir::homePath()});
         else if (!Apps::launch(t.app))
             return;
+        if (t.running)
+            return;   // running without a window: launched again, it comes forward (no bounce)
         t.bounceStart = m_clock.elapsed();
         m_anim.start();
         return;

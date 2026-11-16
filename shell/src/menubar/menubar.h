@@ -63,5 +63,7 @@ private:
     QPointer<DBusMenu> m_imported;
     QString m_menuKey;                // its service and object path ("aquakit:<pid>": an AquaKit application's)
     int m_aquaKitPid = 0;             // the AquaKit application whose menus are shown
+    uint32_t m_frontSerial = 0;       // _SNOWLEOPARD_FRONT_APP's serial last seen
+    xcb_window_t m_frontOver = 0;     // the window active when the windowless application came forward
     bool m_rebuildPending = false;    // the menus changed while one was open
 };

@@ -75,6 +75,26 @@ public:
     int fd() const override { return xcb_get_file_descriptor(conn); }
     void flush() override { xcb_flush(conn); }
     Rect screenFrame() const override { return {0, 0, double(screen->width_in_pixels), double(screen->height_in_pixels)}; }
+    void setFrontWithoutWindows(bool front) override
+    {
+        const xcb_atom_t a = atom("_SNOWLEOPARD_FRONT_APP");
+        if (front) {
+            // the serial tells the menu bar the application came forward again
+            static uint32_t serial = 0;
+            const uint32_t v[2] = {uint32_t(getpid()), ++serial + uint32_t(now() * 1000)};
+            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, screen->root, a, XCB_ATOM_CARDINAL, 32, 2, v);
+        } else {
+            auto *r = xcb_get_property_reply(conn, xcb_get_property(conn, 0, screen->root, a, XCB_ATOM_CARDINAL, 0, 2), nullptr);
+            const bool ours = r && xcb_get_property_value_length(r) >= 4 &&
+                              static_cast<const uint32_t *>(xcb_get_property_value(r))[0] == uint32_t(getpid());
+            free(r);
+            if (ours)
+                xcb_delete_property(conn, screen->root, a);
+            else   // its watchers look again (the Dock: this application's light goes)
+                xcb_change_property(conn, XCB_PROP_MODE_APPEND, screen->root, a, XCB_ATOM_CARDINAL, 32, 0, nullptr);
+        }
+        xcb_flush(conn);
+    }
     Rect visibleFrame() const override
     {
         // _NET_WORKAREA, as WindowServer sets it from the menu bar's and the Dock's struts

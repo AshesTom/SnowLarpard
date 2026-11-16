@@ -45,6 +45,7 @@ private:
         QString folder;     // a stack's folder (stack.h: a path, or "applications:")
         QString label;
         QVector<xcb_window_t> windows;
+        bool running = false;      // its windows, or a shell application running without one
         xcb_window_t window = 0;   // a minimized window's tile: the window (app: its application)
         qint64 bounceStart = -1;   // ms on m_clock while it launches
         // laid out:
