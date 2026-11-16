@@ -9,8 +9,14 @@
 # manager is installed.
 set -uo pipefail
 root=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
-apps=${SNOWLEOPARD_APPS:-$root/.local/build/apps}
-export SNOWLEOPARD_ASSETS=${SNOWLEOPARD_ASSETS:-$root/.local/assets}
+# from the repository (.local/build/apps, .local/assets), or as install.sh lays it out (apps, assets)
+if [[ -d $root/apps ]]; then
+    apps=${SNOWLEOPARD_APPS:-$root/apps}
+    export SNOWLEOPARD_ASSETS=${SNOWLEOPARD_ASSETS:-$root/assets}
+else
+    apps=${SNOWLEOPARD_APPS:-$root/.local/build/apps}
+    export SNOWLEOPARD_ASSETS=${SNOWLEOPARD_ASSETS:-$root/.local/assets}
+fi
 [[ -x $apps/Dock.app/Contents/MacOS/Dock ]] || { echo "Build it first: $root/shell/build.sh" >&2; exit 1; }
 [[ -e $SNOWLEOPARD_ASSETS/.complete ]] || echo "No DVD files in $SNOWLEOPARD_ASSETS (tools/extract.py): plain stand-ins instead" >&2
 if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v dbus-run-session >/dev/null; then

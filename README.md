@@ -103,6 +103,24 @@ SNOWLEOPARD_ASSETS=$PWD/.local/assets .local/build/apps/Preview.app/Contents/Mac
 
 </details>
 
+<details open>
+<summary><b>From the login screen</b></summary>
+
+Once the DVD's files are taken (`./sl.sh` above), `install.sh` builds the shell and installs it,
+with the files, in `/usr/local/lib/snowleopard`, and adds **Snow Leopard** to the login screen
+(SDDM, GDM, Plasma Login, LightDM...). It asks for `sudo` for the copy.
+
+```sh
+./install.sh                # build, install, the login screen's entry
+./install.sh --uninstall    # all of it away again
+```
+
+Without Xorg (a Wayland-only system), the entry starts KWin (or cage) alone as the compositor, a
+full-screen Xwayland at the screen's size, and the session in it; with Xorg, a second entry runs
+the session on its own X server. Restart and Shut Down act on the computer there. Log Out ends it.
+
+</details>
+
 <details>
 <summary><b>As a whole X session</b></summary>
 
@@ -255,7 +273,8 @@ The programs watch these files: change one and the Dock or the menu bar follows.
 
 ```
 sl.sh                 runs everything in a window of your desktop
-session/              snowleopard-session: the X session
+install.sh            installs the session for the login screen
+session/              snowleopard-session: the X session; snowleopard-wayland: it from a Wayland login
 tools/extract.py      takes the files out of the DVD (partition map, HFS+, xar, cpio)
 shell/src/common      aquashell, shared by every program (assets, apps, X11, session)
 shell/src/menubar     SystemUIServer.app
