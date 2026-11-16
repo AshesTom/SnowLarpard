@@ -40,6 +40,7 @@ private:
         QImage proxyIcon;        // the represented file's icon before the title (_SNOWLEOPARD_PROXY_ICON)
         bool roundedBottom = false;   // a textured window's bottom corners (_SNOWLEOPARD_ROUNDED_BOTTOM)
         bool minimized = false, fullscreen = false, zoomed = false;
+        bool hidden = false;     // minimized by Hide (⌘H): no tile in the Dock, no genie
         bool floating = false;   // a panel kept over the windows (_NET_WM_STATE_ABOVE, a utility window)
         QVector<uint32_t> keptStates;   // its own states WindowServer keeps (above, skip taskbar, sticky)
         QRect restore;           // before zooming or full screen
@@ -67,12 +68,16 @@ private:
     void focus(Client *c);
     void raise(Client *c);
     void restackLayers();
-    void minimize(Client *c);
+    void minimize(Client *c, bool hide = false);
     void unminimize(Client *c);
     void toggleZoom(Client *c);
     void setFullscreen(Client *c, bool on);
     void close(Client *c);
     void setWmState(Client *c, uint32_t state);
+    QRect frameRect(const Client *c) const;
+    QRect iconGeometry(const Client *c) const;
+    Compositor::Effect minimizeEffect(double *seconds) const;
+    void publishPreview(Client *c, QImage image);
     void setNetState(Client *c);
 
     void updateClientLists();

@@ -309,6 +309,45 @@ void minimize(xcb_window_t w)
     xcb_flush(conn());
 }
 
+void hide(xcb_window_t w)
+{
+    if (!conn() || !w)
+        return;
+    if (hasWindowManager())
+        clientMessage(w, atom("_SNOWLEOPARD_HIDE"), {1});
+    else
+        xcb_unmap_window(conn(), w);
+    xcb_flush(conn());
+}
+
+bool hidden(xcb_window_t w)
+{
+    const auto h = cardinals(w, atom("_SNOWLEOPARD_HIDDEN"), XCB_ATOM_CARDINAL);
+    return !h.isEmpty() && h[0];
+}
+
+QImage preview(xcb_window_t w)
+{
+    const QVector<uint32_t> data = cardinals(w, atom("_SNOWLEOPARD_WINDOW_PREVIEW"), XCB_ATOM_CARDINAL);
+    if (data.size() < 2)
+        return {};
+    const int iw = int(data[0]), ih = int(data[1]);
+    if (iw <= 0 || ih <= 0 || data.size() < 2 + iw * ih)
+        return {};
+    QImage img(iw, ih, QImage::Format_ARGB32);
+    for (int y = 0; y < ih; ++y)
+        memcpy(img.scanLine(y), data.constData() + 2 + y * iw, size_t(iw) * 4);
+    return img;
+}
+
+void setIconGeometry(xcb_window_t w, const QRect &r)
+{
+    if (!conn() || !w)
+        return;
+    const uint32_t g[4] = {uint32_t(r.x()), uint32_t(r.y()), uint32_t(r.width()), uint32_t(r.height())};
+    xcb_change_property(conn(), XCB_PROP_MODE_REPLACE, w, atom("_NET_WM_ICON_GEOMETRY"), XCB_ATOM_CARDINAL, 32, 4, g);
+}
+
 static void setAtoms(xcb_window_t w, const char *prop, std::initializer_list<const char *> names)
 {
     QVector<uint32_t> atoms;

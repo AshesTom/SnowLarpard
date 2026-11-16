@@ -18,7 +18,8 @@ with ImageMagick.
 
 | Binary | `__TEXT` | Notes |
 |---|---|---|
-| Dock, Finder, SystemUIServer | protected (`SG_PROTECTED_VERSION_1`, both slices) | not decrypted: their resources and observed behaviour only |
+| Dock | protected (`SG_PROTECTED_VERSION_1`, both slices) | decrypted for analysis with `tools/deprotect.py` (x86_64 slice, 365 pages); reversed below (section 4, minimizing) |
+| Finder, SystemUIServer | protected (`SG_PROTECTED_VERSION_1`, both slices) | not decrypted: their resources and observed behaviour only |
 | HIToolbox, AppKit, CoreUI | clear | reversed below |
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | to do |
@@ -72,8 +73,10 @@ Reader: `CUISharedArtReader::Setup` (0x35758), `GetImageHeader` (0x35890),
 
 ## 4. The Dock
 
-The Dock binary is protected; what CoreUI draws for it and the Dock's own resources are used.
-Port: [`dock.cpp`](../shell/src/dock/dock.cpp), [`dockmenu.cpp`](../shell/src/dock/dockmenu.cpp).
+The Dock binary is protected; what CoreUI draws for it and the Dock's own resources are used, and its
+x86_64 slice decrypted (`tools/deprotect.py`) for minimizing. Port: [`dock.cpp`](../shell/src/dock/dock.cpp),
+[`dockmenu.cpp`](../shell/src/dock/dockmenu.cpp); the animations in WindowServer's
+[`compositor.cpp`](../shell/src/windowserver/compositor.cpp).
 
 | Item | Source | Status |
 |---|---|---|
@@ -93,6 +96,11 @@ Port: [`dock.cpp`](../shell/src/dock/dock.cpp), [`dockmenu.cpp`](../shell/src/do
 | The list: a Dock menu of the items, folders as submenus | observed | Done |
 | The menu: Sort by, Display as, View content as (DockMenus.strings), Open "%@"; Automatic: a fan up to 12 items, a grid after | DockMenus.strings | Done |
 | Downloads hops once when a file comes into it | observed | Done |
+| Minimizing (0x10004d7f7): `mineffect` 1 genie, 2 scale, 3 suck (hidden); the genie lasts `genie-speed` (0.5 s), the scale 0.25 s (`setSystemFrame:from:`), the suck 0.4 s, ten times longer with Shift; the target is the tile inset by 4 px; direction 1-4 by the Dock's side (bottom: 2) | Dock (decrypted) | Done: genie and scale, bottom Dock |
+| The genie (`WAWindow genie:direction:genie:` → the animation's step at 0x1000ef474, `CGSSetWindowWarp`): a two-column mesh, rows of (screen y, left and right edge shifts), local row = screen y − top (the window slides, never stretched). Two phases on one clock, each `(int)log(d/2 + 1) × 50` long: the edges come in (d = max(2 × overlap, (left + right shift) / 8)), the window goes down (d = the distance to the tile); the slide starts after `acos(1 − 2·|dist − h| / dist) / π` of its own length, both eased by half a cosine. Row curve 0x1000ef17a: shift × (½ − ½ cos(π (y − y0) / dist)); rows halved (0x1000ef20a) while the middle strays 0.6 px or the gap is a tile high (8 px least, 32 levels); the rows stop at the tile's top, one last row at the tile's bottom | Dock (decrypted) | Done: drawn by WindowServer's compositor in two-pixel bands, each scaled across (Render transforms) |
+| Minimized windows' tiles (`DOCKWindowTile _drawWithParentTile:`): the window's picture (`CGSCaptureWindowsContentsToRect`) in the tile, its application's icon over the bottom right corner, 48 of 128 (ceil), 2 from the edges; between the stacks and the Trash; their menu is their application's (`createMenu:options:`); none with `minimize-to-application` | Dock (decrypted); observed | Done: the picture is WindowServer's (`_SNOWLEOPARD_WINDOW_PREVIEW`), the tile's place goes back to it as `_NET_WM_ICON_GEOMETRY` |
+| The windows in an application's menu: a check before the active one, a diamond before the minimized ones | observed | Done |
+| Hide (⌘H, the menu's Hide) is not minimizing: no tile, no genie (`_SNOWLEOPARD_HIDE`, `_SNOWLEOPARD_HIDDEN`); Show All shows the hidden ones only | observed | Done |
 | A new account's PDFs: "About Stacks.pdf" in Documents, "About Downloads.pdf" in Downloads (the DVD's User Template), put there once by the Dock, never over a file | User Template | Done |
 
 ## 5. The windows (WindowServer)

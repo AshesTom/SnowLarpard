@@ -45,20 +45,21 @@ QVector<xcb_window_t> windowsOf(const App &app)
 void hideApp(const App &app)
 {
     for (xcb_window_t w : windowsOf(app))
-        X11::minimize(w);
+        if (!X11::minimized(w))
+            X11::hide(w);
 }
 
 void hideOthers(const App &app)
 {
     for (xcb_window_t w : X11::clientWindows())
-        if (Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w)).id != app.id)
-            X11::minimize(w);
+        if (Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w)).id != app.id && !X11::minimized(w))
+            X11::hide(w);
 }
 
 void showAll()
 {
     for (xcb_window_t w : X11::clientWindows())
-        if (X11::minimized(w))
+        if (X11::hidden(w))   // the hidden ones; the minimized stay in the Dock
             X11::activate(w);
 }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "compositor.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -49,6 +50,9 @@ bool Compositor::findFormats(xcb_visualid_t rootVisual)
         m_formatAlpha.insert(f->id, f->direct.alpha_mask != 0);
         if (f->depth == 8 && f->direct.alpha_mask == 0xff && f->direct.red_mask == 0)
             m_a8 = f->id;
+        if (f->depth == 32 && f->direct.alpha_shift == 24 && f->direct.red_shift == 16 && f->direct.green_shift == 8 &&
+            f->direct.blue_shift == 0 && f->direct.alpha_mask == 0xff)
+            m_argb32 = f->id;
     }
     for (auto s = xcb_render_query_pict_formats_screens_iterator(r); s.rem; xcb_render_pictscreen_next(&s))
         for (auto d = xcb_render_pictscreen_depths_iterator(s.data); d.rem; xcb_render_pictdepth_next(&d))
@@ -132,6 +136,8 @@ bool Compositor::start(xcb_connection_t *conn, xcb_window_t root, ShadowFor shad
     m_timer.setSingleShot(true);
     m_timer.setInterval(4);   // what arrives together is drawn once
     connect(&m_timer, &QTimer::timeout, this, [this] { paint(); });
+    m_animTimer.setInterval(16);
+    connect(&m_animTimer, &QTimer::timeout, this, [this] { stepAnimations(); });
     damageAll();
     return true;
 }
@@ -527,6 +533,9 @@ void Compositor::paint()
     for (Win *w : std::as_const(m_order)) {
         if (!w->mapped || w->inputOnly || w->destroyed)
             continue;
+        // a window coming out of the Dock: its picture is drawn instead, warped
+        if (std::any_of(m_animations.cbegin(), m_animations.cend(), [w](const Animation &a) { return a.frame == w->id; }))
+            continue;
         const QRect &g = w->geometry;
         if (!g.intersects(m_screen.adjusted(-ShadowReach, -ShadowReach, ShadowReach, ShadowReach)))
             continue;
@@ -559,8 +568,267 @@ void Compositor::paint()
                              0, 0, 0, int16_t(g.x()), int16_t(g.y()), uint16_t(g.width()), uint16_t(g.height()));
         xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_damage, 0, 0);
     }
+    // the windows going into the Dock or coming out of it, over the others
+    for (Animation &a : m_animations)
+        if (auto it = m_snapshots.constFind(a.key); it != m_snapshots.constEnd())
+            a.drawn = drawAnimation(a, *it);
     xcb_xfixes_set_picture_clip_region(m_conn, m_overlayPicture, m_damage, 0, 0);
     xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_SRC, m_buffer, XCB_NONE, m_overlayPicture, 0, 0, 0, 0, 0, 0, sw, sh);
     xcb_xfixes_set_region(m_conn, m_damage, 0, nullptr);
     xcb_flush(m_conn);
+}
+
+// ---- Minimizing: 10.6's Dock warps the window into its tile (docs/reverse-status.md, the Dock)
+
+namespace {
+
+// A row of the genie's mesh: where it is on the screen, how far its left and right edges have come
+// in, and which of the window's rows is there
+struct GenieRow {
+    double y, left, right, local;
+};
+
+// The rows' curve (the Dock's 0x1000ef17a): the edges come in as a half cosine, from none at the
+// window's top to the whole way over `count` pixels, the distance to the tile
+struct GenieCurve {
+    double y0, count, left, right;
+    GenieRow row(double y) const
+    {
+        const double k = 0.5 - 0.5 * std::cos((y - y0) * M_PI / count);
+        return {y, left * k, right * k, 0};
+    }
+};
+
+// The rows between a and b (the Dock's 0x1000ef20a): halved while the middle one strays 0.6 px
+// from the straight line, or the gap is a tile high; 8 px at least, 32 levels at most
+void genieSubdivide(const GenieCurve &c, double a, double b, double tile, int depth, QVector<GenieRow> &out)
+{
+    if (depth + 1 >= 0x41 || std::abs(b - a) < 8)
+        return;
+    const double mid = (a + b) * 0.5;
+    const GenieRow ra = c.row(a), rm = c.row(mid), rb = c.row(b);
+    if (std::abs(b - a) >= tile || std::abs((ra.left + rb.left) * 0.5 - rm.left) >= 0.6 ||
+        std::abs((ra.right + rb.right) * 0.5 - rm.right) >= 0.6) {
+        genieSubdivide(c, a, mid, tile, depth + 2, out);
+        out.append(rm);
+        genieSubdivide(c, mid, b, tile, depth + 2, out);
+    }
+}
+
+// The genie at p (0: the window, 1: in its tile), the tile under the window's top (the Dock's step
+// at 0x1000ef474, direction 2). Two phases on one clock: the bottom edges come in to the tile's
+// width, the window slides down the curve; each takes 50 a step of the logarithm of half its
+// distance, and the slide starts once the edges have come in as far as the window's height
+// leaves them. The window isn't stretched: row y of the screen shows its row y - top, its
+// bottom edges straight in the tile, cut at the tile's bottom.
+QVector<GenieRow> genieRows(const QRectF &win, const QRectF &tile, double p)
+{
+    const double x = win.x(), y = win.y(), w = win.width(), h = win.height();
+    double left = tile.x() - x, right = tile.right() - (x + w);
+    const double gap = tile.y() - (y + h);
+    double dist = tile.y() - y, up = 0;
+    if (gap < 0) {   // over the tile: first up so that its bottom meets the tile's top
+        up = gap;
+        dist = h;
+    }
+    const double d = std::max(std::abs(2 * up), (std::abs(left) + std::abs(right)) * 0.125);
+    double inTime = int(std::log(d * 0.5 + 1)) * 50.0;
+    const double downTime = int(std::log(std::abs(dist) * 0.5 + 1)) * 50.0;
+    const double rest = std::abs(dist - h);
+    const double meet = dist != 0 ? std::acos(std::clamp(1 - 2 * rest / std::abs(dist), -1.0, 1.0)) / M_PI * downTime : 0;
+    double lead = 0;
+    if (meet < inTime)
+        lead = inTime - meet;
+    else
+        inTime = meet;
+    const double t = (lead + downTime) * p;
+    const double s1 = inTime > 0 ? 0.5 - 0.5 * std::cos(std::clamp(t, 0.0, inTime) / inTime * M_PI) : p;
+    const double s2 = downTime > 0 ? 0.5 - 0.5 * std::cos(std::clamp(t - lead, 0.0, downTime) / downTime * M_PI) : p;
+    left *= s1;
+    right *= s1;
+    const double moved = dist * s2, y0 = y + s1 * up, top = y0 + moved, bottom = top + h;
+    const double end = s2 > 0 && bottom > tile.y() ? tile.y() : bottom;
+    const GenieCurve curve{y0, std::max(1.0, double(int(dist + 0.5))), left, right};
+    QVector<GenieRow> rows{curve.row(top)};
+    genieSubdivide(curve, top, end, tile.height(), 0, rows);
+    rows.append(curve.row(end));
+    if (std::abs(moved) > rest)
+        rows.append({std::min(bottom, tile.bottom()), left, right, 0});
+    for (GenieRow &r : rows)
+        r.local = r.y - top;
+    return rows;
+}
+
+xcb_render_fixed_t fixed(double v) { return xcb_render_fixed_t(std::lround(v * 65536)); }
+
+xcb_render_transform_t transform(double sx, double sy, double tx, double ty)
+{
+    return {fixed(sx), 0, fixed(tx), 0, fixed(sy), fixed(ty), 0, 0, fixed(1)};
+}
+
+} // namespace
+
+QImage Compositor::snapshot(xcb_window_t key, xcb_window_t frame)
+{
+    dropSnapshot(key);
+    Win *w = m_windows.value(frame);
+    if (!running() || !w || !w->mapped || w->inputOnly || !m_argb32 || w->geometry.isEmpty())
+        return {};
+    const QSize size = w->geometry.size();
+    const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+    xcb_create_pixmap(m_conn, 32, pixmap, m_root, uint16_t(size.width()), uint16_t(size.height()));
+    Snapshot s;
+    s.size = size;
+    s.picture = xcb_generate_id(m_conn);
+    xcb_render_create_picture(m_conn, s.picture, pixmap, m_argb32, 0, nullptr);
+    const xcb_rectangle_t all = {0, 0, uint16_t(size.width()), uint16_t(size.height())};
+    xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, s.picture, {0, 0, 0, 0}, 1, &all);
+    // inside its outline (the frame's round corners)
+    const xcb_xfixes_region_t outline = xcb_generate_id(m_conn);
+    xcb_xfixes_create_region_from_window(m_conn, outline, frame, XCB_SHAPE_SK_BOUNDING);
+    xcb_xfixes_set_picture_clip_region(m_conn, s.picture, outline, 0, 0);
+    xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_SRC, w->picture, XCB_NONE, s.picture, 0, 0, 0, 0, 0, 0, all.width, all.height);
+    xcb_xfixes_set_picture_clip_region(m_conn, s.picture, XCB_NONE, 0, 0);
+    xcb_xfixes_destroy_region(m_conn, outline);
+    xcb_render_set_picture_filter(m_conn, s.picture, 8, "bilinear", 0, nullptr);
+    QImage image;
+    if (auto *r = xcb_get_image_reply(m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, 0, 0, all.width, all.height, ~0u),
+                                      nullptr)) {
+        if (xcb_get_image_data_length(r) >= size.width() * size.height() * 4)
+            image = QImage(xcb_get_image_data(r), size.width(), size.height(), size.width() * 4, QImage::Format_ARGB32_Premultiplied).copy();
+        free(r);
+    }
+    xcb_free_pixmap(m_conn, pixmap);   // the picture keeps it
+    m_snapshots.insert(key, s);
+    return image;
+}
+
+void Compositor::dropSnapshot(xcb_window_t key)
+{
+    for (int i = m_animations.size() - 1; i >= 0; --i)
+        if (m_animations[i].key == key) {
+            damageRect(m_animations[i].drawn);
+            m_animations.removeAt(i);
+        }
+    auto it = m_snapshots.find(key);
+    if (it == m_snapshots.end())
+        return;
+    xcb_render_free_picture(m_conn, it->picture);
+    m_snapshots.erase(it);
+}
+
+void Compositor::animate(xcb_window_t key, xcb_window_t frame, const QRect &window, const QRect &target, Effect effect, bool minimizing,
+                         double seconds, bool waitForTarget)
+{
+    if (!running() || !m_snapshots.contains(key))
+        return;
+    for (int i = m_animations.size() - 1; i >= 0; --i)
+        if (m_animations[i].key == key) {
+            damageRect(m_animations[i].drawn);
+            m_animations.removeAt(i);
+        }
+    Animation a;
+    a.key = key;
+    a.frame = frame;
+    a.window = window;
+    a.target = target;
+    a.effect = effect;
+    a.minimizing = minimizing;
+    a.seconds = seconds;
+    a.started = !(minimizing && waitForTarget);
+    a.clock.start();
+    m_animations.append(a);
+    if (!m_animTimer.isActive())
+        m_animTimer.start();
+    stepAnimations();
+}
+
+void Compositor::retarget(xcb_window_t key, const QRect &target)
+{
+    for (Animation &a : m_animations)
+        if (a.key == key && !target.isEmpty()) {
+            a.target = target;
+            if (!a.started) {
+                a.started = true;
+                a.clock.restart();
+            }
+        }
+}
+
+void Compositor::stepAnimations()
+{
+    for (int i = m_animations.size() - 1; i >= 0; --i) {
+        Animation &a = m_animations[i];
+        if (!a.started && a.clock.elapsed() >= 150) {   // the Dock didn't answer: where it said before
+            a.started = true;
+            a.clock.restart();
+        }
+        damageRect(a.window.united(a.target).united(a.drawn).adjusted(-2, -2, 2, 2));
+        if (a.started && a.clock.elapsed() >= a.seconds * 1000) {
+            const xcb_window_t key = a.key;
+            const bool restored = !a.minimizing;
+            m_animations.removeAt(i);
+            if (restored)   // out of the Dock: the window itself from now on
+                dropSnapshot(key);
+        }
+    }
+    if (m_animations.isEmpty())
+        m_animTimer.stop();
+    schedule();
+}
+
+QRect Compositor::drawAnimation(const Animation &a, const Snapshot &s)
+{
+    double t = a.started ? std::clamp(a.clock.elapsed() / (a.seconds * 1000), 0.0, 1.0) : 0;
+    const double p = a.minimizing ? t : 1 - t;
+    const double w = s.size.width(), h = s.size.height();
+    const QRectF win(a.window.topLeft(), QSizeF(w, h));
+    const QRectF tile(a.target);
+    QRect drawn;
+    auto put = [&](double x0, double x1, int y, int rows, double sy, double ty) {
+        const double dw = x1 - x0;
+        if (dw < 0.5 || rows <= 0)
+            return;
+        const int X0 = int(std::floor(x0)), W = int(std::ceil(x1)) - X0;
+        const xcb_render_transform_t m = transform(w / dw, sy, (X0 - x0) * w / dw, ty);
+        xcb_render_set_picture_transform(m_conn, s.picture, m);
+        xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_OVER, s.picture, XCB_NONE, m_buffer, 0, 0, 0, 0, int16_t(X0), int16_t(y),
+                             uint16_t(W), uint16_t(rows));
+        drawn |= QRect(X0, y, W, rows);
+    };
+    if (a.effect == Scale) {
+        // setSystemFrame:from: the frame goes to the tile's
+        const QRectF r(win.x() + (tile.x() - win.x()) * p, win.y() + (tile.y() - win.y()) * p, w + (tile.width() - w) * p,
+                       h + (tile.height() - h) * p);
+        if (r.height() >= 0.5) {
+            const int Y0 = int(std::floor(r.y())), H = int(std::ceil(r.bottom())) - Y0;
+            put(r.x(), r.right(), Y0, H, h / r.height(), (Y0 - r.y()) * h / r.height());
+        }
+    } else {
+        // the tile above the window's top: the same, upside down
+        const bool flip = tile.center().y() < win.y();
+        auto mirror = [](const QRectF &r) { return QRectF(r.x(), -r.bottom(), r.width(), r.height()); };
+        QVector<GenieRow> rows = flip ? genieRows(mirror(win), mirror(tile), p) : genieRows(win, tile, p);
+        if (flip) {
+            std::reverse(rows.begin(), rows.end());
+            for (GenieRow &r : rows) {
+                r.y = -r.y;
+                r.local = h - r.local;
+            }
+        }
+        // the mesh's bands, two screen rows at a time, each scaled across only
+        for (int i = 0; i + 1 < rows.size(); ++i) {
+            const GenieRow &r0 = rows[i], &r1 = rows[i + 1];
+            const int y0 = int(std::lround(r0.y)), y1 = int(std::lround(r1.y));
+            for (int y = y0; y < y1; y += 2) {
+                const int n = std::min(2, y1 - y);
+                const double f = ((y + n * 0.5) - r0.y) / std::max(1e-6, r1.y - r0.y);
+                const double l = r0.left + (r1.left - r0.left) * f, r = r0.right + (r1.right - r0.right) * f;
+                put(win.x() + l, win.x() + w + r, y, n, 1, r0.local + (y - r0.y));
+            }
+        }
+    }
+    const xcb_render_transform_t identity = transform(1, 1, 0, 0);
+    xcb_render_set_picture_transform(m_conn, s.picture, identity);
+    return drawn;
 }

@@ -118,6 +118,7 @@ void Dock::loadSettings()
     m_tileSize = qBound(16, s.value("tilesize", 64).toInt(), 128);
     m_largeSize = qBound(m_tileSize, s.value("largesize", 96).toInt(), 128);
     m_magnify = s.value("magnification", false).toBool();
+    m_minimizeToApp = s.value("minimize-to-application", false).toBool();
     bool autohide = s.value("autohide", false).toBool();
     if (autohide != m_autohide) {
         m_autohide = autohide;
@@ -167,6 +168,7 @@ void Dock::refreshWindows()
     // Who runs: the windows, by application
     QHash<QString, QVector<xcb_window_t>> windows;
     QHash<QString, App> running;
+    QHash<xcb_window_t, App> minimized;   // those with a tile of their own
     QStringList order;
     for (xcb_window_t w : X11::clientWindows()) {
         App a = Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w));
@@ -174,7 +176,21 @@ void Dock::refreshWindows()
             order << a.id;
         running.insert(a.id, a);
         windows[a.id].append(w);
+        if (!m_minimizeToApp && X11::minimized(w) && !X11::hidden(w))
+            minimized.insert(w, a);
     }
+    // the minimized windows keep their places, a new one comes last (by the Trash); a window back
+    // out of the Dock takes its picture with it
+    for (int i = m_minimized.size() - 1; i >= 0; --i)
+        if (!minimized.contains(m_minimized[i])) {
+            const QString prefix = "win:" + QString::number(m_minimized[i]) + ':';
+            for (auto it = m_iconCache.begin(); it != m_iconCache.end();)
+                it = it.key().startsWith(prefix) ? m_iconCache.erase(it) : std::next(it);
+            m_minimized.removeAt(i);
+        }
+    for (xcb_window_t w : X11::clientWindows())
+        if (minimized.contains(w) && !m_minimized.contains(w))
+            m_minimized.append(w);
     QHash<QString, qint64> bouncing;
     for (const Tile &t : m_tiles)
         if (t.bounceStart >= 0 && !windows.contains(t.app.id))
@@ -227,6 +243,14 @@ void Dock::refreshWindows()
             m_stackCounts[dir] = int(QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size());
         }
     }
+    for (xcb_window_t w : std::as_const(m_minimized)) {
+        Tile m;
+        m.kind = Tile::Window;
+        m.window = w;
+        m.app = minimized.value(w);
+        m.label = X11::title(w);
+        tiles.append(m);
+    }
     Tile trash;
     trash.kind = Tile::Trash;
     trash.label = "Trash";
@@ -238,7 +262,35 @@ void Dock::refreshWindows()
     if (changedCount)
         placeWindow();
     layoutTiles();
+    publishIconGeometry();
     update();
+}
+
+// A tile's icon on the screen, as laid out now
+QRect Dock::tileRect(const Tile &t) const
+{
+    const qreal floorH = qRound(m_tileSize * 0.82);
+    const qreal baseline = height() - floorH * 0.32;
+    const QPoint topLeft = mapToGlobal(QPoint(qRound(t.x - t.size / 2), qRound(baseline - t.size)));
+    return QRect(topLeft, QSize(qRound(t.size), qRound(t.size)));
+}
+
+// Where each window goes when it's minimized and comes from when it's back (_NET_WM_ICON_GEOMETRY,
+// read by WindowServer for the genie): its own tile, or its application's. Written every time the
+// tiles change, even unchanged: the genie waits for it
+void Dock::publishIconGeometry()
+{
+    QHash<xcb_window_t, QRect> where;
+    for (const Tile &t : std::as_const(m_tiles))
+        if (t.kind == Tile::Application)
+            for (xcb_window_t w : t.windows)
+                where.insert(w, tileRect(t));
+    for (const Tile &t : std::as_const(m_tiles))   // a minimized one's own tile over its application's
+        if (t.kind == Tile::Window)
+            where.insert(t.window, tileRect(t));
+    for (auto it = where.cbegin(); it != where.cend(); ++it)
+        X11::setIconGeometry(it.key(), it.value());
+    xcb_flush(X11::conn());
 }
 
 bool Dock::trashFull() const
@@ -254,6 +306,7 @@ QImage Dock::iconFor(const Tile &t, int size)
     case Tile::Application: key = "app:" + t.app.id; break;
     case Tile::Folder: key = "folder:" + t.folder + ':' + QString::number(m_stackStamp); break;
     case Tile::Trash: key = trashFull() ? "trash:full" : "trash:empty"; break;
+    case Tile::Window: key = "win:" + QString::number(t.window); break;
     case Tile::Separator: return {};
     }
     key += ':' + QString::number(size);
@@ -263,6 +316,22 @@ QImage Dock::iconFor(const Tile &t, int size)
     QImage img;
     if (t.kind == Tile::Application) {
         img = Apps::icon(t.app, size);
+    } else if (t.kind == Tile::Window) {
+        // 10.6's DOCKWindowTile: the window's picture in the tile, its application's icon over its
+        // bottom right corner, 48 of the tile's 128, 2 from the edges
+        img = QImage(size, size, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
+        QPainter p(&img);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+        const QImage shot = X11::preview(t.window);
+        if (!shot.isNull()) {
+            const QSizeF fit = QSizeF(shot.size()).scaled(size, size, Qt::KeepAspectRatio);
+            p.drawImage(QRectF((size - fit.width()) / 2, (size - fit.height()) / 2, fit.width(), fit.height()), shot);
+        }
+        const int badge = int(std::ceil(size * 48 / 128.0)), margin = qMax(1, size * 2 / 128);
+        const QImage icon = Apps::icon(t.app, badge);
+        if (!icon.isNull())
+            p.drawImage(QRect(size - badge - margin, size - badge - margin, badge, badge), icon);
     } else if (t.kind == Tile::Trash) {
         img = Assets::image(dockRes + (key.startsWith("trash:full") ? "trashfull.png" : "trashempty.png"), QSize(size, size));
     } else {
@@ -633,6 +702,9 @@ void Dock::activate(Tile &t)
         return;
     case Tile::Separator:
         return;
+    case Tile::Window:   // out of the Dock
+        X11::activate(t.window);
+        return;
     case Tile::Application:
         break;
     }
@@ -779,6 +851,13 @@ void Dock::showMenu(int index, const QPoint &global)
     if (index < 0 || index >= m_tiles.size())
         return;
     Tile t = m_tiles[index];
+    if (t.kind == Tile::Window) {
+        // a minimized window's tile: its application's menu (10.6's DOCKWindowTile createMenu:)
+        auto app = std::find_if(m_tiles.cbegin(), m_tiles.cend(), [&](const Tile &a) { return a.kind == Tile::Application && a.app.id == t.app.id; });
+        if (app == m_tiles.cend())
+            return;
+        t = *app;
+    }
     auto *menu = new DockMenu(m_wallpaper, this);
     App finder = Apps::finder();
     if (t.kind == Tile::Trash) {
@@ -788,8 +867,16 @@ void Dock::showMenu(int index, const QPoint &global)
     } else if (t.kind == Tile::Folder) {
         stackMenu(menu, t);
     } else {
-        for (xcb_window_t w : t.windows)
-            menu->addAction(X11::title(w), [w] { X11::activate(w); });
+        // its windows: the active one checked, a diamond before the minimized ones (as 10.6)
+        const xcb_window_t active = X11::activeWindow();
+        for (xcb_window_t w : t.windows) {
+            const bool minimized = X11::minimized(w) && !X11::hidden(w);
+            QAction *a = menu->addAction((minimized ? QStringLiteral("\u25C6 ") : QString()) + X11::title(w), [w] { X11::activate(w); });
+            if (w == active) {
+                a->setCheckable(true);
+                a->setChecked(true);
+            }
+        }
         if (!t.windows.isEmpty())
             menu->addSeparator();
         if (t.app.id != "finder") {

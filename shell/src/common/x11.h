@@ -7,6 +7,7 @@
 #include <QColor>
 #include <QImage>
 #include <QObject>
+#include <QRect>
 #include <QString>
 #include <QTimer>
 #include <QVector>
@@ -41,6 +42,10 @@ bool minimized(xcb_window_t w);
 void activate(xcb_window_t w);
 void close(xcb_window_t w);
 void minimize(xcb_window_t w);
+void hide(xcb_window_t w);            // Hide (⌘H): gone without going into the Dock
+bool hidden(xcb_window_t w);          // hidden, not minimized (_SNOWLEOPARD_HIDDEN)
+QImage preview(xcb_window_t w);       // a minimized window's picture (_SNOWLEOPARD_WINDOW_PREVIEW)
+void setIconGeometry(xcb_window_t w, const QRect &r);   // _NET_WM_ICON_GEOMETRY: where the Dock shows it
 
 // The shell's own windows: the menu bar and the Dock are docks that keep their edge (struts), the
 // Finder's desktop is the desktop.

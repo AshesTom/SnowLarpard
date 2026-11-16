@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // The Dock: Snow Leopard's glass floor at the bottom of the screen, the applications kept in it and
-// the running ones (with their lights), a separator, the folders and the Trash. Magnification,
+// the running ones (with their lights), a separator, the folders, the minimized windows and the Trash. Magnification,
 // hiding, the bounce while an application starts, the names above the icons, the menus.
 // Its settings are ~/.config/snowleopard/dock.conf (the Mac's com.apple.dock keys: tilesize,
 // largesize, magnification, autohide, orientation, persistent-apps).
@@ -39,12 +39,13 @@ protected:
 
 private:
     struct Tile {
-        enum Kind { Application, Separator, Folder, Trash } kind = Application;
+        enum Kind { Application, Separator, Folder, Trash, Window } kind = Application;
         App app;
         QString entry;      // its persistent-apps entry ("mac:/Applications/Safari.app", "app:firefox"), when kept
         QString folder;     // a stack's folder (stack.h: a path, or "applications:")
         QString label;
         QVector<xcb_window_t> windows;
+        xcb_window_t window = 0;   // a minimized window's tile: the window (app: its application)
         qint64 bounceStart = -1;   // ms on m_clock while it launches
         // laid out:
         qreal x = 0, size = 0;     // centre and icon size
@@ -66,11 +67,15 @@ private:
     void showStack(int index);
     void stackMenu(DockMenu *menu, const Tile &t);
     void foldersChanged(const QString &path);
+    QRect tileRect(const Tile &t) const;   // its icon, on the screen
+    void publishIconGeometry();
 
     QVector<Tile> m_tiles;
     QStringList m_kept;            // persistent-apps entries
     int m_tileSize = 48, m_largeSize = 72;
     bool m_magnify = false, m_autohide = false;
+    bool m_minimizeToApp = false;  // minimize-to-application: no tiles for the minimized windows
+    QVector<xcb_window_t> m_minimized;   // the minimized windows' tiles, in the order they came
     qreal m_mouseX = -1;           // for magnification, -1: away
     int m_hover = -1, m_pressed = -1, m_dragging = -1;
     QPointF m_pressPos;

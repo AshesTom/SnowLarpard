@@ -6,7 +6,9 @@
 // menus really translucent.
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
+#include <QImage>
 #include <QObject>
 #include <QRect>
 #include <QTimer>
@@ -29,8 +31,38 @@ public:
     void handleEvent(xcb_generic_event_t *ev);
     // everything again (the key window changed)
     void damageAll();
+    bool running() const { return m_overlay != 0; }
+
+    // Minimizing, as 10.6's Dock has the window server do it (WAWindow genie:direction:genie: and
+    // setSystemFrame:from:, docs/reverse-status.md): the window's picture kept when it goes, drawn
+    // warped into its Dock tile and back out of it.
+    enum Effect { Genie, Scale };
+    // the frame as it is now, kept under `key` (the client window) until dropped; its pixels
+    // (premultiplied ARGB), for the Dock's tile
+    QImage snapshot(xcb_window_t key, xcb_window_t frame);
+    void dropSnapshot(xcb_window_t key);
+    // `window` is the frame's place, `target` the tile's. Minimizing with waitForTarget, the clock
+    // starts when the Dock gives the new tile's place (retarget), or after 150 ms
+    void animate(xcb_window_t key, xcb_window_t frame, const QRect &window, const QRect &target, Effect effect, bool minimizing,
+                 double seconds, bool waitForTarget);
+    void retarget(xcb_window_t key, const QRect &target);
 
 private:
+    struct Snapshot {
+        xcb_render_picture_t picture = 0;
+        QSize size;
+    };
+    struct Animation {
+        xcb_window_t key = 0, frame = 0;
+        QRect window, target, drawn;   // drawn: where the last frame went, to be drawn over
+        Effect effect = Genie;
+        bool minimizing = true, started = false;
+        double seconds = 0.5;
+        QElapsedTimer clock;           // since the animation started, or since it waits for its target
+    };
+    void stepAnimations();
+    QRect drawAnimation(const Animation &a, const Snapshot &s);
+
     struct Win {
         xcb_window_t id = 0;
         QRect geometry;                 // in root coordinates, inside its border
@@ -70,4 +102,8 @@ private:
     QVector<Win *> m_order;   // bottom to top
     bool m_treeDirty = true, m_all = true;
     QTimer m_timer;
+    xcb_render_pictformat_t m_argb32 = 0;
+    QHash<xcb_window_t, Snapshot> m_snapshots;
+    QVector<Animation> m_animations;
+    QTimer m_animTimer;
 };

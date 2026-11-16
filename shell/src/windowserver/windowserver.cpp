@@ -11,6 +11,8 @@
 #include <QGuiApplication>
 #include <QPainter>
 #include <QScreen>
+#include <QSettings>
+#include <QStandardPaths>
 #include <cmath>
 #include <cstdlib>
 #include <xcb/shape.h>
@@ -253,6 +255,7 @@ void WindowServer::unmanage(Client *c, bool destroyed)
         xcb_change_save_set(m_conn, XCB_SET_MODE_DELETE, c->window);
         setWmState(c, ICCCM_WithdrawnState);
     }
+    m_compositor.dropSnapshot(c->window);
     xcb_destroy_window(m_conn, c->frame);   // and the grip with it
     m_byWindow.remove(c->window);
     m_byWindow.remove(c->frame);
@@ -586,11 +589,81 @@ void WindowServer::setNetState(Client *c)
     xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, c->window, atom("_NET_WM_STATE"), XCB_ATOM_ATOM, 32, states.size(), states.constData());
 }
 
-void WindowServer::minimize(Client *c)
+QRect WindowServer::frameRect(const Client *c) const
+{
+    const int th = c->titleHeight();
+    return QRect(c->geometry.x(), c->geometry.y() - th, c->geometry.width(), c->geometry.height() + th);
+}
+
+// Where the Dock shows the window (_NET_WM_ICON_GEOMETRY, which the Dock keeps on every window: its
+// minimized tile, or its application's), inset by 4 as 10.6's Dock does; the Dock's middle otherwise
+QRect WindowServer::iconGeometry(const Client *c) const
+{
+    const QVector<uint32_t> g = X11::cardinals(c->window, atom("_NET_WM_ICON_GEOMETRY"), XCB_ATOM_CARDINAL);
+    if (g.size() >= 4 && g[2] > 8 && g[3] > 8)
+        return QRect(int(g[0]), int(g[1]), int(g[2]), int(g[3])).adjusted(4, 4, -4, -4);
+    return QRect(m_screen.center().x() - 24, m_screen.bottom() - 56, 48, 48);
+}
+
+// The Dock's settings (dock.conf, com.apple.dock's keys): mineffect genie or scale. 10.6's Dock
+// takes genie-speed (0.5 s) for the genie, 0.25 s for the scale, ten times longer with Shift.
+Compositor::Effect WindowServer::minimizeEffect(double *seconds) const
+{
+    const QSettings dock(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/dock.conf",
+                         QSettings::IniFormat);
+    const bool scale = dock.value("mineffect", "genie").toString() == "scale";
+    *seconds = scale ? 0.25 : qBound(0.05, dock.value("genie-speed", 0.5).toDouble(), 5.0);
+    if (auto *r = xcb_query_pointer_reply(m_conn, xcb_query_pointer(m_conn, m_root), nullptr)) {
+        if (r->mask & XCB_MOD_MASK_SHIFT)
+            *seconds *= 10;
+        free(r);
+    }
+    return scale ? Compositor::Scale : Compositor::Genie;
+}
+
+// The window's picture for its tile in the Dock (_SNOWLEOPARD_WINDOW_PREVIEW: width, height, ARGB
+// pixels, as _NET_WM_ICON), 256 pixels at most each way
+void WindowServer::publishPreview(Client *c, QImage image)
+{
+    if (image.isNull()) {
+        // nothing composites: what the server shows of the frame
+        const QRect f = frameRect(c);
+        if (auto *r = xcb_get_image_reply(m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, c->frame, 0, 0, uint16_t(f.width()),
+                                                                uint16_t(f.height()), ~0u),
+                                          nullptr)) {
+            if (r->depth >= 24 && xcb_get_image_data_length(r) >= f.width() * f.height() * 4)
+                image = QImage(xcb_get_image_data(r), f.width(), f.height(), f.width() * 4,
+                               r->depth == 32 ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32).copy();
+            free(r);
+        }
+    }
+    if (image.isNull())
+        return;
+    if (image.width() > 256 || image.height() > 256)
+        image = image.scaled(256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    image = image.convertToFormat(QImage::Format_ARGB32);
+    QVector<uint32_t> data{uint32_t(image.width()), uint32_t(image.height())};
+    data.reserve(2 + image.width() * image.height());
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *line = reinterpret_cast<const uint32_t *>(image.constScanLine(y));
+        data.append(QVector<uint32_t>(line, line + image.width()));
+    }
+    xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, c->window, atom("_SNOWLEOPARD_WINDOW_PREVIEW"), XCB_ATOM_CARDINAL, 32,
+                        uint32_t(data.size()), data.constData());
+}
+
+void WindowServer::minimize(Client *c, bool hide)
 {
     if (c->minimized)
         return;
     c->minimized = true;
+    c->hidden = hide;
+    if (hide) {   // hidden (⌘H): gone at once, no tile in the Dock
+        const uint32_t one = 1;
+        xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, c->window, atom("_SNOWLEOPARD_HIDDEN"), XCB_ATOM_CARDINAL, 32, 1, &one);
+    } else {      // its picture first, while it's shown: for the Dock's tile and the genie
+        publishPreview(c, m_compositor.snapshot(c->window, c->frame));
+    }
     xcb_unmap_window(m_conn, c->frame);   // the client stays mapped inside: no UnmapNotify from it
     setWmState(c, ICCCM_IconicState);
     setNetState(c);
@@ -605,6 +678,12 @@ void WindowServer::minimize(Client *c)
             setActiveProperty(0);
     }
     updateClientLists();
+    if (hide)
+        return;
+    // into the tile the Dock makes for it: the animation waits for the Dock to say where
+    double seconds = 0.5;
+    const Compositor::Effect effect = minimizeEffect(&seconds);
+    m_compositor.animate(c->window, c->frame, frameRect(c), iconGeometry(c), effect, true, seconds, true);
 }
 
 void WindowServer::unminimize(Client *c)
@@ -612,9 +691,19 @@ void WindowServer::unminimize(Client *c)
     if (!c->minimized)
         return;
     c->minimized = false;
+    if (c->hidden) {
+        c->hidden = false;
+        xcb_delete_property(m_conn, c->window, atom("_SNOWLEOPARD_HIDDEN"));
+    } else {   // out of its tile
+        double seconds = 0.5;
+        const Compositor::Effect effect = minimizeEffect(&seconds);
+        m_compositor.animate(c->window, c->frame, frameRect(c), iconGeometry(c), effect, false, seconds, false);
+    }
     xcb_map_window(m_conn, c->frame);
     setWmState(c, ICCCM_NormalState);
     setNetState(c);
+    xcb_delete_property(m_conn, c->window, atom("_SNOWLEOPARD_WINDOW_PREVIEW"));
+    updateClientLists();   // the Dock takes its tile away
 }
 
 void WindowServer::toggleZoom(Client *c)
@@ -743,7 +832,7 @@ void WindowServer::handleKey(xcb_key_press_event_t *e)
     else if (sym == keyH) {
         for (Client *o : QVector<Client *>(m_clients))
             if (sameApplication(o, c))
-                minimize(o);
+                minimize(o, true);
     } else if (sym == keyQ) {
         for (Client *o : QVector<Client *>(m_clients))
             if (sameApplication(o, c))
@@ -812,6 +901,8 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
                 applyShape(c);
             } else if (e->atom == atom("WM_PROTOCOLS") || e->atom == XCB_ATOM_WM_HINTS) {
                 readProperties(c);
+            } else if (e->atom == atom("_NET_WM_ICON_GEOMETRY") && c->minimized) {
+                m_compositor.retarget(c->window, iconGeometry(c));   // the Dock made its tile
             }
         } else if (m_docks.contains(e->window) && (e->atom == atom("_NET_WM_STRUT_PARTIAL") || e->atom == atom("_NET_WM_STRUT"))) {
             updateWorkArea();
@@ -1045,6 +1136,8 @@ void WindowServer::clientMessage(xcb_client_message_event_t *e)
         close(c);
     } else if (e->type == atom("WM_CHANGE_STATE") && e->data.data32[0] == ICCCM_IconicState) {
         minimize(c);
+    } else if (e->type == atom("_SNOWLEOPARD_HIDE")) {
+        minimize(c, true);
     } else if (e->type == atom("_NET_WM_STATE")) {
         // data: action (0 remove, 1 add, 2 toggle), two properties
         const uint32_t action = e->data.data32[0];

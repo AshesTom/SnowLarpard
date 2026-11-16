@@ -79,8 +79,8 @@ stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKARE
 
 ## Next steps
 
-1. **WindowServer's compositor** is there with the windows' shadows; next the genie and scale effects (the Dock's
-   `MINIMIZE_USING`), minimized windows in the Dock, sheets, the unified toolbars. The window
+1. **WindowServer's compositor** is there with the windows' shadows, the genie and scale effects and the
+   minimized windows' tiles in the Dock; next sheets, the unified toolbars. The window
    manager itself is there (docs/reverse-status.md, section 5).
 2. **The global menu** is there (section 6); GTK 4 and GNOME applications (org.gtk.Menus) are next.
 3. **The Finder**: its windows are there with their four views and `.DS_Store` (FinderWindows);
