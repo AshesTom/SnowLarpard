@@ -58,6 +58,8 @@ shell/src/prefs    System Preferences.app, on AquaKit: Show All, every pane from
 shell/src/loginwindow  loginwindow's About This Mac, on AquaKit: its nib, filled as AboutThisMacController does
 shell/src/preview  Preview.app, on AquaKit: PDFs (poppler) and pictures, the toolbar from CommonToolbar.proplist,
                    the sidebar; the Dock's stacks open their documents in it (Apps::openFile)
+shell/src/photobooth  Photo Booth.app, on AquaKit: the camera through Video4Linux (camera), the effects' compositions
+                   on the processor (effects), ~/Pictures/Photo Booth and its Recents.plist (library)
 shell/src/windowserver  WindowServer: the window manager, 10.6's title bars; its compositor (compositor.cpp:
                    Composite, Damage and Render), which puts the windows together over their shadows
 shell/src/menubar/appmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu

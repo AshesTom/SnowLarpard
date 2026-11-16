@@ -965,6 +965,25 @@ void OutlineView::draw(cairo_t *cr)
         const OutlineRow &r = rows[size_t(vis[n])];
         const double y = double(n) * rowHeight;
         const bool sel = vis[n] == m_selected;
+        if (r.groupRow) {
+            // CoreUI's group banner (_NSTableViewDrawSelectionHighlightStyleGroupRow, AppKit 0x6fcf6e:
+            // kCUIWidgetBanner, kCUIBannerTypeGroup; CUIRenderer::DrawBanner 0x2460a ->
+            // DrawGradient 0x232f8, constant 43): the gradient pair 0x20 (207 down to 233), a 1 pixel top
+            // line pair 0x22 (202; with the focus 0x23, white at 0.5), sides 0x24 (black at 0.1), bottom
+            // 0x25 (171) (_kPairs 0x3f460, kColorTable 0x3fb60)
+            const Rect band{0, y, frame().w, rowHeight};
+            cairo_pattern_t *g = cairo_pattern_create_linear(0, y, 0, y + rowHeight);
+            cairo_pattern_add_color_stop_rgb(g, 0, 207 / 255.0, 207 / 255.0, 207 / 255.0);
+            cairo_pattern_add_color_stop_rgb(g, 1, 233 / 255.0, 233 / 255.0, 233 / 255.0);
+            cairo_set_source(cr, g);
+            cairo_rectangle(cr, band.x, band.y, band.w, band.h);
+            cairo_fill(cr);
+            cairo_pattern_destroy(g);
+            fill(cr, Rect{0, y, band.w, 1}, Color::gray(202));
+            fill(cr, Rect{0, y + 1, 1, rowHeight - 2}, Color::gray(0, 0.1));
+            fill(cr, Rect{band.w - 1, y + 1, 1, rowHeight - 2}, Color::gray(0, 0.1));
+            fill(cr, Rect{0, y + rowHeight - 1, band.w, 1}, Color::gray(171));
+        }
         if (sel)   // alternateSelectedControlColor when it has the keyboard, else secondarySelectedControlColor
             fill(cr, Rect{0, y, frame().w, rowHeight}, focused ? Color::rgb(56, 117, 215) : Color::gray(212));
         const double x = 7 + r.level * indent;
@@ -976,6 +995,12 @@ void OutlineView::draw(cairo_t *cr)
             textX = x + 21;
         }
         TextStyle t;
+        if (r.groupRow) {
+            // -[NSTableView _groupCellAttributesWithDefaults:highlighted:] (0xf5c68): the bold system
+            // font at the cell's size; +[NSTableView _groupRowTitleTextColor] (0x53f62b): grey 0.459
+            t.font = Font::boldSystem(13);
+            t.color = Color::gray(117);
+        }
         if (r.header) {
             t.font = Font::boldSystem(11);
             t.color = Color::rgb(112, 126, 140);

@@ -20,8 +20,10 @@ const char *const Bundle = "/Applications/Preview.app";
 // 15 down, cell margin 20 x 20; cells shadowed and titled (setCellsStyleMask: 5)
 const Color ThumbnailBackground{0.9, 0.92, 0.96, 1};
 constexpr double MarginX = 10, MarginY = 15, CellMargin = 20;
-// the title under each thumbnail (IKImageBrowserCell's, in ImageKit: by eye)
-constexpr double LabelHeight = 18;
+// the title space under each thumbnail: its height clamped to 20 at least (+[IKImageBrowserView
+// textHeightForAttributes:clamp:], ImageKit 0x2fed2); the title's own, Lucida Grande 12's line
+constexpr double LabelHeight = 20, TitleHeight = 15;
+const char *const ImageKitResources = "/System/Library/Frameworks/Quartz.framework/Versions/A/Frameworks/ImageKit.framework/Versions/A/Resources/";
 // PVDocument.nib's PVOutlineView (object 133), the table of contents and the search's results: no
 // header, rows 17 high and 2 apart (NSRowHeight, NSIntercellSpacing 3 x 2), Lucida Grande 13, on
 // NSCalibratedRGB 0.906 0.918 0.961; its "relevance" column 64 wide
@@ -103,55 +105,89 @@ const Image &ThumbnailView::thumbnail(int page)
     return it->second;
 }
 
+// IKImageBrowserView's shadow under a thumbnail (-[IKCGRenderer drawRectShadow:withAlpha:], ImageKit
+// 0x4afd9; IKShadowTool's pictures): 3 at the sides, 5 under, the corners 10 wide, the top 9 of each
+// side fading in; only for a picture at least 14 x 12 (-[IKImageBrowserCell drawShadow], 0x2ceee)
+void ThumbnailView::drawShadow(cairo_t *cr, const Rect &r)
+{
+    static const char *const Names[] = {"TopLeft", "Left", "BottomLeft", "Bottom", "BottomRight", "Right", "TopRight"};
+    static std::vector<Image> parts;
+    if (parts.empty())
+        for (const char *n : Names)
+            parts.push_back(Image::load(Assets::path(std::string(ImageKitResources) + "pbShadow" + n + ".tiff")));
+    if (r.w < 14 || r.h < 12 || parts[0].isNull())
+        return;
+    auto w = [&](int i) { return double(parts[size_t(i)].width()); };
+    auto h = [&](int i) { return double(parts[size_t(i)].height()); };
+    parts[0].draw(cr, Rect{r.x - w(0), r.y, w(0), h(0)});
+    parts[1].draw(cr, Rect{r.x - w(1), r.y + h(0), w(1), r.h - h(0)});
+    parts[2].draw(cr, Rect{r.x - w(1), r.bottom(), w(2), h(2)});
+    parts[6].draw(cr, Rect{r.right(), r.y, w(6), h(6)});
+    parts[5].draw(cr, Rect{r.right(), r.y + h(6), w(5), r.h - h(6)});
+    const double brX = r.right() + w(5) - w(4);
+    parts[4].draw(cr, Rect{brX, r.bottom(), w(4), h(4)});
+    const double bX = r.x - w(1) + w(2);
+    parts[3].draw(cr, Rect{bX, r.bottom(), brX - bX, h(3)});
+}
+
 void ThumbnailView::draw(cairo_t *cr)
 {
     fill(cr, bounds(), ThumbnailBackground);
     // only the cells in the clip (the scroll view's)
     double cx1, cy1, cx2, cy2;
     cairo_clip_extents(cr, &cx1, &cy1, &cx2, &cy2);
-    const bool key = windowIsKey() && isFirstResponder();
+    const bool focus = windowIsKey() && isFirstResponder();
     for (int i = 0; i < m_doc->pageCount(); ++i) {
         const Rect cell = cellRect(i, frame().w);
         if (cell.bottom() < cy1 || cell.y > cy2)
             continue;
         const Image &img = thumbnail(i);
         const double tw = img.width(), th = img.height();
+        // the image centred in its square (imageAlignment 0), the title space under it
         const Rect box{cell.x + std::floor((cell.w - thumbnailSize) / 2), cell.y + CellMargin / 2, thumbnailSize, thumbnailSize};
-        const Rect pic{box.x + std::floor((box.w - tw) / 2), box.bottom() - th, tw, th};
+        const Rect pic{box.x + std::floor((box.w - tw) / 2), box.y + std::floor((box.h - th) / 2), tw, th};
+        // -[IKImageBrowserCell selectionFrame] (0x2d593): the picture grown by 4, made square on its
+        // longer side; -[IKImageBrowserCell drawSelection] (0x2be0c): black at 0.2, rounded min(side/2, 8)
+        Rect sel = pic.inset(-4, -4);
+        if (sel.h >= sel.w) {
+            sel.x -= std::floor((sel.h - sel.w) / 2);
+            sel.w = sel.h;
+        } else {
+            sel.y -= std::floor((sel.w - sel.h) / 2);
+            sel.h = sel.w;
+        }
         if (i == selected) {
-            // IKImageBrowserView's selection: a grey rounded box behind the page
-            cairo_set_source_rgba(cr, 0, 0, 0, 0.16);
-            roundedRect(cr, pic.inset(-6, -6), 6);
+            cairo_set_source_rgba(cr, 0, 0, 0, 0.2);
+            roundedRect(cr, sel, std::min(sel.w / 2, 8.0));
             cairo_fill(cr);
         }
-        // the page's shadow, then the page
-        for (int k = 3; k >= 1; --k) {
-            cairo_set_source_rgba(cr, 0, 0, 0, 0.07);
-            cairo_rectangle(cr, pic.x - k + 1, pic.y + 2 - k + 1, pic.w + 2 * k - 2, pic.h + 2 * k - 2);
-            cairo_fill(cr);
-        }
+        drawShadow(cr, pic);
         img.draw(cr, Point{pic.x, pic.y});
-        // its number under it; selected, white on a rounded blue (grey when not focused)
+        // the title (-[IKImageBrowserCell titleFrame], 0x2c877): Lucida Grande 12 centred, 1 under the
+        // selection's square; selected, on a rounded rect 6 wider each side and 1 less high
+        // (__titleRoundedRectForRect, drawSelectionOnTitle 0x2f1b4): alternateSelectedControlColor with
+        // white text when the browser has the focus, grey 0.8 and black text without
+        // (_systemColorsDidChange 0x105313, unfocusedSelectionColor 0x10524c, _setDefaultTextAttributes
+        // 0x104617)
         const std::string label = m_doc->pageLabel(i);
-        Font font = Font::system(11);
         TextStyle t;
-        t.font = font;
+        t.font = Font::system(12);
         t.align = Align::Center;
-        const double lw = textWidth(label, font) + 12;
-        const Rect lr{cell.x + std::floor((cell.w - lw) / 2), pic.bottom() + 6, lw, 15};
+        t.color = Color::gray(0);
+        const double lw = std::ceil(textWidth(label, t.font));
+        const Rect lr{cell.x + std::floor((cell.w - lw) / 2), sel.bottom() + 1, lw, TitleHeight};
         if (i == selected) {
-            if (key)
+            const Rect badge{lr.x - 6, lr.y, lr.w + 12, lr.h - 1};
+            if (focus)
                 Color::rgb(56, 117, 215).set(cr);
             else
-                Color::gray(140).set(cr);
-            roundedRect(cr, lr, 7.5);
+                Color::gray(204).set(cr);
+            roundedRect(cr, badge, std::ceil(badge.h / 2));
             cairo_fill(cr);
-            t.color = Color::gray(255);
-            t.font.bold = true;
-        } else {
-            t.color = Color::gray(0);
+            if (focus)
+                t.color = Color::gray(255);
         }
-        drawText(cr, label, lr, t);
+        drawText(cr, label, Rect{lr.x - 6, lr.y, lr.w + 12, lr.h - 1}, t);
     }
 }
 
@@ -290,13 +326,16 @@ public:
             const size_t row = size_t(vis[n]);
             if (row >= relevance.size() || relevance[row] <= 0 || best <= 0)
                 continue;
-            // NSLevelIndicator's relevancy style: thin upright strokes, 2 apart (by eye)
+            // -[NSLevelIndicatorCell _drawRelevancyWithFrame:inView:] (AppKit 0x424d17): the cell's
+            // whole height, its width times value / max, filled with the theme's relevancy pattern
+            // (_NSGetThemePattern 0x95, AppKit's theme art, not read: thin upright strokes 2 apart here)
             const bool white = vis[n] == selected() && isFirstResponder() && windowIsKey();
-            const double x0 = frame().w - RelevanceWidth + 3, w = std::max(2.0, std::round((RelevanceWidth - 8) * relevance[row] / best));
-            const double y = double(n) * rowHeight + 5;
+            const double cellW = RelevanceWidth - 3, x0 = frame().w - RelevanceWidth;   // NSIntercellSpacing 3 x 2
+            const double w = std::floor(cellW * std::min(1.0, relevance[row] / best));
+            const double y = double(n) * rowHeight + 1;
             cairo_set_source_rgb(cr, white ? 1 : 0.45, white ? 1 : 0.45, white ? 1 : 0.45);
             for (double x = 0; x < w; x += 2)
-                cairo_rectangle(cr, x0 + x, y, 1, rowHeight - 10);
+                cairo_rectangle(cr, x0 + x, y, 1, rowHeight - 2);
             cairo_fill(cr);
         }
     }
@@ -327,7 +366,7 @@ Sidebar::Sidebar(const Document *doc) : m_doc(doc)
     if (!m_outline.empty()) {
         OutlineRow root;
         root.title = fileName(doc->path());
-        root.header = true;
+        root.groupRow = true;
         root.group = true;
         root.selectable = false;
         root.tag = -1;
@@ -403,7 +442,7 @@ void Sidebar::setResults(const std::vector<Document::Match> &matches, const std:
     m_resultMatch.clear();
     OutlineRow root;
     root.title = fileName(m_doc->path());
-    root.header = true;
+    root.groupRow = true;
     root.group = true;
     root.selectable = false;
     v.rows.push_back(root);

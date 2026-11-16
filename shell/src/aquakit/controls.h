@@ -255,6 +255,7 @@ struct OutlineRow {
     int tag = 0;               // the program's own
     int parent = -1;           // index of the group
     bool header = false;       // a source list header ("PICTURES"): small caps, grey
+    bool groupRow = false;     // an NSTableView group row (outlineView:isGroupItem:), not a source list's
 };
 class OutlineView : public View {
 public:

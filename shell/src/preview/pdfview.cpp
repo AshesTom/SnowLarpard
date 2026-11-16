@@ -26,12 +26,16 @@ constexpr double BreakX = 4, BreakGap = 12, BreakBottom = 8;
 // -[PDFView(PDFViewInternal) createShadowMaskParts] (0xf9d6): the shadow's lower left corner, 8 x 8
 // premultiplied black (_gShadowLowerLeftData at 0xacbc0), its first row against the page's bottom
 // edge, its last four columns under the page; the other six parts are its mirror, its last column
-// (under the page, stretched), its first row (beside it, stretched) and its first four columns turned
-// over (the upper corners). In pixels: not scaled with the page.
+// (under the page, stretched), its first row (beside it, stretched) and the upper corners (below).
+// In pixels: not scaled with the page.
 constexpr unsigned char ShadowCorner[8][8] = {
     {8, 25, 51, 87, 138, 184, 219, 247}, {8, 23, 46, 79, 125, 163, 196, 219}, {5, 20, 41, 69, 107, 138, 163, 184},
     {5, 15, 31, 54, 82, 107, 125, 138},  {3, 10, 20, 36, 54, 69, 79, 87},     {3, 5, 13, 20, 31, 41, 46, 51},
     {3, 3, 5, 10, 15, 20, 23, 25},       {0, 3, 3, 3, 5, 5, 8, 8}};
+// the upper left part (_gShadowUpperLeftData at 0xace60): the corner's first four columns turned over,
+// but for one value (10 where the corner has 20)
+constexpr unsigned char ShadowUpper[8][4] = {{0, 3, 3, 3},   {3, 3, 5, 10},   {3, 5, 13, 20}, {3, 10, 20, 36},
+                                             {5, 15, 31, 54}, {5, 10, 41, 69}, {8, 23, 46, 79}, {8, 25, 51, 87}};
 // Preview's zoom steps (PVViewZoomFactorNext / Previous: the table at 0x1001320e0)
 constexpr double Steps[] = {0.01, 0.02, 0.03, 0.04, 0.06, 0.08, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1, 1.5, 2,
                             3,    4,    6,    8,    10,   15,   20,  30,   40,  60,  80};
@@ -91,8 +95,8 @@ void drawShadow(cairo_t *cr, const Rect &r)
     static cairo_surface_t *lc = shadowPart(1, 8, [](int y, int) { return ShadowCorner[y][7]; });
     static cairo_surface_t *cl = shadowPart(4, 1, [](int, int x) { return ShadowCorner[0][x]; });
     static cairo_surface_t *cright = shadowPart(4, 1, [](int, int x) { return ShadowCorner[0][3 - x]; });
-    static cairo_surface_t *ul = shadowPart(4, 8, [](int y, int x) { return ShadowCorner[7 - y][x]; });
-    static cairo_surface_t *ur = shadowPart(4, 8, [](int y, int x) { return ShadowCorner[7 - y][3 - x]; });
+    static cairo_surface_t *ul = shadowPart(4, 8, [](int y, int x) { return ShadowUpper[y][x]; });
+    static cairo_surface_t *ur = shadowPart(4, 8, [](int y, int x) { return ShadowUpper[y][3 - x]; });
     const double x = r.x, y = r.y, w = r.w, h = r.h;
     paintPart(cr, ll, x - 4, y + h, 8, 8);
     paintPart(cr, lr, x + w - 4, y + h, 8, 8);

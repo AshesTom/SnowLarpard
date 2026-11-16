@@ -57,6 +57,16 @@ WANTED = {
         "./System/Library/PreferencePanes/ParentalControls.prefPane/Contents/Resources/English.lproj/*",
     ],
     "Essentials.pkg": [
+        # Photo Booth (shell/src/photobooth): its pictures, sounds, nibs and strings, and the system's
+        # compositions its effects are (composition_images takes their embedded pictures out)
+        "./Applications/Photo Booth.app/Contents/Resources/*.png",
+        "./Applications/Photo Booth.app/Contents/Resources/*.tiff",
+        "./Applications/Photo Booth.app/Contents/Resources/*.aiff",
+        "./Applications/Photo Booth.app/Contents/Resources/*.plist",
+        "./Applications/Photo Booth.app/Contents/Resources/English.lproj/*",
+        "./System/Library/Compositions/*.qtz",
+        # Preview's thumbnails: IKImageBrowserView's shadow (IKShadowTool's pbShadow* pictures)
+        "./System/Library/Frameworks/Quartz.framework/Versions/A/Frameworks/ImageKit.framework/Versions/A/Resources/pbShadow*.tiff",
         # About This Mac: loginwindow's window (its nib, strings and the Mac OS X picture)
         "./System/Library/CoreServices/loginwindow.app/Contents/Resources/English.lproj/AboutThisMac.*",
         "./System/Library/CoreServices/loginwindow.app/Contents/Resources/English.lproj/AboutThisMac.nib/*",
@@ -302,6 +312,26 @@ def to_json(assets):
         Path(str(path) + ".json").write_text(json.dumps(data, default=str, ensure_ascii=False))
 
 
+def composition_images(assets):
+    """The pictures Quartz compositions embed (an Image Loader patch's imageData): Thermal Camera's
+    and X-Ray's colour maps, Color Pencil's paper, written beside the composition as
+    <Name>.qtz.<patch key>.png|tiff for Photo Booth's effects."""
+    def walk(patch, out):
+        for node in patch.get("state", {}).get("nodes", []):
+            data = node.get("state", {}).get("imageData")
+            if node.get("class") == "QCImageLoader" and isinstance(data, bytes):
+                ext = "png" if data[:4] == b"\x89PNG" else "tiff" if data[:2] in (b"MM", b"II") else "jpg"
+                Path(f"{out}.{node['key']}.{ext}").write_bytes(data)
+            walk(node, out)
+    for name in ("ThermalCamera", "XRay", "ColorPencil"):
+        path = assets / "System/Library/Compositions" / f"{name}.qtz"
+        try:
+            with open(path, "rb") as f:
+                walk(plistlib.load(f)["rootPatch"], str(path))
+        except Exception as e:  # noqa: BLE001 - Photo Booth then leaves the effect out
+            print(f"    {path.name}: {e}")
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__.strip())
@@ -331,6 +361,7 @@ def main():
                 menu_apple(pkg, assets, tmp)
             pkg.unlink()
     to_json(assets)
+    composition_images(assets)
     (assets / ".complete").write_text("10.6\n")
     say(f"Done: {assets}")
     print(f"    The HFS+ partition stays in {hfs} for the next run; delete it to get the space back.")

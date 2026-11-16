@@ -128,6 +128,21 @@ else()
     message(STATUS "Mail: not built (no libcurl or libsecret-1)")
 endif()
 
+# Photo Booth.app, on AquaKit: the camera through Video4Linux, its effects (the system's compositions)
+# done on the processor (docs/reverse-status.md, section 14)
+include(CheckIncludeFile)
+check_include_file(linux/videodev2.h HAVE_V4L2)
+if(HAVE_V4L2)
+    add_executable(PhotoBooth src/photobooth/main.cpp src/photobooth/camera.cpp src/photobooth/camera.h
+                   src/photobooth/effects.cpp src/photobooth/effects.h src/photobooth/library.cpp src/photobooth/library.h)
+    target_link_libraries(PhotoBooth PRIVATE aquakit)
+    target_compile_options(PhotoBooth PRIVATE -Wall -Wextra)
+    set_target_properties(PhotoBooth PROPERTIES AUTOMOC OFF OUTPUT_NAME "Photo Booth"
+                          RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Photo Booth.app/Contents/MacOS")
+else()
+    message(STATUS "Photo Booth: not built (no linux/videodev2.h)")
+endif()
+
 # loginwindow's About This Mac, on AquaKit (its nib from the DVD)
 add_executable(loginwindow src/loginwindow/main.cpp)
 target_link_libraries(loginwindow PRIVATE aquakit)

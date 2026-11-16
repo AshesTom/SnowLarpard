@@ -186,7 +186,7 @@ App ownApp(const QString &bundle)
 const QStringList &ownBundles()
 {
     static const QStringList list = {"/Applications/System Preferences.app", "/Applications/Preview.app",
-                                     "/Applications/Mail.app"};
+                                     "/Applications/Mail.app", "/Applications/Photo Booth.app"};
     return list;
 }
 
