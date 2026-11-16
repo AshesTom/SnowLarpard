@@ -11,6 +11,7 @@
 #include "effects.h"
 #include "foundation.h"
 #include "library.h"
+#include "mainmenu.h"
 #include "text.h"
 
 #include <algorithm>
@@ -754,6 +755,7 @@ public:
         selectTab(Tab::Live);
 
         m_window->onUnhandledKey = [this](Event &e) { key(e); };
+        loadMenus();
         m_window->onKeyChanged = [this](bool) { m_window->invalidate(); };
         m_window->onClose = [] { App::shared().quit(); };   // applicationShouldTerminateAfterLastWindowClosed:
         m_camera.open();
@@ -1148,11 +1150,71 @@ private:
         spawn(argv);
     }
 
-    // The menus' key equivalents (MainMenu.nib), and the tray's keys
+    // MainMenu.nib's menus in the menu bar (their key equivalents too), as -[PBController
+    // validateMenuItem:] would leave them: what this port does enabled
+    void loadMenus()
+    {
+        m_menu.load(Assets::path(std::string(Bundle) + "/Contents/Resources/English.lproj/MainMenu.nib"));
+        m_menu.validate = [this](const MainMenuItem &it, MenuValidation &v) {
+            const std::string &a = it.action;
+            const bool selected = m_tray->selected >= 0;
+            if (a == "terminate:" || a == "hide:" || a == "hideOtherApplications:" || a == "unhideAllApplications:" ||
+                a == "performClose:" || a == "performMiniaturize:" || a == "showEffects:" || a == "showLastEffect:" ||
+                a == "resetEffect:")
+                return true;
+            if (a == "takeSnapshot:")
+                return !m_recording && m_tab != Tab::Still;
+            if (a == "revealInFinder:" || a == "delete:" || a == "mirrorImageButtonClicked:")
+                return selected;
+            if (a == "autoFlipPhotoOnOff:") {
+                v.checked = m_autoFlip;
+                return true;
+            }
+            if (a == "showPicture:")
+                return !m_library.assets().empty();
+            if (a == "nextEffects:" || a == "previousEffects:")
+                return m_video->mode != VideoView::Still;
+            return false;
+        };
+        m_menu.perform = [this](const MainMenuItem &it) {
+            const std::string &a = it.action;
+            const int count = int(m_library.assets().size());
+            if (a == "terminate:" || a == "performClose:") {
+                App::shared().quit();
+            } else if (a == "performMiniaturize:") {
+                m_window->miniaturize();
+            } else if (a == "takeSnapshot:") {
+                takeSnapshot(0);
+            } else if (a == "revealInFinder:") {
+                revealInFinder();
+            } else if (a == "delete:") {
+                deleteAsset(m_tray->selected);
+            } else if (a == "mirrorImageButtonClicked:") {
+                flipSelected();
+            } else if (a == "autoFlipPhotoOnOff:") {
+                m_autoFlip = !m_autoFlip;
+                m_settings.set("AutoFlipPhoto", m_autoFlip);
+            } else if (a == "showPicture:") {
+                if (m_tray->selected < 0 && count > 0)
+                    select(count - 1);
+            } else if (a == "showEffects:") {
+                showEffects();
+            } else if (a == "showLastEffect:") {
+                showEffect(m_lastEffect);
+            } else if (a == "nextEffects:" || a == "previousEffects:") {
+                showPage(m_page + (a == "nextEffects:" ? 1 : -1));
+            } else if (a == "resetEffect:") {
+                m_xy = {0.5, 0.5};
+            }
+        };
+        m_menu.publish();
+    }
+
+    // The tray's keys and the shutter's; the command keys are the menus'
+
     void key(Event &e)
     {
-        const bool cmd = e.modifiers & Command, shift = e.modifiers & Shift;
-        const std::string k = e.text;
+        const bool cmd = e.modifiers & (Command | Control);
         const int count = int(m_library.assets().size());
         if (e.keysym == 0xff1b) {   // Escape
             if (m_recording)
@@ -1161,44 +1223,25 @@ private:
                 switchToVideo();
             else if (m_mosaic)
                 showEffect(m_effect);
-        } else if (cmd && (e.keysym == 0xff53 || e.keysym == 0xff51)) {   // Next / Previous Page of Effects
-            showPage(m_page + (e.keysym == 0xff53 ? 1 : -1));
-        } else if (e.keysym == 0xff51 || e.keysym == 0xff53) {   // the tray: the photo before, after
+        } else if (!cmd && (e.keysym == 0xff51 || e.keysym == 0xff53)) {   // the tray: the photo before, after
             if (count > 0) {
                 const int s = m_tray->selected;
                 select(s < 0 ? count - 1 : std::clamp(s + (e.keysym == 0xff53 ? 1 : -1), 0, count - 1));
             }
-        } else if (e.keysym == 0xff08 || e.keysym == 0xffff) {   // Delete
+        } else if (!cmd && (e.keysym == 0xff08 || e.keysym == 0xffff)) {   // Delete
             deleteAsset(m_tray->selected);
         } else if (e.keysym == 0xff0d || e.keysym == 0xff8d) {   // Return: the shutter
             if (m_tab == Tab::Still)
                 switchToVideo();
             else
                 takeSnapshot(e.modifiers);
-        } else if (cmd && (k == "t" || k == "T")) {   // File ▸ Take Photo
-            takeSnapshot(e.modifiers & ~unsigned(Command));
-        } else if (cmd && shift && (k == "r" || k == "R")) {   // View ▸ Reset Effect
-            m_xy = {0.5, 0.5};
-        } else if (cmd && k == "r") {
-            revealInFinder();
-        } else if (cmd && shift && (k == "f" || k == "F")) {   // Edit ▸ Auto Flip New Photos
-            m_autoFlip = !m_autoFlip;
-            m_settings.set("AutoFlipPhoto", m_autoFlip);
-        } else if (cmd && k == "f") {
-            flipSelected();
-        } else if (cmd && k == "1") {   // View ▸ Show Photo
-            if (m_tray->selected < 0 && count > 0)
-                select(count - 1);
-        } else if (cmd && k == "2") {   // Show Effects
-            showEffects();
-        } else if (cmd && k == "3") {   // Show Last Effect
-            showEffect(m_lastEffect);
-        } else if (cmd && (k == "w" || k == "q")) {
-            App::shared().quit();
+        } else if (cmd) {
+            m_menu.performKeyEquivalent(e);   // MainMenu.nib's key equivalents
         }
     }
 
     Settings m_settings;
+    MainMenu m_menu;
     std::unique_ptr<Window> m_window;
     Camera m_camera;
     Effects m_fx;

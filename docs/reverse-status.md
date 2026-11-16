@@ -425,7 +425,8 @@ photo selected, deleted (to the trash), the library read again at the next launc
 | The video mirrored; Auto Flip New Photos (`AutoFlipPhoto`) saves a photo the other way round; Flip Photo | `Effect.qtz` (CIAffineTransform, scale x -1), `MainMenu.nib`'s binding, `-[PBImageAsset flip]` | Done (the default, off, not read in `registerDefaults:`) |
 | The camera: QTKit's capture session; its states "The camera is off.", "The camera is busy.", "There is no connected camera." with `camera-off.png` | `CameraController`, `CameraLayer`, Localizable.strings | Done on Video4Linux (YUYV or MJPEG at 640 x 480; the Camera menu: missing) |
 | The Still tab: Email, iPhoto, Account Picture, Buddy Picture | `MainMenu.nib`; `PBMailExporter`, `PBiPhotoExporter`, `PBUserPicture`, `PBiChatPicture` | Partial: Email through `xdg-email`; the others are drawn, disabled |
-| The menus' key equivalents: ⌘T, ⌘R, ⌘F, ⇧⌘F, ⌘1 / 2 / 3, ⌘→ / ⌘←, ⇧⌘R, Delete; the arrows select in the tray | `MainMenu.nib` | Done (the menus themselves: AquaKit has no menu bar yet) |
+| The menus' key equivalents: ⌘T, ⌘R, ⌘F, ⇧⌘F, ⌘1 / 2 / 3, ⌘→ / ⌘←, ⇧⌘R, Delete; the arrows select in the tray | `MainMenu.nib` | Done |
+| The menus in the menu bar: `MainMenu.nib`'s, published as Preview's are (section 11); what the port does enabled (Take Photo but while recording, Reveal in Finder, Delete and Flip Photo with a photo selected, Auto Flip New Photos checked, the effects' pages) | `MainMenu.nib` | Done (Export, Print, Delete All Photos, the slideshow and the Camera menu's cameras: disabled or empty) |
 | Movies (`PBQTMovieController`, the Fez H.264 / AAC recorders), the backdrops (`Backdrops.qtz`, pages 3 and 4), printing (`PBPrinting`'s WebKit templates), Export, the slideshow, copy and drag | | Missing |
 
 ## 15. Calculator
@@ -436,7 +437,7 @@ REA's Ghidra provider. The window is `Calculator.nib`'s, the keys `BasicAdvanced
 `Functions.xml`'s, the LCD the `lcd-*.tif` pictures: all read at run time. Port:
 [`calculator/`](../shell/src/calculator) on AquaKit. Verified in Xvfb under WindowServer and
 SystemUIServer: 2 + 3 × 4 = 14, 200 + 10 % = 220, 1 ÷ 0, 1 ÷ 3, sin 90 in degrees, (2 + 3) × 4,
-2 ^ 10, 5!, Basic and Scientific from the View menu (⌘1, ⌘2).
+2 ^ 10, 5!, Basic and Scientific from the View menu (⌘1, ⌘2); in Programmer FF AND 0F, RoL, 0x10 + 5 × 2, the base changed, the binary view.
 
 | Item | Source | Status |
 |---|---|---|
@@ -447,7 +448,8 @@ SystemUIServer: 2 + 3 × 4 = 14, 200 + 10 % = 220, 1 ÷ 0, 1 ÷ 3, sin 90 in deg
 | The keys: the nib's frames, each 2 points lower at its top (-[BasicAdvancedController awakeFromNib] 0x53bc), textured square bezels, their titles in Lucida Grande 13, x² x³ yˣ with a superscript; 2nd shows the inverse functions (sin⁻¹..., eˣ, 10ˣ, 2ˣ, ∛, ˣ√y); Rad / Deg; the keys typed show pressed a moment | `BasicAdvanced.nib`, `awakeFromNib` | Done (the second functions' titles from the plug-in's pictures' names; the superscripts' size and offset by eye) |
 | The LCD: 56 high without the RPN stack (`_hideRegRPNView` takes 76 off the nib's 132), its nine pieces, the number in Lucida Grande 14 at the right, M, ( ) and Deg / Rad in 11 under it; 12 decimal places at first (`setPrecision: 12`) | `-[LCDController awakeFromNib]` (0x100001cf6), `Calculator.nib` | Done (the text's places from the nib's fields, by the box's bottom) |
 | The menus: `Calculator.nib`'s main menu in the menu bar (Debug taken off), View's Basic, Scientific, Programmer (⌘1 to ⌘3), Show Thousands Separators, Decimal Places (0 to 15); Copy, Paste, Clear; the settings kept (`calculator.conf`: ViewDefaultsKey, Precision, ShowSeparators) | `Calculator.nib`, `initItemsWithStoredDefaults` | Done |
-| Programmer (Hexadecimal.calcview), RPN, the paper tape, conversions, speech, Large Type | | Missing (disabled in the menus) |
+| Programmer (`Hexadecimal.calcview`, `Hexadecimal.nib`): 346 + 14 wide, the view box 274 high with the binary view, 218 without (`normalSize:` takes its 56 off); the keys' box at (-1, -2), the ASCII / Unicode and 8 / 10 / 16 controls and Show Binary 21 under the top. The keys build an equation of unsigned 64-bit numbers that the Calculate framework evaluates; + and − show what it comes to so far, the other operators wait; << and >> shift the number by one at once and show the equation's value; = evaluates and, again, repeats the last operator with the last number; the digits of the base only; 0x before a hexadecimal number. The bit keys: 1's ~x, 2's ~x + 1, RoL (x << 1 with the top bit back at the bottom), RoR, Byte Flip and Word Flip (the bytes, the 16-bit words, reversed up to the highest that isn't 0); they clear the equation. The binary view's 64 bits, each a button; the left LCD the number as an ASCII or Unicode character | `-[HexadecimalController handleOperatorPress:]` (0x4314), `equals:` (0x4a22), `handleBitManipulation:` (0x842d), `handleDigit:` (0x6f5e), `stringForOperator:` (0x2c33), `normalSize:` (0x72d4), `addView:toWindow:atPoint:` (0x21ef), `Hexadecimal.nib` | Done (Calculate's precedences taken as C's, the framework not read; RPN missing) |
+| RPN, the paper tape, conversions, speech, Large Type | | Missing (disabled in the menus) |
 
 ## Next
 

@@ -117,7 +117,8 @@ endif()
 
 # Calculator.app, on AquaKit: Calculator 4.5's algebraic engine and its Basic and Scientific keys
 # (docs/reverse-status.md, section 15)
-add_executable(Calculator src/calculator/main.cpp src/calculator/engine.cpp src/calculator/engine.h)
+add_executable(Calculator src/calculator/main.cpp src/calculator/engine.cpp src/calculator/engine.h
+               src/calculator/programmer.cpp src/calculator/programmer.h)
 target_link_libraries(Calculator PRIVATE aquakit)
 target_compile_options(Calculator PRIVATE -Wall -Wextra)
 set_target_properties(Calculator PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Calculator.app/Contents/MacOS")

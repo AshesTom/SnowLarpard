@@ -16,6 +16,7 @@
 #include "engine.h"
 #include "foundation.h"
 #include "mainmenu.h"
+#include "programmer.h"
 #include "text.h"
 #include "toolbar.h"
 
@@ -39,6 +40,11 @@ std::string res(const std::string &name) { return Assets::path(std::string(Bundl
 std::string tr(const std::string &key) { return Assets::tr(Bundle, "Localizable", key, key); }
 
 constexpr double BoxHeight = 197, BasicWidth = 204, ScientificWidth = 205, DisplayHeight = 56;
+// Hexadecimal.nib's o_ViewBox: 346 wide, 274 high with the binary view, 218 without it
+// (-[HexadecimalController normalSize:] takes the binary box's 56 off)
+constexpr double ProgrammerWidth = 346, ProgrammerHeight = 274, BinaryHeight = 56;
+
+enum CalcView { BasicView = 0, ScientificView = 1, ProgrammerView = 2 };
 
 // A key's title as the nib and -[BasicAdvancedController awakeFromNib] give it: x², yˣ (a
 // superscript), log₂ (a subscript), ˣ√y (a superscript before)
@@ -53,6 +59,7 @@ class Key : public Control {
 public:
     Title title;
     int code = 0;          // Functions.xml's operator; < 0 the controller's own (digits, 2nd...)
+    double fontSize = 13;
     bool on = false;       // 2nd: held on
     void flash()
     {
@@ -78,7 +85,7 @@ public:
         const bool down = m_pressed || m_flash || on;
         CoreUI::segments(cr, CoreUI::SegmentStyle::Textured, {bounds()}, {on}, down && !on ? 0 : -1, s);
         TextStyle t;
-        t.font = Font::system(13);
+        t.font = Font::system(fontSize);
         t.color = isEnabled() ? (on ? Color::gray(255) : Color::gray(0)) : Color::gray(0, 0.35);
         TextStyle small = t;
         small.font = Font::system(9);
@@ -111,6 +118,7 @@ private:
 class LCD : public View {
 public:
     std::string text, mode;
+    std::string left;   // the Programmer view's: the number as an ASCII or Unicode character
     bool memory = false, parentheses = false;
     LCD()
     {
@@ -143,6 +151,11 @@ public:
         big.font = Font::system(14);
         big.align = Align::Right;
         drawText(cr, text, Rect{10, h - 33 - 18, frame().w - 22, 18}, big);
+        if (!left.empty()) {
+            TextStyle l = big;
+            l.align = Align::Left;
+            drawText(cr, left, Rect{10, h - 9 - 18, 35, 18}, l);
+        }
         TextStyle small;
         small.font = Font::system(11);
         if (memory)
@@ -233,6 +246,89 @@ const std::vector<SciDef> &scientificKeys()
     return keys;
 }
 
+// Hexadecimal.nib's o_ButtonBox (346 x 197, at (-1, -2) in the view box): its keys, their tags
+// (handleOperatorPress:, handleBitManipulation:, clear:, allClear:, enter:), the digits by title
+struct ProgrammerDef {
+    double x, y, w, h;
+    const char *title;
+    int tag;   // 0: a digit
+    double font;
+};
+const std::vector<ProgrammerDef> &programmerKeys()
+{
+    static const std::vector<ProgrammerDef> keys = {
+        {3, 160, 53, 29, "AND", PAnd, 10},          {58, 160, 53, 29, "OR", POr, 10},
+        {3, 129, 53, 29, "NOR", PNor, 10},          {58, 129, 53, 29, "XOR", PXor, 10},
+        {3, 98, 53, 29, "<<", ShiftLeft1, 10},      {58, 98, 53, 29, ">>", ShiftRight1, 10},
+        {3, 67, 53, 29, "X<<Y", ShiftLeftY, 10},    {58, 67, 53, 29, "X>>Y", ShiftRightY, 10},
+        {3, 36, 108, 29, "Byte Flip", ByteFlip, 10}, {3, 5, 108, 29, "Word Flip", WordFlip, 10},
+        {118, 160, 41, 29, "D", 0, 13},  {160, 160, 41, 29, "E", 0, 13},  {202, 160, 41, 29, "F", 0, 13},
+        {118, 129, 41, 29, "A", 0, 13},  {160, 129, 41, 29, "B", 0, 13},  {202, 129, 41, 29, "C", 0, 13},
+        {118, 98, 41, 29, "7", 0, 13},   {160, 98, 41, 29, "8", 0, 13},   {202, 98, 41, 29, "9", 0, 13},
+        {118, 67, 41, 29, "4", 0, 13},   {160, 67, 41, 29, "5", 0, 13},   {202, 67, 41, 29, "6", 0, 13},
+        {118, 36, 41, 29, "1", 0, 13},   {160, 36, 41, 29, "2", 0, 13},   {202, 36, 41, 29, "3", 0, 13},
+        {118, 5, 41, 29, "FF", 0, 10},   {160, 5, 41, 29, "0", 0, 13},    {202, 5, 41, 29, "00", 0, 10},
+        {249, 160, 47, 29, "AC", PAllClear, 13},    {297, 160, 47, 29, "C", PClear, 13},
+        {249, 129, 47, 29, "÷", PDivide, 13},       {297, 129, 47, 29, "−", PMinus, 13},
+        {249, 98, 47, 29, "×", PTimes, 13},         {297, 98, 47, 29, "+", PPlus, 13},
+        {249, 67, 47, 29, "RoL", RotateLeft, 11},   {297, 67, 47, 29, "RoR", RotateRight, 11},
+        {249, 36, 47, 29, "2’s", TwosComplement, 13}, {297, 36, 47, 29, "1’s", OnesComplement, 13},
+        {249, 5, 95, 29, "=", PEquals, 12},
+    };
+    return keys;
+}
+
+// The binary view (o_BinaryBox): the 64 bits in two rows, 63 to 32 over 31 to 0, each a button
+// showing 0 or 1 (Lucida Grande 10; tag 1000 + the bit), grouped by four; the bit numbers 63, 47,
+// 32 over the first row, 31, 15, 0 under the second (9)
+class BitsView : public View {
+public:
+    uint64_t value = 0;
+    std::function<void(int bit, bool on)> onToggle;
+    void draw(cairo_t *cr) override
+    {
+        fill(cr, bounds(), Color::gray(255, 0.35));
+        Color::gray(0, 0.25).set(cr);
+        cairo_set_line_width(cr, 1);
+        cairo_rectangle(cr, 0.5, 0.5, frame().w - 1, frame().h - 1);
+        cairo_stroke(cr);
+        TextStyle t;
+        t.font = Font::system(10);
+        t.align = Align::Center;
+        for (int bit = 0; bit < 64; ++bit) {
+            const Rect r = bitRect(bit);
+            drawText(cr, (value >> bit) & 1 ? "1" : "0", r, t);
+        }
+        TextStyle n;
+        n.font = Font::system(9);
+        n.color = Color::gray(0, 0.6);
+        n.align = Align::Center;
+        // the nib's fields: 63, 47, 32 between the rows, 31, 15, 0 under them
+        const std::pair<int, double> top[] = {{63, 12}, {47, 178}, {32, 331}}, bottom[] = {{31, 12}, {15, 178}, {0, 331}};
+        for (const auto &[b, x] : top)
+            drawText(cr, std::to_string(b), Rect{x - 12, 16, 24, 13}, n);
+        for (const auto &[b, x] : bottom)
+            drawText(cr, std::to_string(b), Rect{x - 12, 40, 24, 13}, n);
+    }
+    void mouseDown(Event &e) override
+    {
+        for (int bit = 0; bit < 64; ++bit)
+            if (bitRect(bit).contains(e.location) && onToggle)
+                onToggle(bit, !((value >> bit) & 1));
+    }
+
+private:
+    // the nib's frames: the groups of four at 6, 47, 89... 299, the bits 9 apart in a group; the
+    // upper row 5 down, the lower 27
+    Rect bitRect(int bit) const
+    {
+        static const double groups[] = {6, 47, 89, 131, 173, 215, 257, 299};
+        const int inRow = bit % 32;
+        const int group = 7 - inRow / 4, within = 3 - inRow % 4;
+        return {groups[group] + within * 9, bit >= 32 ? 5.0 : 27.0, 10, 13};
+    }
+};
+
 void copyText(const std::string &text)
 {
     const char *cmd = std::getenv("WAYLAND_DISPLAY") ? "wl-copy 2>/dev/null" : "xclip -selection clipboard 2>/dev/null";
@@ -261,7 +357,12 @@ public:
     CalculatorWindow()
     {
         Settings prefs("calculator");
-        m_scientific = prefs.string("ViewDefaultsKey", "Basic") == "Advanced";
+        const std::string view = prefs.string("ViewDefaultsKey", "Basic");
+        m_view = view == "Advanced" ? ScientificView : view == "Programmers" ? ProgrammerView : BasicView;
+        m_programmer.base = std::clamp(prefs.integer("InputMode", 10), 8, 16);   // the nib's 10 selected
+        if (m_programmer.base != 8 && m_programmer.base != 16)
+            m_programmer.base = 10;
+        m_binaryShown = prefs.boolean("ShowBinary", false);
         m_decimals = std::clamp(prefs.integer("Precision", 12), 0, 15);   // -[LCDController awakeFromNib]: setPrecision: 12
         m_separators = prefs.boolean("ShowSeparators", false);
         m_engine.load(Assets::path(std::string(PlugIn) + "/Contents/Resources/Functions.xml"));
@@ -281,8 +382,87 @@ public:
 private:
     Size contentSize() const
     {
-        const double boxes = BasicWidth + (m_scientific ? ScientificWidth : 0);
+        if (m_view == ProgrammerView)
+            return {ProgrammerWidth + 14, programmerHeight() + DisplayHeight + 8};
+        const double boxes = BasicWidth + (m_view == ScientificView ? ScientificWidth : 0);
         return {boxes + 14, BoxHeight + DisplayHeight + 8};
+    }
+
+    // The nib's segmented controls' labels: Lucida Grande 11, white on the selected (dark) segment
+    static std::function<void(cairo_t *, int, const Rect &, bool)> smallLabels(SegmentedControl *c, std::vector<std::string> labels)
+    {
+        return [c, labels](cairo_t *cr, int i, const Rect &r, bool enabled) {
+            TextStyle t;
+            t.font = Font::system(11);
+            t.align = Align::Center;
+            t.elide = false;
+            t.color = !enabled ? Color::gray(0, 0.35) : c->isHighlighted(i) ? Color::gray(255) : Color::gray(0);
+            drawText(cr, labels[size_t(i)], Rect{r.x - 3, r.y, r.w + 6, r.h}, t);
+        };
+    }
+
+    double programmerHeight() const { return ProgrammerHeight - (m_binaryShown ? 0 : BinaryHeight); }
+
+    // Hexadecimal.nib's view box at (7, 7) from the bottom left: its keys' box at (-1, -2), the
+    // ASCII / Unicode control, Show Binary and the 8 / 10 / 16 control 21 under its top, the binary
+    // box (when shown) under them
+    void buildProgrammer()
+    {
+        View *root = m_window->contentView();
+        const Size s = contentSize();
+        const double bh = programmerHeight();
+        auto at = [&](double x, double y, double w, double h) {   // the view box's (from its bottom) to the window's
+            return Rect{7 + x, s.h - 7 - y - h, w, h};
+        };
+        for (const ProgrammerDef &d : programmerKeys()) {
+            auto *k = root->add<Key>();
+            k->setFrame(at(-1 + d.x, -2 + d.y, d.w, d.h));
+            k->title = {d.title};
+            k->fontSize = d.font;
+            k->code = d.tag ? 1000 + d.tag : 2000;
+            k->action = [this, k] { pressProgrammer(k); };
+            m_keys.push_back(k);
+        }
+        auto *alt = root->add<SegmentedControl>(CoreUI::SegmentStyle::Textured, std::vector<std::string>{"ASCII", "Unicode"},
+                                                std::vector<double>{48, 48});
+        alt->setFrame(at(2, bh - 21, 99, 19));
+        alt->glyph = smallLabels(alt, {"ASCII", "Unicode"});
+        alt->setSelected(m_unicode ? 1 : 0);
+        alt->onSelect = [this](int i) {
+            m_unicode = i == 1;
+            refresh();
+        };
+        auto *binary = root->add<Key>();
+        binary->setFrame(at(128, bh - 21, 103, 20));
+        binary->title = {tr(m_binaryShown ? "Hide Binary" : "Show Binary")};
+        binary->fontSize = 10;
+        binary->action = [this] {
+            // -[HexadecimalController hideShowBinary:]: the window grows by the binary box
+            m_binaryShown = !m_binaryShown;
+            Settings("calculator").set("ShowBinary", m_binaryShown);
+            m_window->setContentSize(contentSize());
+            App::shared().later([this] { build(); });
+        };
+        auto *bases = root->add<SegmentedControl>(CoreUI::SegmentStyle::Textured, std::vector<std::string>{"8", "10", "16"},
+                                                  std::vector<double>{28, 28, 28});
+        bases->setFrame(at(256, bh - 21, 87, 19));
+        bases->glyph = smallLabels(bases, {"8", "10", "16"});
+        bases->setSelected(m_programmer.base == 8 ? 0 : m_programmer.base == 10 ? 1 : 2);
+        bases->onSelect = [this](int i) {
+            // -[HexadecimalController selectInputMode:]
+            m_programmer.setBase(i == 0 ? 8 : i == 1 ? 10 : 16);
+            Settings("calculator").set("InputMode", m_programmer.base);
+            refresh();
+        };
+        m_bits = nullptr;
+        if (m_binaryShown) {
+            m_bits = root->add<BitsView>();
+            m_bits->setFrame(at(-1, 195, 346, BinaryHeight));
+            m_bits->onToggle = [this](int bit, bool on) {
+                m_programmer.setBit(bit, on);
+                refresh();
+            };
+        }
     }
 
     void build()
@@ -298,8 +478,13 @@ private:
         m_lcd->setFrame({9, 0, s.w - 18, DisplayHeight});
         // the boxes at (7, 7) from the bottom left; Scientific's first, Basic's after it
         const double top = s.h - 7 - BoxHeight;
+        if (m_view == ProgrammerView) {
+            buildProgrammer();
+            refresh();
+            return;
+        }
         double x = 7;
-        if (m_scientific) {
+        if (m_view == ScientificView) {
             for (const SciDef &d : scientificKeys())
                 addKey(d.key, x, top);
             x += ScientificWidth;
@@ -324,7 +509,7 @@ private:
     // 2nd and Deg/Rad change titles (-[BasicAdvancedController handleSecondFunctionPress:], handleModePress:)
     void updateTitles()
     {
-        if (!m_scientific)
+        if (m_view != ScientificView)
             return;
         for (Key *k : m_keys) {
             for (const SciDef &d : scientificKeys()) {
@@ -366,13 +551,125 @@ private:
         refresh();
     }
 
+    void pressProgrammer(Key *k)
+    {
+        const int tag = k->code - 1000;
+        if (k->code == 2000)
+            m_programmer.digit(k->title.base);
+        else if (tag == PEquals)
+            m_programmer.equals();
+        else if (tag == PClear)
+            m_programmer.clear();
+        else if (tag == PAllClear)
+            m_programmer.allClear();
+        else if (tag == TwosComplement || tag == OnesComplement || tag == ByteFlip || tag == WordFlip || tag == RotateLeft ||
+                 tag == RotateRight)
+            m_programmer.bits(tag);
+        else
+            m_programmer.op(tag);
+        refresh();
+    }
+
     void refresh()
     {
+        if (m_view == ProgrammerView) {
+            const uint64_t v = m_programmer.value();
+            m_lcd->text = m_programmer.error() ? tr("DivByZero") : m_programmer.display();
+            m_lcd->memory = m_lcd->parentheses = false;
+            m_lcd->mode.clear();
+            // the left LCD: the number as a character (ASCII: up to 127; Unicode: a code point)
+            m_lcd->left.clear();
+            if (m_unicode ? (v >= 32 && v < 0x110000 && (v < 0xD800 || v > 0xDFFF) && v != 127) : (v >= 32 && v < 127)) {
+                const uint32_t c = uint32_t(v);
+                std::string u;
+                if (c < 0x80) {
+                    u = std::string(1, char(c));
+                } else if (c < 0x800) {
+                    u += char(0xC0 | (c >> 6));
+                    u += char(0x80 | (c & 0x3F));
+                } else if (c < 0x10000) {
+                    u += char(0xE0 | (c >> 12));
+                    u += char(0x80 | ((c >> 6) & 0x3F));
+                    u += char(0x80 | (c & 0x3F));
+                } else {
+                    u += char(0xF0 | (c >> 18));
+                    u += char(0x80 | ((c >> 12) & 0x3F));
+                    u += char(0x80 | ((c >> 6) & 0x3F));
+                    u += char(0x80 | (c & 0x3F));
+                }
+                m_lcd->left = u;
+            }
+            // the digits of the base only
+            for (Key *k : m_keys) {
+                if (k->code != 2000)
+                    continue;
+                const std::string &d = k->title.base;
+                const int digit = std::isdigit(static_cast<unsigned char>(d[0])) ? d[0] - '0' : d[0] - 'A' + 10;
+                k->setEnabled(digit < m_programmer.base);
+            }
+            if (m_bits) {
+                m_bits->value = v;
+                m_bits->setNeedsDisplay();
+            }
+            m_lcd->setNeedsDisplay();
+            return;
+        }
+        m_lcd->left.clear();
         m_lcd->text = m_engine.display(m_decimals, m_separators);
         m_lcd->memory = m_engine.memoryShown();
         m_lcd->parentheses = m_engine.parenthesesOpen();
-        m_lcd->mode = m_scientific ? (m_engine.radians ? tr("Rad") : tr("Deg")) : std::string();
+        m_lcd->mode = m_view == ScientificView ? (m_engine.radians ? tr("Rad") : tr("Deg")) : std::string();
         m_lcd->setNeedsDisplay();
+    }
+
+    // The Programmer view's keys typed (-[HexadecimalController keyDown:]): the digits of the base,
+    // the nib's key equivalents (+ - * / & | ~ < >), Return for =, Escape for AC, Delete
+    void programmerKey(Event &e)
+    {
+        const uint32_t k = e.keysym;
+        if (k == XKB_KEY_BackSpace || k == XKB_KEY_Delete) {
+            m_programmer.deleteDigit();
+            refresh();
+            return;
+        }
+        std::string title;
+        if (k >= XKB_KEY_0 && k <= XKB_KEY_9)
+            title = std::string(1, char('0' + (k - XKB_KEY_0)));
+        else if (k >= XKB_KEY_KP_0 && k <= XKB_KEY_KP_9)
+            title = std::string(1, char('0' + (k - XKB_KEY_KP_0)));
+        else if ((k >= XKB_KEY_a && k <= XKB_KEY_f) || (k >= XKB_KEY_A && k <= XKB_KEY_F))
+            title = std::string(1, char(std::toupper(int(k))));
+        int tag = 0;
+        if (k == XKB_KEY_plus || k == XKB_KEY_KP_Add)
+            tag = PPlus;
+        else if (k == XKB_KEY_minus || k == XKB_KEY_KP_Subtract)
+            tag = PMinus;
+        else if (k == XKB_KEY_asterisk || k == XKB_KEY_KP_Multiply)
+            tag = PTimes;
+        else if (k == XKB_KEY_slash || k == XKB_KEY_KP_Divide)
+            tag = PDivide;
+        else if (k == XKB_KEY_ampersand)
+            tag = PAnd;
+        else if (k == XKB_KEY_bar)
+            tag = POr;
+        else if (k == XKB_KEY_asciitilde)
+            tag = PXor;
+        else if (k == XKB_KEY_less)
+            tag = ShiftLeft1;
+        else if (k == XKB_KEY_greater)
+            tag = ShiftRight1;
+        else if (k == XKB_KEY_Return || k == XKB_KEY_KP_Enter || k == XKB_KEY_equal)
+            tag = PEquals;
+        else if (k == XKB_KEY_Escape)
+            tag = PAllClear;
+        for (Key *key : m_keys) {
+            const bool match = title.empty() ? (tag && key->code == 1000 + tag) : (key->code == 2000 && key->title.base == title);
+            if (match && key->isEnabled()) {
+                key->flash();
+                pressProgrammer(key);
+                return;
+            }
+        }
     }
 
     Key *keyFor(int code)
@@ -391,6 +688,8 @@ private:
             m_menu.performKeyEquivalent(e);
             return;
         }
+        if (m_view == ProgrammerView)
+            return programmerKey(e);
         int code = 0;
         const uint32_t k = e.keysym;
         if (k >= XKB_KEY_0 && k <= XKB_KEY_9)
@@ -417,7 +716,7 @@ private:
             m_engine.deleteDigit();
             refresh();
             return;
-        } else if (m_scientific) {
+        } else if (m_view == ScientificView) {
             if (k == XKB_KEY_parenleft)
                 code = LeftParen;
             else if (k == XKB_KEY_parenright)
@@ -479,8 +778,8 @@ private:
             a == "performClose:" || a == "miniaturize:" || a == "copy:" || a == "paste:" || a == "clear:")
             return true;
         if (a == "setCurrentView:") {
-            v.checked = it.tag == (m_scientific ? 1 : 0);
-            return it.tag < 2;   // Programmer (Hexadecimal.calcview) isn't here
+            v.checked = it.tag == m_view;
+            return true;
         }
         if (a == "toggleSeparators:") {
             v.checked = m_separators;
@@ -504,7 +803,7 @@ private:
         } else if (a == "miniaturize:") {
             m_window->miniaturize();
         } else if (a == "copy:") {
-            copyText(m_engine.display(m_decimals, false));
+            copyText(m_view == ProgrammerView ? m_programmer.display() : m_engine.display(m_decimals, false));
         } else if (a == "paste:") {
             std::string t = pasteText();
             t.erase(std::remove(t.begin(), t.end(), ','), t.end());
@@ -513,13 +812,16 @@ private:
             if (end != t.c_str())
                 m_engine.number(v);
         } else if (a == "clear:") {
-            m_engine.op(Clear);
+            if (m_view == ProgrammerView)
+                m_programmer.allClear();
+            else
+                m_engine.op(Clear);
         } else if (a == "setCurrentView:") {
-            const bool sci = it.tag == 1;
-            if (sci != m_scientific) {
-                m_scientific = sci;
+            if (it.tag != m_view) {
+                m_view = CalcView(it.tag);
                 m_second = false;
-                prefs.set("ViewDefaultsKey", sci ? "Advanced" : "Basic");
+                const char *names[] = {"Basic", "Advanced", "Programmers"};
+                prefs.set("ViewDefaultsKey", names[m_view]);
                 m_window->setContentSize(contentSize());
                 build();
             }
@@ -538,7 +840,10 @@ private:
     MainMenu m_menu;
     LCD *m_lcd = nullptr;
     std::vector<Key *> m_keys;
-    bool m_scientific = false, m_second = false, m_separators = false;
+    Programmer m_programmer;
+    BitsView *m_bits = nullptr;
+    CalcView m_view = BasicView;
+    bool m_second = false, m_separators = false, m_unicode = true, m_binaryShown = false;
     int m_decimals = 12;
 };
 
