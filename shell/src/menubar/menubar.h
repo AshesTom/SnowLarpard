@@ -61,6 +61,7 @@ private:
     // the active window's own menus, over D-Bus (appmenu.h)
     AppMenuRegistrar *m_registrar;
     QPointer<DBusMenu> m_imported;
-    QString m_menuKey;                // its service and object path
+    QString m_menuKey;                // its service and object path ("aquakit:<pid>": an AquaKit application's)
+    int m_aquaKitPid = 0;             // the AquaKit application whose menus are shown
     bool m_rebuildPending = false;    // the menus changed while one was open
 };

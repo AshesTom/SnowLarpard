@@ -103,6 +103,7 @@ public:
     void setIcon(const Image &icon);
     void show();
     void close();
+    void miniaturize();   // into the Dock ([NSWindow performMiniaturize:])
     bool isKey() const { return m_key; }
     bool isVisible() const { return m_visible; }
     Size size() const { return m_size; }
@@ -199,6 +200,9 @@ public:
     int addTimer(double seconds, bool repeat, std::function<void()> fire);
     void removeTimer(int id);
     void later(std::function<void()> f) { addTimer(0, false, std::move(f)); }
+    // a file descriptor watched with the display's: `readable` when there is something to read
+    void watch(int fd, std::function<void()> readable);
+    void unwatch(int fd);
 
 private:
     friend class Window;
@@ -212,6 +216,7 @@ private:
         std::function<void()> fire;
     };
     std::vector<Timer> m_timers;
+    std::vector<std::pair<int, std::function<void()>>> m_watched;
     int m_nextTimer = 1;
     bool m_running = false;
     int m_code = 0;

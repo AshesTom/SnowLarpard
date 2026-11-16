@@ -708,14 +708,43 @@ int App::run()
         m_platform->beforePoll();
         if (m_platform->hasPending())
             wait = 0;
-        pollfd p{m_platform->fd(), POLLIN, 0};
-        const int n = poll(&p, 1, int(std::ceil(wait * 1000)));
-        if (!m_platform->afterPoll(n > 0 && (p.revents & POLLIN))) {
+        std::vector<pollfd> fds{{m_platform->fd(), POLLIN, 0}};
+        for (const auto &w : m_watched)
+            fds.push_back({w.first, POLLIN, 0});
+        const int n = poll(fds.data(), nfds_t(fds.size()), int(std::ceil(wait * 1000)));
+        if (!m_platform->afterPoll(n > 0 && (fds[0].revents & POLLIN))) {
             std::fprintf(stderr, "AquaKit: the display connection is gone\n");
             return 1;
         }
+        for (size_t i = 1; n > 0 && i < fds.size(); ++i) {
+            if (!(fds[i].revents & (POLLIN | POLLHUP)))
+                continue;
+            // the callback may unwatch (itself or another)
+            auto it = std::find_if(m_watched.begin(), m_watched.end(), [&](const auto &w) { return w.first == fds[i].fd; });
+            if (it != m_watched.end()) {
+                std::function<void()> f = it->second;
+                f();
+            }
+        }
     }
     return m_code;
+}
+
+void Window::miniaturize()
+{
+    if (m_native)
+        m_native->minimize();
+}
+
+void App::watch(int fd, std::function<void()> readable)
+{
+    unwatch(fd);
+    m_watched.emplace_back(fd, std::move(readable));
+}
+
+void App::unwatch(int fd)
+{
+    m_watched.erase(std::remove_if(m_watched.begin(), m_watched.end(), [fd](const auto &w) { return w.first == fd; }), m_watched.end());
 }
 
 void App::quit(int code)

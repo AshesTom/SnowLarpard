@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Preview.app, on AquaKit (no Qt): PDFs and pictures in 10.6's document window (PVDocument.nib), its
 // toolbar the one CommonToolbar.proplist lays out, its pages drawn by poppler.
-//   Preview file.pdf|picture...
+//   Preview [file.pdf|picture...]
+// Without a file Preview opens no window (-[PVApplication applicationShouldOpenUntitledFile:],
+// 0x100002a65, answers NO); the shell only knows an application by its windows, so File > Open…'s
+// panel (-[PVDocumentController openDocument:], 0x10002f0ca) is run then.
 #include "controls.h"
 #include "document.h"
 #include "foundation.h"
+#include "mainmenu.h"
 #include "pdfview.h"
 #include "plist.h"
 #include "sidebar.h"
@@ -17,6 +21,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
+
+extern char **environ;
 
 using namespace AK;
 using namespace Preview;
@@ -72,6 +84,86 @@ SegmentedControl *imageSegments(const std::vector<Image> &images, const std::vec
     return s;
 }
 
+// ---- File > Open…: the desktop's own file chooser stands for the Mac's open panel
+
+// A program's answer on its standard output, without blocking the windows; `ran` false when the
+// program isn't there
+void runDialog(std::vector<std::string> argv, std::function<void(bool ran, std::string)> done)
+{
+    int out[2];
+    if (pipe(out) != 0)
+        return done(false, {});
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    posix_spawn_file_actions_addclose(&fa, out[0]);
+    std::vector<char *> args;
+    for (std::string &a : argv)
+        args.push_back(a.data());
+    args.push_back(nullptr);
+    pid_t pid = 0;
+    const int err = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(out[1]);
+    if (err != 0) {
+        close(out[0]);
+        return done(false, {});
+    }
+    fcntl(out[0], F_SETFL, O_NONBLOCK);
+    auto text = std::make_shared<std::string>();
+    auto timer = std::make_shared<int>(0);
+    *timer = App::shared().addTimer(0.1, true, [=] {
+        char buf[512];
+        ssize_t n;
+        while ((n = read(out[0], buf, sizeof buf)) > 0)
+            text->append(buf, size_t(n));
+        int status = 0;
+        if (waitpid(pid, &status, WNOHANG) != pid)
+            return;
+        while ((n = read(out[0], buf, sizeof buf)) > 0)
+            text->append(buf, size_t(n));
+        close(out[0]);
+        App::shared().removeTimer(*timer);
+        const bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        // 127: posix_spawnp's child found no such program
+        done(!(WIFEXITED(status) && WEXITSTATUS(status) == 127), ok ? *text : std::string());
+    });
+}
+
+// The files chosen, one per line of the chooser's answer; none when cancelled
+void runOpenPanel(std::function<void(std::vector<std::string>)> done)
+{
+    static bool running = false;   // one panel at a time, as the Mac's modal one
+    if (running)
+        return;
+    running = true;
+    auto finish = [done](const std::string &answer) {
+        running = false;
+        std::vector<std::string> files;
+        size_t from = 0;
+        while (from < answer.size()) {
+            size_t to = answer.find('\n', from);
+            if (to == std::string::npos)
+                to = answer.size();
+            if (to > from)
+                files.push_back(answer.substr(from, to - from));
+            from = to + 1;
+        }
+        done(files);
+    };
+    // what this Preview shows: PDFs and the pictures AquaKit reads
+    const std::string types = "*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.gif *.bmp *.icns "
+                              "*.PDF *.PNG *.JPG *.JPEG *.TIF *.TIFF *.GIF *.BMP";
+    runDialog({"kdialog", "--title", "Open", "--multiple", "--separate-output", "--getopenfilename", home(), types + "|PDFs and pictures"},
+              [finish, types](bool ran, std::string answer) {
+                  if (ran)
+                      return finish(answer);
+                  runDialog({"zenity", "--file-selection", "--multiple", "--separator=\n", "--title=Open", "--filename=" + home() + "/",
+                             "--file-filter=PDFs and pictures | " + types},
+                            [finish](bool, std::string a) { finish(a); });
+              });
+}
+
 // ---- the window
 
 class DocumentWindow {
@@ -124,6 +216,11 @@ public:
             layout();
         };
         m_window->onResize = [this](Size) { layout(); };
+        // MainMenu.nib's key equivalents that no view takes (-[NSMenu performKeyEquivalent:])
+        m_window->onUnhandledKey = [this](Event &e) {
+            if (onKeyEquivalent)
+                onKeyEquivalent(e);
+        };
         m_window->onClose = [this] {
             if (onClose)
                 onClose(this);
@@ -136,6 +233,123 @@ public:
     }
 
     std::function<void(DocumentWindow *)> onClose;
+    std::function<void(Event &)> onKeyEquivalent;   // the main menu's
+    bool isKey() const { return m_window->isKey(); }
+
+    // -[PVWindowController validateMenuItem:] (0x100026a58) and -[PVPDFView validateMenuItem:]
+    // (0x100061346), for what this port does: enabled, the item's state and title; false for an
+    // action the window doesn't have
+    bool validate(const std::string &a, MenuValidation &v) const
+    {
+        const bool pdf = m_doc->isPDF();
+        const bool sheet = m_sidebarOpen && m_sidebar->mode() == Sidebar::ContactSheet;   // isInContactSheetMode
+        const int page = m_pdf->currentPage(), pages = m_doc->pageCount();
+        if (a == "performClose:" || a == "performMiniaturize:" || a == "arrangeInFront:" || a == "toggleToolbarShown:") {
+            if (a == "toggleToolbarShown:")   // NSWindow's
+                v.title = m_toolbarShown ? "Hide Toolbar" : "Show Toolbar";
+            return true;
+        }
+        if (a == "doGoToPreviousPage:")
+            return !sheet && page > 0;
+        if (a == "doGoToNextPage:")
+            return !sheet && page + 1 < pages;
+        if (a == "toggleSidebar:") {
+            v.title = tr(m_sidebarOpen && !sheet ? "Hide Sidebar" : "Show Sidebar");
+            return pdf;
+        }
+        if (a == "sidebarSelectContactSheetView:" || a == "sidebarSelectThumbnailView:" || a == "sidebarSelectTableOfContentsView:") {
+            const Sidebar::Mode m = a == "sidebarSelectContactSheetView:" ? Sidebar::ContactSheet
+                                    : a == "sidebarSelectThumbnailView:"  ? Sidebar::Thumbnails
+                                                                          : Sidebar::Contents;
+            v.checked = m_sidebar->mode() == m;
+            return pdf && m_sidebarOpen && (m != Sidebar::Contents || m_sidebar->hasOutline());
+        }
+        if (a == "setSinglePageContinuousMode:" || a == "setDisplayCropBox:") {
+            // PDFKit's continuous display on the crop box, the only ones here
+            v.checked = true;
+            return !sheet && pdf;
+        }
+        if (a == "doZoomIn:")
+            return !sheet && m_pdf->scale() < 80;
+        if (a == "doZoomOut:")
+            return !sheet && m_pdf->scale() > 0.01;
+        if (a == "doZoomToFit:")
+            return !sheet && !m_pdf->autoFits();
+        if (a == "doZoomToActualSize:")
+            return !sheet && !(m_pdf->scale() > 0.995 && m_pdf->scale() < 1.005);
+        if (a == "toggleAutoResize:") {
+            v.checked = m_pdf->autoFits();
+            return !sheet;
+        }
+        if (a == "toggleAnnotationBanner:") {
+            v.title = tr(m_banner && !m_banner->isHidden() ? "Hide Annotations Toolbar" : "Show Annotations Toolbar");
+            return !sheet && pdf;
+        }
+        if (a == "toggleNoteDisplay:") {
+            v.title = tr("Show Notes");   // no notes' gutter
+            return false;
+        }
+        if (a == "scrollTool:" || a == "selectTool:" || a == "textTool:") {
+            const PDFView::Tool t = a == "scrollTool:" ? PDFView::Move : a == "selectTool:" ? PDFView::Select : PDFView::Text;
+            v.checked = m_pdf->tool() == t;
+            return !sheet && (pdf || a != "textTool:");
+        }
+        if (a == "copy:")
+            return !m_pdf->selectedText().empty();
+        if (a == "doFind:")
+            return pdf;
+        if (a == "doFindNext:" || a == "doFindPrevious:")
+            return pdf && m_matchCount > 0;
+        if (a == "doUseSelectionForFind:")
+            return !sheet && pdf && !m_pdf->selectedText().empty();
+        return false;
+    }
+
+    // the menus' actions that the window performs (the rest are the toolbar's, perform())
+    void performMenu(const std::string &a)
+    {
+        if (a == "performClose:") {
+            m_window->close();
+        } else if (a == "performMiniaturize:") {
+            m_window->miniaturize();
+        } else if (a == "toggleToolbarShown:") {
+            m_window->onToggleToolbar();
+        } else if (a == "sidebarSelectContactSheetView:") {
+            m_sidebar->setMode(Sidebar::ContactSheet);
+        } else if (a == "sidebarSelectThumbnailView:") {
+            m_sidebar->setMode(Sidebar::Thumbnails);
+        } else if (a == "sidebarSelectTableOfContentsView:") {
+            m_sidebar->setMode(Sidebar::Contents);
+        } else if (a == "toggleAutoResize:") {
+            if (m_pdf->autoFits())
+                m_pdf->setScale(m_pdf->scale());   // stays at this zoom, no longer fitted
+            else
+                m_pdf->zoomToFit();
+        } else if (a == "copy:") {
+            m_pdf->copy();
+        } else if (a == "doFind:") {
+            if (m_search) {
+                if (!m_toolbarShown)
+                    m_window->onToggleToolbar();
+                m_window->makeFirstResponder(m_search);
+            }
+        } else if (a == "doFindNext:" || a == "doFindPrevious:") {
+            m_match = (m_match + (a == "doFindNext:" ? 1 : m_matchCount - 1)) % m_matchCount;
+            m_pdf->showMatch(m_match);
+        } else if (a == "doUseSelectionForFind:") {
+            if (m_search) {
+                m_search->text = m_pdf->selectedText();
+                m_search->setNeedsDisplay();
+                search(m_search->text);
+            }
+        } else {
+            perform(a);
+            return;
+        }
+        if (m_tools)
+            m_tools->setSelected(int(m_pdf->tool()));
+        updateToolbar();
+    }
 
 private:
     // The divider between the pages and the sidebar: 1 point (PVNSSplitView's dividerThickness, its
@@ -351,11 +565,14 @@ private:
             return;
         m_searched = text;
         if (text.empty()) {
+            m_matchCount = 0;
             m_pdf->setMatches({});
             m_sidebar->clearResults();
             return;
         }
         std::vector<Document::Match> matches = m_doc->find(text);
+        m_matchCount = int(matches.size());
+        m_match = 0;
         m_pdf->setMatches(matches);
         if (!m_sidebarOpen)
             toggleSidebar();
@@ -454,6 +671,7 @@ private:
     double m_sidebarWidth = SidebarThumbnailsWidth;   // kDefaultSidebarWidthForThumbnails
     int m_searchTimer = 0;
     std::string m_searched;
+    int m_matchCount = 0, m_match = 0;   // Find Next and Find Previous
 };
 
 } // namespace
@@ -465,33 +683,74 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i)
         if (argv[i][0] != '-')
             files.push_back(argv[i]);
-    if (files.empty()) {
-        std::fprintf(stderr, "usage: Preview file.pdf|picture...\n");
-        return 2;
-    }
     if (!app.open()) {
         std::fprintf(stderr, "Preview: no display (Wayland or X11)\n");
         return 1;
     }
     Assets::registerFonts();
     std::vector<std::unique_ptr<DocumentWindow>> windows;
-    for (const std::string &f : files) {
-        std::string error;
-        std::unique_ptr<Document> doc = Document::open(f, &error);
-        if (!doc) {
-            std::fprintf(stderr, "Preview: %s\n", error.c_str());
-            continue;
+    std::function<void()> openPanel;
+    // MainMenu.nib's menus, for the menu bar and the key equivalents; the actions go to the key
+    // window (the front one), the application's to the application (PVApplication, PVDocumentController)
+    MainMenu menu;
+    menu.load(Assets::path(std::string(Bundle) + "/Contents/Resources/English.lproj/MainMenu.nib"));
+    auto front = [&windows]() -> DocumentWindow * {
+        for (const auto &w : windows)
+            if (w->isKey())
+                return w.get();
+        return windows.empty() ? nullptr : windows.back().get();
+    };
+    menu.validate = [&front](const MainMenuItem &item, MenuValidation &v) {
+        const std::string &a = item.action;
+        // the application's; hide:, hideOtherApplications:, unhideAllApplications: are done by the
+        // menu bar (the shell hides an application's windows)
+        if (a == "openDocument:" || a == "terminate:" || a == "hide:" || a == "hideOtherApplications:" || a == "unhideAllApplications:")
+            return true;
+        DocumentWindow *w = front();
+        return w && w->validate(a, v);
+    };
+    menu.perform = [&front, &openPanel, &app](const MainMenuItem &item) {
+        const std::string &a = item.action;
+        if (a == "openDocument:")
+            openPanel();
+        else if (a == "terminate:")
+            app.quit();
+        else if (DocumentWindow *w = front())
+            w->performMenu(a);
+    };
+    auto openFiles = [&windows, &app, &menu](const std::vector<std::string> &paths) {
+        for (const std::string &f : paths) {
+            std::string error;
+            std::unique_ptr<Document> doc = Document::open(f, &error);
+            if (!doc) {
+                std::fprintf(stderr, "Preview: %s\n", error.c_str());
+                continue;
+            }
+            windows.push_back(std::make_unique<DocumentWindow>(std::move(doc)));
+            windows.back()->onKeyEquivalent = [&menu](Event &e) { menu.performKeyEquivalent(e); };
+            windows.back()->onClose = [&windows, &app](DocumentWindow *w) {
+                // the last window closed: Preview quits (the shell knows an application by its windows)
+                app.later([&windows, &app, w] {
+                    windows.erase(std::remove_if(windows.begin(), windows.end(), [w](const auto &p) { return p.get() == w; }), windows.end());
+                    if (windows.empty())
+                        app.quit();
+                });
+            };
         }
-        windows.push_back(std::make_unique<DocumentWindow>(std::move(doc)));
-        windows.back()->onClose = [&windows, &app](DocumentWindow *w) {
-            // the last window closed: Preview quits (as 10.6's does once its windows are gone)
-            app.later([&windows, &app, w] {
-                windows.erase(std::remove_if(windows.begin(), windows.end(), [w](const auto &p) { return p.get() == w; }), windows.end());
-                if (windows.empty())
-                    app.quit();
-            });
-        };
+    };
+    openPanel = [&windows, &app, openFiles] {
+        runOpenPanel([&windows, &app, openFiles](std::vector<std::string> chosen) {
+            openFiles(chosen);
+            if (windows.empty())
+                app.quit(chosen.empty() ? 0 : 1);   // cancelled with nothing open
+        });
+    };
+    menu.publish();
+    if (files.empty()) {
+        openPanel();
+        return app.run();
     }
+    openFiles(files);
     if (windows.empty())
         return 1;
     return app.run();

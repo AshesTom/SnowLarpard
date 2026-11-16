@@ -2,6 +2,7 @@
 #include "menubar.h"
 
 #include "appmenu.h"
+#include "aquakitmenus.h"
 #include "aqua.h"
 #include "art.h"
 #include "assets.h"
@@ -105,15 +106,25 @@ void MenuBar::activeChanged()
     // the window's own menus, when it publishes them
     auto menu = active && !desktop ? m_registrar->menuFor(active) : QPair<QString, QString>();
     QString key = menu.first.isEmpty() ? QString() : menu.first + menu.second;
+    // ...or the shell's AquaKit applications' (their MainMenu.nib, aquakitmenus.h)
+    int aquaKitPid = 0;
+    if (key.isEmpty() && active && !desktop) {
+        const int pid = int(X11::pid(active));
+        if (pid == m_aquaKitPid || AquaKitMenus::available(pid)) {
+            aquaKitPid = pid;
+            key = "aquakit:" + QString::number(pid);
+        }
+    }
     if (app.id == m_app.id && key == m_menuKey)
         return;
+    m_aquaKitPid = aquaKitPid;
     m_app = app;
     if (key != m_menuKey) {
         m_menuKey = key;
         if (m_imported)
             m_imported->deleteLater();
         m_imported = nullptr;
-        if (!key.isEmpty()) {
+        if (!key.isEmpty() && !aquaKitPid) {
             m_imported = new DBusMenu(menu.first, menu.second, this);
             connect(m_imported, &DBusMenu::layoutChanged, this, [this] {
                 if (m_open < 0)
@@ -141,7 +152,11 @@ void MenuBar::rebuild()
     m_items.append(apple);
     bool finder = m_app.id == "finder" || !m_app.valid();
     QString name = finder ? QStringLiteral("Finder") : m_app.name;
-    QVector<QMenu *> menus = appMenus(name, finder);
+    QVector<QMenu *> menus;
+    if (m_aquaKitPid > 0 && !finder)
+        menus = AquaKitMenus::build(m_aquaKitPid, m_app, [this] { return windowMenu(); });
+    if (menus.isEmpty())
+        menus = appMenus(name, finder);
     if (m_imported && m_imported->ready() && !m_imported->topLevel().isEmpty()) {
         // the application's own menus after its name, instead of the common ones
         for (int i = 1; i < menus.size(); ++i)

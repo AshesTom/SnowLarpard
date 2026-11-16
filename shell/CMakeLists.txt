@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets DBus)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets DBus Network)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb xcb-keysyms xcb-shape)
 
@@ -40,8 +40,9 @@ mac_app(Dock src/dock/main.cpp src/dock/dock.cpp src/dock/dock.h src/dock/dockme
         src/dock/stack.cpp src/dock/stack.h)
 mac_app(SystemUIServer src/menubar/main.cpp src/menubar/menubar.cpp src/menubar/menubar.h
         src/menubar/extras.cpp src/menubar/extras.h src/menubar/appmenu.cpp src/menubar/appmenu.h
-        src/menubar/menubarfilter.cpp src/menubar/menubarfilter.h)
-target_link_libraries(SystemUIServer PRIVATE Qt6::DBus)
+        src/menubar/menubarfilter.cpp src/menubar/menubarfilter.h
+        src/menubar/aquakitmenus.cpp src/menubar/aquakitmenus.h)
+target_link_libraries(SystemUIServer PRIVATE Qt6::DBus Qt6::Network)
 mac_app(Finder src/finder/main.cpp src/finder/desktop.cpp src/finder/desktop.h)
 pkg_check_modules(XCB_SAVER REQUIRED IMPORTED_TARGET xcb-screensaver)
 target_link_libraries(Finder PRIVATE PkgConfig::XCB_SAVER)
@@ -52,6 +53,7 @@ add_library(aquakit STATIC
     src/aquakit/appkit.cpp src/aquakit/appkit.h
     src/aquakit/archive.cpp src/aquakit/archive.h
     src/aquakit/nib.cpp src/aquakit/nib.h
+    src/aquakit/mainmenu.cpp src/aquakit/mainmenu.h
     src/aquakit/controls.cpp src/aquakit/controls.h
     src/aquakit/coreui.cpp src/aquakit/coreui.h
     src/aquakit/foundation.cpp src/aquakit/foundation.h
