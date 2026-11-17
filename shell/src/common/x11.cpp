@@ -391,6 +391,29 @@ void setDesktop(QWidget *widget)
     xcb_flush(conn());
 }
 
+void setMagicMirror(QWidget *widget, int direction, const QPolygon &quad)
+{
+    if (!conn())
+        return;
+    const xcb_window_t w = xcb_window_t(widget->winId());
+    static QHash<xcb_window_t, QVector<uint32_t>> set;
+    QVector<uint32_t> value;
+    if (direction > 0 && quad.size() == 4) {
+        value << uint32_t(direction);
+        for (const QPoint &p : quad)
+            value << uint32_t(p.x()) << uint32_t(p.y());
+    }
+    if (set.value(w) == value && set.contains(w))
+        return;
+    set.insert(w, value);
+    if (value.isEmpty())
+        xcb_delete_property(conn(), w, atom("_SNOWLEOPARD_MAGIC_MIRROR"));
+    else
+        xcb_change_property(conn(), XCB_PROP_MODE_REPLACE, w, atom("_SNOWLEOPARD_MAGIC_MIRROR"), XCB_ATOM_CARDINAL, 32,
+                            uint32_t(value.size()), value.constData());
+    xcb_flush(conn());
+}
+
 void setMenu(QWidget *widget)
 {
     if (!conn())

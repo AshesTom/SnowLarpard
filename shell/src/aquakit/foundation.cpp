@@ -2,6 +2,7 @@
 #include "foundation.h"
 
 #include <fontconfig/fontconfig.h>
+#include <fontconfig/fcfreetype.h>
 
 #include <algorithm>
 #include <cctype>
@@ -349,6 +350,48 @@ void registerFonts()
     for (const char *font : {"/System/Library/Fonts/LucidaGrande.ttc", "/System/Library/Fonts/HelveticaNeue.ttc"})
         if (exists(font))
             FcConfigAppFontAddFile(FcConfigGetCurrent(), reinterpret_cast<const FcChar8 *>(path(font).c_str()));
+}
+
+void registerAllFonts()
+{
+    // Each face as fontconfig reads it, its weight taken from its style's name when the font has no
+    // OS/2 table to say it (Helvetica.dfont's Bold reads as a regular weight, and would stand for it)
+    FcConfig *config = FcConfigGetCurrent();
+    for (const char *dir : {"/System/Library/Fonts", "/Library/Fonts"}) {
+        for (const std::string &f : files(path(dir))) {
+            const auto *file = reinterpret_cast<const FcChar8 *>(f.c_str());
+            FcFontSet *set = FcConfigGetFonts(config, FcSetApplication);
+            if (!set) {
+                FcConfigAppFontAddFile(config, file);
+                continue;
+            }
+            int count = 1;
+            for (int i = 0; i < count; ++i) {
+                FcPattern *face = FcFreeTypeQuery(file, i, nullptr, &count);
+                if (!face)
+                    break;
+                FcChar8 *style = nullptr;
+                int weight = FC_WEIGHT_REGULAR;
+                if (FcPatternGetString(face, FC_STYLE, 0, &style) == FcResultMatch &&
+                    FcPatternGetInteger(face, FC_WEIGHT, 0, &weight) == FcResultMatch) {
+                    const std::string st = reinterpret_cast<const char *>(style);
+                    int want = weight;
+                    if (st.find("Black") != std::string::npos || st.find("Heavy") != std::string::npos)
+                        want = FC_WEIGHT_BLACK;
+                    else if (st.find("Bold") != std::string::npos)
+                        want = FC_WEIGHT_BOLD;
+                    else if (st.find("Light") != std::string::npos)
+                        want = FC_WEIGHT_LIGHT;
+                    if (want != weight && weight == FC_WEIGHT_REGULAR) {
+                        FcPatternDel(face, FC_WEIGHT);
+                        FcPatternAddInteger(face, FC_WEIGHT, want);
+                    }
+                }
+                if (!FcFontSetAdd(set, face))
+                    FcPatternDestroy(face);
+            }
+        }
+    }
 }
 
 } // namespace Assets

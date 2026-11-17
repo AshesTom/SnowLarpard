@@ -7,6 +7,7 @@
 #include "x11.h"
 
 #include <QCoreApplication>
+#include <cmath>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QPainter>
@@ -22,6 +23,10 @@ using X11::atom;
 
 // The buttons' places in the title bar: 14 x 16 pieces, 7 px apart, from 8 px in (measured by eye on 10.6)
 static constexpr int ButtonLeft = 8, ButtonPitch = 21, ButtonTop = 3, ButtonWidth = 14, ButtonHeight = 16;
+// A utility window's: titlebarcontrols' "utilwin" "variant2" pieces, 13 x 14, 18 apart from 5 in, 1 down
+// (a 10.6 screenshot of About This Mac: the rings from x 6 and y 2, 11 wide)
+static constexpr int UtilityButtonLeft = 5, UtilityButtonPitch = 18, UtilityButtonTop = 1, UtilityButtonWidth = 13,
+                     UtilityButtonHeight = 14;
 // The toolbar button (titlebarcontrols' "toolbar", 20 x 13) of a window with a toolbar: 7 px from the
 // right, centred on the other buttons (measured on a 10.6 screenshot)
 static constexpr int ToolbarButtonRight = 7, ToolbarButtonTop = 5, ToolbarButtonWidth = 20, ToolbarButtonHeight = 13;
@@ -237,6 +242,7 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     }
 
     applyGeometry(c);
+    m_compositor.setOpacity(c->frame, c->opacity);
     xcb_map_window(m_conn, w);
     xcb_map_window(m_conn, c->grip);
     xcb_map_window(m_conn, c->frame);
@@ -297,6 +303,7 @@ void WindowServer::readProperties(Client *c)
     // _MOTIF_WM_HINTS: flags, functions, decorations; decorations 0 means the program draws its own
     QVector<uint32_t> motif = X11::cardinals(c->window, atom("_MOTIF_WM_HINTS"), atom("_MOTIF_WM_HINTS"));
     c->decorated = !(motif.size() >= 3 && (motif[0] & 2) && motif[2] == 0);
+    c->utility = hasType(c->window, {"_NET_WM_WINDOW_TYPE_UTILITY"});
     QVector<uint32_t> unified = X11::cardinals(c->window, atom("_SNOWLEOPARD_UNIFIED_TOOLBAR"), XCB_ATOM_CARDINAL);
     c->unifiedToolbar = unified.isEmpty() ? 0 : int(unified[0]);
     c->hasToolbar = unified.size() > 1 ? unified[1] != 0 : c->unifiedToolbar > 0;
@@ -312,6 +319,8 @@ void WindowServer::readProperties(Client *c)
     }
     QVector<uint32_t> rounded = X11::cardinals(c->window, atom("_SNOWLEOPARD_ROUNDED_BOTTOM"), XCB_ATOM_CARDINAL);
     c->roundedBottom = !rounded.isEmpty() && rounded[0];
+    QVector<uint32_t> opacity = X11::cardinals(c->window, atom("_NET_WM_WINDOW_OPACITY"), XCB_ATOM_CARDINAL);
+    c->opacity = opacity.isEmpty() ? 1.0 : opacity[0] / double(0xffffffffu);
     QVector<uint32_t> transient = X11::cardinals(c->window, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW);
     c->transientFor = transient.isEmpty() ? 0 : transient[0];
 }
@@ -405,7 +414,8 @@ void WindowServer::sendConfigureNotify(Client *c)
 QImage WindowServer::buttonImage(const Client *c, int button) const
 {
     static const char *names[] = {"close", "minimize", "zoom", "toolbar"};
-    QStringList path = {"titlebarcontrols", names[button], button == ToolbarButton ? "colorsrgb" : "colorsryg", "regularwin"};
+    QStringList path = {"titlebarcontrols", names[button], button == ToolbarButton ? "colorsrgb" : "colorsryg"};
+    path << (c->utility ? QStringList{"utilwin", "variant2"} : QStringList{"regularwin"});
     if (c != m_active)
         path << "inactive";
     else if (c->pressed == button)
@@ -415,12 +425,19 @@ QImage WindowServer::buttonImage(const Client *c, int button) const
     return ArtFile::element(path).single();
 }
 
+QRect WindowServer::buttonRect(const Client *c, int b)
+{
+    if (c->utility)
+        return QRect(UtilityButtonLeft + b * UtilityButtonPitch, UtilityButtonTop, UtilityButtonWidth, UtilityButtonHeight);
+    return QRect(ButtonLeft + b * ButtonPitch, ButtonTop, ButtonWidth, ButtonHeight);
+}
+
 int WindowServer::buttonAt(const Client *c, QPoint p) const
 {
     if (!c->titleHeight())
         return None;
     for (int b = Close; b <= Zoom; ++b)
-        if (QRect(ButtonLeft + b * ButtonPitch, ButtonTop, ButtonWidth, ButtonHeight).contains(p))
+        if (buttonRect(c, b).contains(p))
             return b;
     if (c->hasToolbar &&
         QRect(c->geometry.width() - ToolbarButtonRight - ToolbarButtonWidth, ToolbarButtonTop, ToolbarButtonWidth, ToolbarButtonHeight).contains(p))
@@ -444,6 +461,15 @@ void WindowServer::paintTitle(Client *c)
             // a unified window: the title bar's rows of the gradient its toolbar goes on with, no line under
             for (int y = 0; y < th; ++y)
                 p.fillRect(0, y, w, 1, X11::unifiedToolbarColor(y, th + c->unifiedToolbar, active));
+        } else if (c->utility) {
+            // as a 10.6 screenshot shows it (About This Mac, not key)
+            p.fillRect(0, 0, w, 1, QColor(242, 242, 242));
+            for (int y = 1; y <= 14; ++y) {
+                const int g = int(std::lround(237 + (217 - 237) * (y - 1) / 13.0));
+                p.fillRect(0, y, w, 1, QColor(g, g, g));
+            }
+            p.fillRect(0, 15, w, 1, QColor(166, 166, 166));
+            p.fillRect(0, 16, w, 1, QColor(217, 217, 217));
         } else {
             p.fillRect(0, 0, w, 1, QColor(255, 255, 255));
             QLinearGradient g(0, 1, 0, th - 1);
@@ -456,13 +482,13 @@ void WindowServer::paintTitle(Client *c)
         for (int b = Close; b <= Zoom; ++b) {
             QImage button = buttonImage(c, b);
             if (!button.isNull())
-                p.drawImage(ButtonLeft + b * ButtonPitch, ButtonTop, button);
+                p.drawImage(buttonRect(c, b).topLeft(), button);
             else {
                 static const QColor colors[] = {QColor(0xE0, 0x44, 0x3E), QColor(0xDE, 0xA1, 0x23), QColor(0x5E, 0xB5, 0x34)};
                 p.setRenderHint(QPainter::Antialiasing);
                 p.setBrush(active ? colors[b] : QColor(190, 190, 190));
                 p.setPen(Qt::NoPen);
-                p.drawEllipse(QRectF(ButtonLeft + b * ButtonPitch + 0.5, ButtonTop + 1.5, 13, 13));
+                p.drawEllipse(QRectF(buttonRect(c, b)).adjusted(0.5, 1.5, -0.5, -1.5));
             }
         }
 
@@ -474,9 +500,10 @@ void WindowServer::paintTitle(Client *c)
         }
 
         // the title, centred on the window, in Lucida Grande 13, engraved; the proxy icon before it
-        QFont font = Assets::uiFont(13);
+        // (a utility window's in the small system font, 11)
+        QFont font = Assets::uiFont(c->utility ? 11 : 13);
         p.setFont(font);
-        const int left = ButtonLeft + 3 * ButtonPitch + 6;
+        const int left = buttonRect(c, Zoom).right() + 1 + 6;
         const bool proxy = !c->proxyIcon.isNull();
         const int iconRoom = proxy ? ProxyIconSize + ProxyIconGap : 0;
         const int room = w - 2 * left - iconRoom;
@@ -489,7 +516,7 @@ void WindowServer::paintTitle(Client *c)
             p.drawImage(QRect(x, ProxyIconTop, ProxyIconSize, ProxyIconSize), c->proxyIcon);
             p.setOpacity(1);
         }
-        QRect r(x + iconRoom, 0, w - x - iconRoom, th - 1);
+        QRect r(x + iconRoom, 0, w - x - iconRoom, c->utility ? 15 : th - 1);
         p.setPen(QColor(255, 255, 255, 120));
         Aqua::drawText(p, r.translated(0, 1), Qt::AlignLeft | Qt::AlignVCenter, text);
         p.setPen(active ? QColor(0x26, 0x26, 0x26) : QColor(0x7F, 0x7F, 0x7F));
@@ -825,6 +852,16 @@ void WindowServer::handleKey(xcb_key_press_event_t *e)
     }
     if (!c)
         return;
+    // a key the application's own menus answer (_SNOWLEOPARD_KEY_EQUIVALENTS): given to its window
+    if (X11::cardinals(c->window, atom("_SNOWLEOPARD_KEY_EQUIVALENTS"), XCB_ATOM_CARDINAL).contains(sym)) {
+        xcb_key_press_event_t k = *e;
+        k.event = c->window;
+        k.child = XCB_NONE;
+        k.same_screen = 1;
+        xcb_send_event(m_conn, 0, c->window, XCB_EVENT_MASK_KEY_PRESS, reinterpret_cast<const char *>(&k));
+        xcb_flush(m_conn);
+        return;
+    }
     if (sym == keyW)
         close(c);
     else if (sym == keyM)
@@ -901,6 +938,9 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
                 applyShape(c);
             } else if (e->atom == atom("WM_PROTOCOLS") || e->atom == XCB_ATOM_WM_HINTS) {
                 readProperties(c);
+            } else if (e->atom == atom("_NET_WM_WINDOW_OPACITY")) {
+                readProperties(c);
+                m_compositor.setOpacity(c->frame, c->opacity);
             } else if (e->atom == atom("_NET_WM_ICON_GEOMETRY") && c->minimized) {
                 m_compositor.retarget(c->window, iconGeometry(c));   // the Dock made its tile
             }
@@ -1043,7 +1083,7 @@ void WindowServer::motion(xcb_motion_notify_event_t *e)
         // the buttons' glyphs while the pointer is over them
         Client *c = find(e->event);
         if (c && e->event == c->frame) {
-            bool over = QRect(ButtonLeft, ButtonTop, 2 * ButtonPitch + ButtonWidth, ButtonHeight).contains(e->event_x, e->event_y);
+            bool over = buttonRect(c, Close).united(buttonRect(c, Zoom)).contains(e->event_x, e->event_y);
             if (over != c->overButtons) {
                 c->overButtons = over;
                 paintTitle(c);
@@ -1151,6 +1191,18 @@ void WindowServer::clientMessage(xcb_client_message_event_t *e)
                     toggleZoom(c);
             } else if (prop == atom("_NET_WM_STATE_HIDDEN") && action == 1) {
                 minimize(c);
+            } else if (prop == atom("_NET_WM_STATE_ABOVE")) {
+                // -[NSWindow setLevel:] to the floating level and back (a Stickies note's Floating Window)
+                const bool want = action == 2 ? !c->floating : action == 1;
+                c->floating = want;
+                c->keptStates.removeAll(prop);
+                if (want)
+                    c->keptStates << prop;
+                setNetState(c);
+                if (want)
+                    raise(c);
+                else
+                    restackLayers();
             }
         }
     }

@@ -36,6 +36,11 @@ struct Color {
     double r = 0, g = 0, b = 0, a = 1;
     static Color gray(int v, double alpha = 1) { return {v / 255.0, v / 255.0, v / 255.0, alpha}; }
     static Color rgb(int r, int g, int b, double alpha = 1) { return {r / 255.0, g / 255.0, b / 255.0, alpha}; }
+    // A colour in Generic RGB (CoreUI's _CUIColorSpaceGetRGB: its gradients' _kPairs, kColorTable; AppKit's
+    // calibrated colours), matched to the screen as ColorSync does: lighter in its middle tones
+    static Color generic(int r, int g, int b, double alpha = 1);
+    static Color genericGray(int v, double alpha = 1) { return generic(v, v, v, alpha); }
+    Color matched() const;   // this colour's values taken as Generic RGB's
     static Color parse(const std::string &hex);   // "#rrggbb"
     std::string name() const;                     // "#rrggbb"
     void set(cairo_t *cr) const { cairo_set_source_rgba(cr, r, g, b, a); }

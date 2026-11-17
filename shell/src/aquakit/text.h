@@ -8,6 +8,9 @@
 
 #include <string>
 
+typedef struct _PangoContext PangoContext;
+typedef struct _PangoLayout PangoLayout;
+
 namespace AK {
 
 struct Font {
@@ -38,5 +41,13 @@ void drawWrappedText(cairo_t *cr, const std::string &text, const Rect &r, const 
 double wrappedHeight(const std::string &text, double width, const Font &font);
 // The baseline's distance from the line's top (for a field's text and its caret)
 double ascent(const Font &font);
+
+// For text laid out by the caller (NSLayoutManager's own: several fonts and colours): AquaKit's pango
+// context (Quartz's font options), a layout drawn at the current point in the source colour as
+// drawText draws, and the current path (glyphs the caller added: pango_cairo_glyph_string_path) filled
+// the same way, with Quartz's dilation for a font of `size` and its LCD smoothing; the path is cleared.
+PangoContext *pangoContext();
+void showTextLayout(cairo_t *cr, PangoLayout *layout, double size);
+void fillTextPath(cairo_t *cr, double size);
 
 } // namespace AK

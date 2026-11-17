@@ -3,6 +3,8 @@
 // children when none does), the active one, and the Dock's and the menu bar's own window types.
 #pragma once
 
+#include <QPolygon>
+
 #include <QAbstractNativeEventFilter>
 #include <QColor>
 #include <QImage>
@@ -56,6 +58,11 @@ void setDock(QWidget *widget, int strutTop, int strutBottom);
 void shapeToContent(QWidget *widget, const QImage &content, const QRegion &keep = {});
 void setDesktop(QWidget *widget);
 void setMenu(QWidget *widget);
+// Quartz's magic mirror (CGSSetMagicMirror, as the Dock asks for it under its glass floor): the
+// window server draws under `widget`, inside `quad` (the window's pixels), what is beside it turned
+// over: direction 1 bottom, 2 top, 3 left, 4 right; 0 or an empty quad turns it off
+// (_SNOWLEOPARD_MAGIC_MIRROR, set only when it changes)
+void setMagicMirror(QWidget *widget, int direction, const QPolygon &quad);
 // A window whose toolbar continues its title bar (10.6's unified windows): the toolbar's height, for
 // WindowServer, which draws the title bar's part of the one gradient (unifiedToolbarColor gives it).
 void setUnifiedToolbar(QWidget *widget, int height);

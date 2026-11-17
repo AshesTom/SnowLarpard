@@ -356,6 +356,7 @@ public:
                 if (!m_toolbarShown)
                     m_window->onToggleToolbar();
                 m_window->makeFirstResponder(m_search);
+                m_search->selectAll();
             }
         } else if (a == "doFindNext:" || a == "doFindPrevious:") {
             m_match = (m_match + (a == "doFindNext:" ? 1 : m_matchCount - 1)) % m_matchCount;

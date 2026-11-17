@@ -51,12 +51,26 @@ PangoLayout *layout(const std::string &text, const Font &font)
 // that isn't rectangles, smoothing turned off) the dilated outlines filled in grey.
 void showLayout(cairo_t *cr, PangoLayout *l, double size)
 {
+    cairo_save(cr);
+    cairo_set_tolerance(cr, 0.02);
+    pango_cairo_layout_path(cr, l);
+    fillTextPath(cr, size);
+    cairo_restore(cr);
+}
+
+} // namespace
+
+PangoContext *pangoContext() { return context(); }
+
+void showTextLayout(cairo_t *cr, PangoLayout *l, double size) { showLayout(cr, l, size); }
+
+void fillTextPath(cairo_t *cr, double size)
+{
     cairo_surface_t *target = cairo_get_group_target(cr);
     double offsetX = 0, offsetY = 0;
     cairo_surface_get_device_offset(target, &offsetX, &offsetY);
     cairo_save(cr);
     cairo_set_tolerance(cr, 0.02);
-    pango_cairo_layout_path(cr, l);
     cairo_path_t *flat = cairo_copy_path_flat(cr);
     cairo_new_path(cr);
     // in the target's own pixels
@@ -115,9 +129,8 @@ void showLayout(cairo_t *cr, PangoLayout *l, double size)
         cairo_fill(cr);
     }
     cairo_restore(cr);
+    cairo_new_path(cr);
 }
-
-} // namespace
 
 double textWidth(const std::string &text, const Font &font)
 {

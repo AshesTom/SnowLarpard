@@ -40,15 +40,16 @@ mac_app(Dock src/dock/main.cpp src/dock/dock.cpp src/dock/dock.h src/dock/dockme
         src/dock/stack.cpp src/dock/stack.h)
 mac_app(SystemUIServer src/menubar/main.cpp src/menubar/menubar.cpp src/menubar/menubar.h
         src/menubar/extras.cpp src/menubar/extras.h src/menubar/appmenu.cpp src/menubar/appmenu.h
-        src/menubar/menubarfilter.cpp src/menubar/menubarfilter.h
-        src/menubar/aquakitmenus.cpp src/menubar/aquakitmenus.h)
+        src/menubar/menubarfilter.cpp src/menubar/menubarfilter.h src/menubar/findermenus.cpp src/menubar/findermenus.h
+        src/menubar/aquakitmenus.cpp src/menubar/aquakitmenus.h
+        src/menubar/airport.cpp src/menubar/airport.h src/menubar/bluetooth.cpp src/menubar/bluetooth.h)
 target_link_libraries(SystemUIServer PRIVATE Qt6::DBus Qt6::Network)
 mac_app(Finder src/finder/main.cpp src/finder/desktop.cpp src/finder/desktop.h)
 pkg_check_modules(XCB_SAVER REQUIRED IMPORTED_TARGET xcb-screensaver)
 target_link_libraries(Finder PRIVATE PkgConfig::XCB_SAVER)
 
 # AquaKit: AppKit and CoreUI for the Mac applications, without Qt (cairo, pango), on Wayland and X11
-pkg_check_modules(AQUAKIT REQUIRED IMPORTED_TARGET xcb xcb-keysyms cairo cairo-xcb pangocairo fontconfig xkbcommon libturbojpeg libtiff-4)
+pkg_check_modules(AQUAKIT REQUIRED IMPORTED_TARGET xcb xcb-keysyms cairo cairo-xcb pangocairo fontconfig xkbcommon libturbojpeg libtiff-4 lcms2 zlib)
 add_library(aquakit STATIC
     src/aquakit/appkit.cpp src/aquakit/appkit.h
     src/aquakit/archive.cpp src/aquakit/archive.h
@@ -123,6 +124,14 @@ target_link_libraries(Calculator PRIVATE aquakit)
 target_compile_options(Calculator PRIVATE -Wall -Wextra)
 set_target_properties(Calculator PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Calculator.app/Contents/MacOS")
 
+# Stickies.app, on AquaKit: Stickies 7.0's database, notes, colours, Arrange, Find, Import and Export
+# (docs/reverse-status.md, section 16)
+add_executable(Stickies src/stickies/main.cpp src/stickies/database.cpp src/stickies/database.h
+               src/stickies/richtext.cpp src/stickies/richtext.h src/stickies/textview.cpp src/stickies/textview.h)
+target_link_libraries(Stickies PRIVATE aquakit)
+target_compile_options(Stickies PRIVATE -Wall -Wextra)
+set_target_properties(Stickies PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Stickies.app/Contents/MacOS")
+
 # Mail.app, on AquaKit: IMAP and SMTP by libcurl, the passwords in the keyring by libsecret
 # (docs/mail-reverse.md); Preview's reader of NeXT plists for its *.toolbar files
 pkg_check_modules(MAIL IMPORTED_TARGET libcurl libsecret-1)
@@ -153,6 +162,14 @@ else()
     message(STATUS "Photo Booth: not built (no linux/videodev2.h)")
 endif()
 
+# Software Update, on AquaKit (its nibs from the DVD, the updates from Apple's catalog through
+# tools/softwareupdate.py)
+add_executable(SoftwareUpdate src/softwareupdate/main.cpp)
+target_link_libraries(SoftwareUpdate PRIVATE aquakit)
+target_compile_options(SoftwareUpdate PRIVATE -Wall -Wextra)
+set_target_properties(SoftwareUpdate PROPERTIES AUTOMOC OFF OUTPUT_NAME "Software Update"
+                      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Software Update.app/Contents/MacOS")
+
 # loginwindow's About This Mac, on AquaKit (its nib from the DVD)
 add_executable(loginwindow src/loginwindow/main.cpp)
 target_link_libraries(loginwindow PRIVATE aquakit)
@@ -170,8 +187,25 @@ add_executable(FinderWindows src/finder/browser/main.cpp src/finder/browser/file
                src/finder/browser/viewoptions.cpp src/finder/browser/viewoptions.h
                src/finder/browser/infowindow.cpp src/finder/browser/infowindow.h
                src/finder/browser/fileops.cpp src/finder/browser/fileops.h src/finder/browser/progress.cpp
-               src/finder/browser/progress.h)
+               src/finder/browser/progress.h src/finder/browser/quicklook.cpp src/finder/browser/quicklook.h
+               src/finder/browser/goto.cpp src/finder/browser/goto.h
+               src/finder/browser/search.cpp src/finder/browser/search.h
+               src/finder/browser/labels.cpp src/finder/browser/labels.h
+               src/finder/browser/preferences.cpp src/finder/browser/preferences.h)
 target_link_libraries(FinderWindows PRIVATE aquakit)
+# the desktop's icons (Finder.app's Qt desktop) draw with the Finder windows' own code: the items, their
+# icons from CoreTypes, the Desktop folder's .DS_Store, the labels
+target_sources(Finder PRIVATE src/finder/desktopicons.cpp src/finder/desktopicons.h src/finder/browser/files.cpp
+               src/finder/browser/dsstore.cpp src/finder/browser/labels.cpp)
+target_include_directories(Finder PRIVATE src/finder/browser)
+target_link_libraries(Finder PRIVATE aquakit Qt6::Network)
+add_dependencies(Finder FinderWindows)
+
+if(POPPLER_FOUND)
+    # Quick Look's PDFs: the first page
+    target_link_libraries(FinderWindows PRIVATE PkgConfig::POPPLER)
+    target_compile_definitions(FinderWindows PRIVATE FINDER_POPPLER)
+endif()
 target_compile_options(FinderWindows PRIVATE -Wall -Wextra)
 set_target_properties(FinderWindows PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Finder.app/Contents/MacOS")
 

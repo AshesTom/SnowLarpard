@@ -10,6 +10,7 @@
 #include <QHash>
 #include <QImage>
 #include <QObject>
+#include <QPolygon>
 #include <QRect>
 #include <QTimer>
 #include <QVector>
@@ -32,6 +33,8 @@ public:
     // everything again (the key window changed)
     void damageAll();
     bool running() const { return m_overlay != 0; }
+    // A top-level window drawn at this opacity (-[NSWindow setAlphaValue:]), 1 for opaque
+    void setOpacity(xcb_window_t frame, double opacity);
 
     // Minimizing, as 10.6's Dock has the window server do it (WAWindow genie:direction:genie: and
     // setSystemFrame:from:, docs/reverse-status.md): the window's picture kept when it goes, drawn
@@ -74,6 +77,11 @@ private:
         xcb_render_picture_t shadow = 0;
         int shadowKind = NoShadow;
         QRect shadowRect;               // the shadow's place around the window, in the window's coordinates
+        // The Quartz magic mirror it asks for (the Dock's floor, _SNOWLEOPARD_MAGIC_MIRROR): its
+        // direction (CGSSetMagicMirror's: 1 bottom, 2 top, 3 left, 4 right; 0 none, -1 not read yet)
+        // and the quadrangle, in the window's coordinates
+        int mirror = -1;
+        QPolygon mirrorQuad;
     };
 
     bool findFormats(xcb_visualid_t rootVisual);
@@ -87,6 +95,13 @@ private:
     void damageWindow(const Win *w);
     void schedule();
     void paint();
+    // The magic mirror (CoreGraphics' Server/Windows/MagicMirror.c): under the window that asked for
+    // it, what is drawn beside its quadrangle, turned over that side's edge
+    void readMirror(Win *w);
+    QRect mirrorTarget(const Win *w) const;   // where it is drawn, in root coordinates
+    QRect mirrorSource(const Win *w) const;   // what it shows
+    void damageMirror(const Win *w);
+    void drawMirror(const Win *w);
 
     xcb_connection_t *m_conn = nullptr;
     xcb_window_t m_root = 0, m_overlay = 0, m_owner = 0;
@@ -97,6 +112,8 @@ private:
     QHash<xcb_visualid_t, xcb_render_pictformat_t> m_visualFormats;
     QHash<xcb_render_pictformat_t, bool> m_formatAlpha;
     xcb_render_picture_t m_overlayPicture = 0, m_buffer = 0, m_black = 0;
+    uint8_t m_depth = 24;
+    xcb_atom_t m_mirrorAtom = 0;
     xcb_xfixes_region_t m_damage = 0, m_scratch = 0;
     QHash<xcb_window_t, Win *> m_windows;
     QVector<Win *> m_order;   // bottom to top
@@ -104,6 +121,8 @@ private:
     QTimer m_timer;
     xcb_render_pictformat_t m_argb32 = 0;
     QHash<xcb_window_t, Snapshot> m_snapshots;
+    QHash<xcb_window_t, double> m_opacity;            // the windows not opaque
+    QHash<int, xcb_render_picture_t> m_opacityMasks;  // a solid alpha for each, in 1/255
     QVector<Animation> m_animations;
     QTimer m_animTimer;
 };

@@ -9,6 +9,8 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QStandardPaths>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
@@ -39,10 +41,34 @@ QImage menuIcon(const QString &macPath, int height, qreal dpr, bool white)
     return img;
 }
 
-static void drawCentered(QPainter &p, const QRect &r, const QImage &img)
+void drawCentered(QPainter &p, const QRect &r, const QImage &img)
 {
     QSizeF s = img.deviceIndependentSize();
     p.drawImage(QPointF(r.x() + (r.width() - s.width()) / 2, r.y() + (r.height() - s.height()) / 2), img);
+}
+
+void openPreferencePane(const QString &pane)
+{
+    // System Preferences.app beside SystemUIServer.app, as the Finder finds it
+    const QString prefs = QCoreApplication::applicationDirPath() + "/../../../System Preferences.app/Contents/MacOS/System Preferences";
+    QProcess::startDetached(QFileInfo(prefs).absoluteFilePath(), {"--pane", pane});
+}
+
+void removeActions(QMenu *menu, const QList<QAction *> &actions)
+{
+    for (QAction *a : actions) {
+        menu->removeAction(a);
+        if (a->parent() == menu)
+            a->deleteLater();
+    }
+}
+
+bool startFirst(const QStringList &programs, const QStringList &args)
+{
+    for (const QString &program : programs)
+        if (!QStandardPaths::findExecutable(program).isEmpty())
+            return QProcess::startDetached(program, args);
+    return false;
 }
 
 // ---- the clock

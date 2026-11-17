@@ -102,6 +102,9 @@ mkdir -p -- "$lib/session" "$bin"
 cp -a -- "$apps" "$lib/apps"
 cp -a -- "$assets" "$lib/assets"
 install -m 755 -- "$root/session/snowleopard-session" "$root/session/snowleopard-wayland" "$lib/session/"
+# Software Update's: Apple's catalog and its packages (softwareupdate.py), laid over the files (extract.py)
+mkdir -p -- "$lib/tools"
+install -m 755 -- "$root/tools/extract.py" "$root/tools/softwareupdate.py" "$lib/tools/"
 # every user's: the DVD's files keep their 0600 otherwise
 chmod -R u+rwX,go+rX,go-w -- "$lib"
 [[ $EUID -eq 0 ]] && chown -R root:root -- "$lib"

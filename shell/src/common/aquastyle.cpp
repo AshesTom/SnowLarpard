@@ -180,6 +180,12 @@ QSize AquaStyle::sizeFromContents(ContentsType ct, const QStyleOption *opt, cons
         QFontMetrics fm(mi ? mi->font : QFont());
         int textW = mi ? fm.horizontalAdvance(mi->text.section('\t', 0, 0)) : size.width();
         int shortcutW = mi && mi->text.contains('\t') ? fm.horizontalAdvance(mi->text.section('\t', 1)) + 24 : 0;
+        if (mi && !mi->icon.isNull() && prop(w, "aquaTrailingIcons")) {
+            // AME_AirPortNetworkItemView's -idealMenuItemWidth: the title 21 in, then the icons (the
+            // lock's 19, the bars' 6 + 17) and 12 at the right
+            const QSize icon = mi->icon.availableSizes().value(0);
+            return QSize(21 + textW + icon.width() + 12, 21);
+        }
         return QSize(21 + textW + shortcutW + 22, 21);
     }
     case CT_PushButton:
@@ -313,6 +319,14 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         Aqua::drawText(*p, r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextShowMnemonic, label);
         if (!shortcut.isEmpty())
             Aqua::drawText(*p, r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignRight, shortcut);
+        if (!mi->icon.isNull() && prop(w, "aquaTrailingIcons")) {
+            // the menu extras' pictures at the right of the title (the AirPort menu's lock and bars),
+            // their selected variant white
+            const QSize size = mi->icon.availableSizes().value(0);
+            const QPixmap px = mi->icon.pixmap(size, p->device() ? p->device()->devicePixelRatioF() : 1.0,
+                                               selected ? QIcon::Selected : QIcon::Normal);
+            p->drawPixmap(QPoint(r.right() + 1 - 12 - size.width(), r.top() + (r.height() - size.height()) / 2), px);
+        }
         if (mi->menuItemType == QStyleOptionMenuItem::SubMenu) {
             // the submenu's triangle
             p->save();

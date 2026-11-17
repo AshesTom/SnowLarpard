@@ -128,8 +128,18 @@ QVector<QMenu *> build(int pid, const App &app, const std::function<QMenu *()> &
         if (top.depth != 0 || top.kind != 'M')
             continue;
         if (top.title == "Window") {
-            menus.append(windowMenu());
-            continue;
+            // the shell's, unless the application's has actions of its own (Stickies' Collapse
+            // Window, Arrange By): then the application's, its windows listed by it
+            static const QStringList standard = {"performMiniaturize:", "miniaturize:", "performZoom:", "zoom:",
+                                                 "arrangeInFront:", "makeKeyAndOrderFront:", "performClose:", ""};
+            bool own = false;
+            for (int j = i + 1; j < entries.size() && entries[j].depth > 0; ++j)
+                if (entries[j].kind == 'I' && !standard.contains(entries[j].action))
+                    own = true;
+            if (!own) {
+                menus.append(windowMenu());
+                continue;
+            }
         }
         auto *menu = new QMenu(top.title);
         const QString path = top.path;

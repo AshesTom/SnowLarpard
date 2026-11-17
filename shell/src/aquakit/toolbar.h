@@ -12,14 +12,19 @@ namespace AK {
 
 class Toolbar : public View {
 public:
-    // icon and label: 54 points of gradient; icon only: the same less the label and its gap (17)
-    static constexpr double Gradient = 54, Height = Gradient + 1, IconOnlyGradient = 37,
-                            ControlTop = 7, ControlHeight = 25, Margin = 4, Padding = 4,
+    // icon and label: 54 points of gradient. Icon only (the Finder's, a textured window): AppKit's
+    // -[NSToolbarView _sizeVerticalyToFit] makes the toolbar its item viewers' height (29 here: the
+    // 25 point control, 2 above and under it) plus _NSToolbarMetrics' margins 0x10 and 0x18, 3 and 0 in
+    // _defaultMetalMetrics (__NSToolbarMetricsGetDefault: a textured window not unified), so 32, the
+    // control 2 down (a 10.6 Finder window: 22 + 32, the bezels from row 24)
+    static constexpr double Gradient = 54, Height = Gradient + 1, IconOnlyGradient = 32,
+                            ControlTop = 7, IconOnlyControlTop = 2, ControlHeight = 25, Margin = 4, Padding = 4,
                             SpaceWidth = 32, FlexibleMinimum = 1;   // -[NSToolbarSpaceItem minSize], ...FlexibleSpaceItem
 
     explicit Toolbar(bool labels = true) : m_labels(labels) {}
     double gradient() const { return m_labels ? Gradient : IconOnlyGradient; }
     double height() const { return gradient() + 1; }
+    double controlTop() const { return m_labels ? ControlTop : IconOnlyControlTop; }
 
     struct Item {
         std::string id, label;

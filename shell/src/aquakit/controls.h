@@ -110,18 +110,36 @@ private:
 
 // A menu as NSPopUpButton and the contextual menus show it: its own window over everything
 struct MenuItem {
+    MenuItem(std::string title = {}, bool separator = false, bool enabled = true, bool checked = false)
+        : title(std::move(title)), separator(separator), enabled(enabled), checked(checked) {}
     std::string title;
     bool separator = false;
     bool enabled = true;
     bool checked = false;
     static MenuItem line() { return {{}, true, false, false}; }
+    std::string keyEquivalent;       // drawn at the right ("⇧⌘N")
+    std::vector<MenuItem> submenu;   // a hierarchical item: its submenu opens beside it
+    Image image;                     // drawn before the title (Open With's applications)
+    // the Finder's label row (TLabelViewForMenu): the title over a row of swatches, the first the
+    // "none" one (a cross); a swatch chosen is done(Menu::submenuChoice(item, swatch))
+    std::vector<Color> swatches;
+    int swatchChecked = -1;
 };
 class Menu {
 public:
-    // Its top left at `at` in `parent`'s content, at least minWidth wide; done(-1) when dismissed
+    // Its top left at `at` in `parent`'s content, at least minWidth wide; done(-1) when dismissed. An
+    // item of a submenu is done(Menu::submenuChoice(item, subitem))
     static void popUp(Window *parent, Point at, const std::vector<MenuItem> &items, double minWidth, Font font, std::function<void(int)> done);
+    static constexpr int SubmenuBase = 1 << 16;
+    static int submenuChoice(int item, int subitem) { return SubmenuBase * (item + 1) + subitem; }
+    // a choice's item and subitem (-1 for an item of the menu itself)
+    static void split(int choice, int &item, int &subitem)
+    {
+        item = choice >= SubmenuBase ? choice / SubmenuBase - 1 : choice;
+        subitem = choice >= SubmenuBase ? choice % SubmenuBase : -1;
+    }
     static double itemTop(const std::vector<MenuItem> &items, int index);   // within the menu
-    static constexpr double ItemHeight = 19, SeparatorHeight = 12, Padding = 4;
+    static constexpr double ItemHeight = 19, SeparatorHeight = 12, Padding = 4, SwatchRowHeight = 40;
 };
 
 class PopUpButton : public Control {
@@ -172,7 +190,13 @@ public:
     std::string text, placeholder;
     std::function<void(const std::string &)> onChange;
     std::function<void()> onEnter;   // Return: the field's action
+    std::function<void()> onCancel;  // Escape, when set (the Finder's renaming)
+    std::function<bool(Event &)> onKey;   // a key before the field's own handling: true when taken (Tab completing)
     bool acceptsFirstResponder() const override { return editable && isEnabled(); }
+    // the selection (NSText's selectedRange), in bytes; typing replaces it
+    void selectRange(size_t from, size_t to);
+    void selectAll() { selectRange(0, text.size()); }
+    bool hasSelection() const { return m_anchor != m_caret; }
     void draw(cairo_t *cr) override;
     void mouseDown(Event &e) override;
     void keyDown(Event &e) override;
@@ -182,7 +206,9 @@ protected:
     Rect textRect() const;
     std::string shown() const;
 private:
-    size_t m_caret = 0;
+    size_t m_caret = 0, m_anchor = 0;
+    bool m_keepSelection = false;   // selectRange before the field had the keyboard
+    void deleteSelection();
     int m_blink = 0;
     bool m_caretOn = true;
 };

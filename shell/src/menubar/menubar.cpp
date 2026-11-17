@@ -6,7 +6,10 @@
 #include "aqua.h"
 #include "art.h"
 #include "assets.h"
+#include "airport.h"
+#include "bluetooth.h"
 #include "extras.h"
+#include "findermenus.h"
 #include "menubarfilter.h"
 #include "session.h"
 #include "x11.h"
@@ -45,8 +48,10 @@ MenuBar::MenuBar(QWidget *parent) : QWidget(parent, Qt::FramelessWindowHint | Qt
     connect(prefsWatch, &QFileSystemWatcher::directoryChanged, coalesce, qOverload<>(&QTimer::start));
     connect(coalesce, &QTimer::timeout, this, &MenuBar::reloadDesktop);
 
-    // Right to left, as SystemUIServer lays them: Spotlight at the edge, then the clock...
-    m_extras = {new SpotlightExtra(this), new ClockExtra(this), new BatteryExtra(this), new VolumeExtra(this)};
+    // Right to left, as SystemUIServer lays them: Spotlight at the edge, then the clock... then
+    // AirPort and Bluetooth (a 10.6 MacBook's default order)
+    m_extras = {new SpotlightExtra(this), new ClockExtra(this),  new BatteryExtra(this),
+                new VolumeExtra(this),    new AirPortExtra(this), new BluetoothExtra(this)};
     for (MenuExtra *e : m_extras)
         connect(e, &MenuExtra::changed, this, [this] { layoutItems(); update(); });
 
@@ -121,6 +126,8 @@ void MenuBar::activeChanged()
         }
     }
     m_active = active;
+    const bool desktopChanged = desktop != m_desktopActive;
+    m_desktopActive = desktop || !active;
     // the window's own menus, when it publishes them
     auto menu = active && !desktop ? m_registrar->menuFor(active) : QPair<QString, QString>();
     QString key = menu.first.isEmpty() ? QString() : menu.first + menu.second;
@@ -136,7 +143,7 @@ void MenuBar::activeChanged()
             key = "aquakit:" + QString::number(pid);
         }
     }
-    if (app.id == m_app.id && key == m_menuKey)
+    if (app.id == m_app.id && key == m_menuKey && !desktopChanged)
         return;
     m_aquaKitPid = aquaKitPid;
     m_app = app;
@@ -395,12 +402,16 @@ QMenu *MenuBar::appleMenu()
 {
     auto *m = new QMenu;
     m->addAction("About This Mac", [] { Session::aboutThisMac(); });
-    QAction *update = m->addAction("Software Update…", [] {
+    // 10.6's Software Update (Apple's catalog: the Mac OS X files' updates); without it, Linux's
+    const App softwareUpdate = Apps::forMacBundle("/System/Library/CoreServices/Software Update.app");
+    QAction *update = m->addAction("Software Update…", [softwareUpdate] {
+        if (Apps::launch(softwareUpdate))
+            return;
         for (const char *id : {"org.kde.discover", "org.gnome.Software", "pamac-manager", "octopi"})
             if (Apps::launch(Apps::byId(id)))
                 return;
     });
-    update->setEnabled(Apps::byId("org.kde.discover").valid() || Apps::byId("org.gnome.Software").valid() ||
+    update->setEnabled(softwareUpdate.valid() || Apps::byId("org.kde.discover").valid() || Apps::byId("org.gnome.Software").valid() ||
                        Apps::byId("pamac-manager").valid() || Apps::byId("octopi").valid());
     m->addSeparator();
     App prefs = Apps::forMacBundle("/Applications/System Preferences.app");
@@ -486,10 +497,16 @@ QVector<QMenu *> MenuBar::appMenus(const QString &name, bool finder)
             Session::aboutThisMac();
     })->setEnabled(finder);
     appMenu->addSeparator();
-    appMenu->addAction("Preferences…\t⌘,")->setEnabled(false);
+    if (finder)
+        appMenu->addAction("Preferences…\t⌘,", [] { FinderMenus::send("cmdPreferences:"); });
+    else
+        appMenu->addAction("Preferences…\t⌘,")->setEnabled(false);
     if (finder) {
         appMenu->addSeparator();
-        appMenu->addAction("Empty Trash…\t⇧⌘⌫", [] { Session::emptyTrash(); });
+        appMenu->addAction("Empty Trash…\t⇧⌘⌫", [] { FinderMenus::send("cmdEmptyTrash:"); });
+        if (QSettings(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/finder.conf", QSettings::IniFormat)
+                .value("EmptyTrashSecurely", false).toBool())
+            appMenu->addAction("Secure Empty Trash…", [] { FinderMenus::send("cmdEmptyTrashSecure:"); });
     }
     appMenu->addSeparator();
     appMenu->addMenu("Services")->setEnabled(false);
@@ -503,57 +520,25 @@ QVector<QMenu *> MenuBar::appMenus(const QString &name, bool finder)
     }
     menus.append(appMenu);
 
-    auto *file = new QMenu("File");
     if (finder) {
-        App f = Apps::finder();
-        file->addAction("New Finder Window\t⌘N", [f] { Apps::launch(f, {QDir::homePath()}); });
-        file->addAction("New Folder\t⇧⌘N")->setEnabled(false);
-        file->addAction("New Smart Folder\t⌥⌘N")->setEnabled(false);
-        file->addSeparator();
-        file->addAction("Open\t⌘O")->setEnabled(false);
-        file->addSeparator();
-        file->addAction("Get Info\t⌘I")->setEnabled(false);
-        file->addSeparator();
-        file->addAction("Find\t⌘F", [this] {
-            for (int i = 0; i < m_items.size(); ++i)
-                if (dynamic_cast<SpotlightExtra *>(m_items[i].extra))
-                    QMetaObject::invokeMethod(this, [this, i] { open(i); }, Qt::QueuedConnection);
-        });
+        // the Finder's own: MenuBar.nib's File, Edit, View and Go (findermenus.cpp)
+        for (QMenu *m : FinderMenus::build(m_desktopActive))
+            menus.append(m);
     } else {
+        auto *file = new QMenu("File");
         file->addAction("Close Window\t⌘W", [active] { X11::close(active); })->setEnabled(active);
-    }
-    menus.append(file);
-
-    auto *edit = new QMenu("Edit");
-    for (const char *e : {"Undo\t⌘Z", "Redo\t⇧⌘Z", "-", "Cut\t⌘X", "Copy\t⌘C", "Paste\t⌘V", "Select All\t⌘A"}) {
-        if (QByteArray(e) == "-")
-            edit->addSeparator();
-        else
-            edit->addAction(QString::fromUtf8(e))->setEnabled(false);   // the applications' own menus come with the global menu
-    }
-    menus.append(edit);
-
-    auto *view = new QMenu("View");
-    if (finder)
-        for (const char *v : {"as Icons\t⌘1", "as List\t⌘2", "as Columns\t⌘3", "as Cover Flow\t⌘4"})
-            view->addAction(QString::fromUtf8(v))->setEnabled(false);
-    else
+        menus.append(file);
+        auto *edit = new QMenu("Edit");
+        for (const char *e : {"Undo\t⌘Z", "Redo\t⇧⌘Z", "-", "Cut\t⌘X", "Copy\t⌘C", "Paste\t⌘V", "Select All\t⌘A"}) {
+            if (QByteArray(e) == "-")
+                edit->addSeparator();
+            else
+                edit->addAction(QString::fromUtf8(e))->setEnabled(false);   // the applications' own menus come with the global menu
+        }
+        menus.append(edit);
+        auto *view = new QMenu("View");
         view->addAction("Enter Full Screen")->setEnabled(false);
-    menus.append(view);
-
-    if (finder) {
-        auto *go = new QMenu("Go");
-        App f = Apps::finder();
-        auto place = [&](const QString &title, const QString &dir) {
-            go->addAction(title, [f, dir] { Apps::launch(f, {dir}); })->setEnabled(QDir(dir).exists());
-        };
-        place("Computer\t⇧⌘C", "/");
-        place("Home\t⇧⌘H", QDir::homePath());
-        place("Desktop\t⇧⌘D", QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
-        place("Downloads\t⌥⌘L", QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
-        place("Documents", QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
-        place("Applications\t⇧⌘A", "/usr/share/applications");
-        menus.append(go);
+        menus.append(view);
     }
     menus.append(windowMenu());
 

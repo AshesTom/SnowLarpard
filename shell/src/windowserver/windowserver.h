@@ -22,6 +22,9 @@ class WindowServer : public QObject, public QAbstractNativeEventFilter {
     Q_OBJECT
 public:
     static constexpr int TitleHeight = 22;
+    // a utility window's (NSUtilityWindowMask, _NET_WM_WINDOW_TYPE_UTILITY: loginwindow's About This
+    // Mac): a 10.6 screenshot's rows, 242, 237 down to 217 over 14, a 166 line, a 217 row
+    static constexpr int UtilityTitleHeight = 17;
 
     WindowServer();
     // false when another window manager has the display
@@ -41,7 +44,9 @@ private:
         bool roundedBottom = false;   // a textured window's bottom corners (_SNOWLEOPARD_ROUNDED_BOTTOM)
         bool minimized = false, fullscreen = false, zoomed = false;
         bool hidden = false;     // minimized by Hide (⌘H): no tile in the Dock, no genie
+        bool utility = false;    // a utility window's small title bar (_NET_WM_WINDOW_TYPE_UTILITY)
         bool floating = false;   // a panel kept over the windows (_NET_WM_STATE_ABOVE, a utility window)
+        double opacity = 1;      // _NET_WM_WINDOW_OPACITY (a translucent Stickies note), given to the compositor
         QVector<uint32_t> keptStates;   // its own states WindowServer keeps (above, skip taskbar, sticky)
         QRect restore;           // before zooming or full screen
         bool deleteWindow = false, takeFocus = false, acceptsInput = true;
@@ -50,7 +55,7 @@ private:
         xcb_window_t transientFor = 0;
         int hover = None, pressed = None;
         bool overButtons = false;
-        int titleHeight() const { return decorated && !fullscreen ? TitleHeight : 0; }
+        int titleHeight() const { return decorated && !fullscreen ? (utility ? UtilityTitleHeight : TitleHeight) : 0; }
     };
 
     void manage(xcb_window_t w, bool existing);
@@ -64,6 +69,7 @@ private:
     void paintTitle(Client *c);
     QImage buttonImage(const Client *c, int button) const;
     int buttonAt(const Client *c, QPoint p) const;
+    static QRect buttonRect(const Client *c, int button);
 
     void focus(Client *c);
     void raise(Client *c);

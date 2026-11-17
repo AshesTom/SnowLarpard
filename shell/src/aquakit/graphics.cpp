@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "graphics.h"
 
+#include "foundation.h"
+
+#include <lcms2.h>
 #include <tiffio.h>
 #include <turbojpeg.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <cmath>
@@ -109,7 +113,160 @@ std::vector<unsigned char> readFile(const std::string &path)
     return in ? std::vector<unsigned char>(std::istreambuf_iterator<char>(in), {}) : std::vector<unsigned char>();
 }
 
+uint32_t be32(const unsigned char *p);
+Image fromPngBytesAsIs(const unsigned char *data, size_t size);
+
+// Colour matching, as ColorSync does on 10.6 for a picture that says what it is in: one tagged with
+// a profile (most of the Mac's art: Generic RGB, gamma 1.8, or a PNG gAMA of 0.55) is converted to
+// the screen's (taken as sRGB), which lightens its middle tones; the alpha is kept. CoreUI's own art
+// (ArtFile.bin, SArtFile.bin) is made in sRGB (CUIElement::LoadFromArtFile,
+// CUISharedArtReader::CreateImageFromBytes): untouched, as untagged pictures are.
+void matchToScreen(Image &img, cmsHPROFILE source)
+{
+    if (!source)
+        return;
+    char desc[256] = {};
+    cmsGetProfileInfoASCII(source, cmsInfoDescription, "en", "US", desc, sizeof desc);
+    if (!img.isNull() && cmsGetColorSpace(source) == cmsSigRgbData && !std::strstr(desc, "sRGB")) {
+        cmsHPROFILE screen = cmsCreate_sRGBProfile();
+        if (cmsHTRANSFORM t = cmsCreateTransform(source, TYPE_BGRA_8_PREMUL, screen, TYPE_BGRA_8_PREMUL, INTENT_PERCEPTUAL,
+                                                 cmsFLAGS_COPY_ALPHA)) {
+            cairo_surface_flush(img.surface());
+            unsigned char *px = cairo_image_surface_get_data(img.surface());
+            const int stride = cairo_image_surface_get_stride(img.surface());
+            for (int y = 0; y < img.height(); ++y)
+                cmsDoTransform(t, px + size_t(y) * stride, px + size_t(y) * stride, cmsUInt32Number(img.width()));
+            cairo_surface_mark_dirty(img.surface());
+            cmsDeleteTransform(t);
+        }
+        cmsCloseProfile(screen);
+    }
+    cmsCloseProfile(source);
+}
+
+// The colour space ImageIO gives an icns' raw data (_CGImagePluginInitICNS: kCGColorSpaceGenericRGB):
+// the DVD's Generic RGB Profile.icc, else its values (gamma 1.8, D65, Apple's primaries)
+cmsHPROFILE genericRgbProfile()
+{
+    std::vector<unsigned char> icc;
+    {
+        std::ifstream in(Assets::path("/System/Library/ColorSync/Profiles/Generic RGB Profile.icc"), std::ios::binary);
+        icc.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    if (!icc.empty())
+        if (cmsHPROFILE p = cmsOpenProfileFromMem(icc.data(), cmsUInt32Number(icc.size())))
+            return p;
+    const cmsCIExyY white = {0.3127, 0.3290, 1};
+    const cmsCIExyYTRIPLE primaries = {{0.6300, 0.3400, 1}, {0.2950, 0.6050, 1}, {0.1550, 0.0770, 1}};
+    cmsToneCurve *curve = cmsBuildGamma(nullptr, 1.8);
+    cmsToneCurve *curves[3] = {curve, curve, curve};
+    cmsHPROFILE p = cmsCreateRGBProfile(&white, &primaries, curves);
+    cmsFreeToneCurve(curve);
+    return p;
+}
+
+} // namespace
+
+Color Color::generic(int r, int g, int b, double alpha) { return rgb(r, g, b, alpha).matched(); }
+
+Color Color::matched() const
+{
+    static cmsHTRANSFORM t = [] {
+        cmsHPROFILE src = genericRgbProfile(), dst = cmsCreate_sRGBProfile();
+        cmsHTRANSFORM x = cmsCreateTransform(src, TYPE_RGB_DBL, dst, TYPE_RGB_DBL, INTENT_PERCEPTUAL, 0);
+        cmsCloseProfile(src);
+        cmsCloseProfile(dst);
+        return x;
+    }();
+    if (!t)
+        return *this;
+    const double in[3] = {r, g, b};
+    double out[3] = {r, g, b};
+    cmsDoTransform(t, in, out, 1);
+    return {std::clamp(out[0], 0.0, 1.0), std::clamp(out[1], 0.0, 1.0), std::clamp(out[2], 0.0, 1.0), a};
+}
+
+namespace {
+
+// A PNG's own colour space: iCCP (first), else gAMA with cHRM's primaries or sRGB's; none with an
+// sRGB chunk or nothing
+cmsHPROFILE pngProfile(const unsigned char *d, size_t size)
+{
+    double gamma = 0;
+    double chrm[8] = {0.3127, 0.3290, 0.64, 0.33, 0.30, 0.60, 0.15, 0.06};
+    for (size_t at = 8; at + 12 <= size;) {
+        const uint32_t length = be32(d + at);
+        const char *type = reinterpret_cast<const char *>(d + at + 4);
+        const unsigned char *body = d + at + 8;
+        if (at + 12 + length > size || !std::memcmp(type, "IDAT", 4))
+            break;
+        if (!std::memcmp(type, "sRGB", 4))
+            return nullptr;
+        if (!std::memcmp(type, "iCCP", 4)) {
+            const unsigned char *zero = static_cast<const unsigned char *>(std::memchr(body, 0, length));
+            if (zero && zero + 2 <= body + length) {
+                std::vector<unsigned char> icc(1 << 16);
+                for (;;) {
+                    uLongf out = icc.size();
+                    const int r = uncompress(icc.data(), &out, zero + 2, uLong(body + length - zero - 2));
+                    if (r == Z_BUF_ERROR && icc.size() < (1u << 24)) {
+                        icc.resize(icc.size() * 4);
+                        continue;
+                    }
+                    if (r == Z_OK)
+                        return cmsOpenProfileFromMem(icc.data(), cmsUInt32Number(out));
+                    break;
+                }
+            }
+        } else if (!std::memcmp(type, "gAMA", 4) && length == 4) {
+            gamma = be32(body) / 100000.0;
+        } else if (!std::memcmp(type, "cHRM", 4) && length == 32) {
+            for (int i = 0; i < 8; ++i)
+                chrm[i] = be32(body + 4 * i) / 100000.0;
+        }
+        at += 12 + length;
+    }
+    if (gamma <= 0 || std::abs(gamma - 1 / 2.2) < 0.01)
+        return nullptr;
+    const cmsCIExyY white = {chrm[0], chrm[1], 1};
+    const cmsCIExyYTRIPLE primaries = {{chrm[2], chrm[3], 1}, {chrm[4], chrm[5], 1}, {chrm[6], chrm[7], 1}};
+    cmsToneCurve *curve = cmsBuildGamma(nullptr, 1 / gamma);
+    cmsToneCurve *curves[3] = {curve, curve, curve};
+    cmsHPROFILE p = cmsCreateRGBProfile(&white, &primaries, curves);
+    cmsFreeToneCurve(curve);
+    return p;
+}
+
+// A JPEG's ICC profile (APP2 "ICC_PROFILE" segments, in their order)
+cmsHPROFILE jpegProfile(const std::vector<unsigned char> &b)
+{
+    std::vector<std::pair<int, std::vector<unsigned char>>> parts;
+    for (size_t at = 2; at + 4 <= b.size() && b[at] == 0xFF;) {
+        const unsigned char marker = b[at + 1];
+        if (marker == 0xDA || marker == 0xD9)
+            break;
+        const size_t length = size_t(b[at + 2]) << 8 | b[at + 3];
+        if (marker == 0xE2 && length > 16 && at + 2 + length <= b.size() && !std::memcmp(&b[at + 4], "ICC_PROFILE", 12))
+            parts.push_back({b[at + 16], std::vector<unsigned char>(b.begin() + long(at + 18), b.begin() + long(at + 2 + length))});
+        at += 2 + length;
+    }
+    if (parts.empty())
+        return nullptr;
+    std::sort(parts.begin(), parts.end(), [](const auto &a, const auto &c) { return a.first < c.first; });
+    std::vector<unsigned char> icc;
+    for (const auto &p : parts)
+        icc.insert(icc.end(), p.second.begin(), p.second.end());
+    return cmsOpenProfileFromMem(icc.data(), cmsUInt32Number(icc.size()));
+}
+
 Image fromPngBytes(const unsigned char *data, size_t size)
+{
+    Image img = fromPngBytesAsIs(data, size);
+    matchToScreen(img, pngProfile(data, size));
+    return img;
+}
+
+Image fromPngBytesAsIs(const unsigned char *data, size_t size)
 {
     struct Reader {
         const unsigned char *p;
@@ -156,6 +313,7 @@ Image jpeg(const std::vector<unsigned char> &bytes, Size atLeast)
             cairo_surface_mark_dirty(out.surface());
     }
     tjDestroy(tj);
+    matchToScreen(out, jpegProfile(bytes));
     return out;
 }
 
@@ -246,6 +404,7 @@ Image icns(const std::vector<unsigned char> &b, Size atLeast)
             *px = a << 24 | (planes[i] * a / 255) << 16 | (planes[count + i] * a / 255) << 8 | (planes[2 * count + i] * a / 255);
         }
     cairo_surface_mark_dirty(out.surface());
+    matchToScreen(out, genericRgbProfile());
     return out;
 }
 
@@ -275,7 +434,13 @@ Image tiff(const std::string &path)
             }
         cairo_surface_mark_dirty(out.surface());
     }
+    uint32_t iccLength = 0;
+    void *icc = nullptr;
+    cmsHPROFILE profile = nullptr;
+    if (!out.isNull() && TIFFGetField(t, TIFFTAG_ICCPROFILE, &iccLength, &icc) && icc && iccLength)
+        profile = cmsOpenProfileFromMem(icc, iccLength);
     TIFFClose(t);
+    matchToScreen(out, profile);
     return out;
 }
 

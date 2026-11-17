@@ -156,6 +156,14 @@ void View::keyDown(Event &e)
         m_window->onUnhandledKey(e);
 }
 
+void View::rightMouseDown(Event &e)
+{
+    if (m_parent) {
+        e.location = {e.location.x + m_frame.x, e.location.y + m_frame.y};
+        m_parent->rightMouseDown(e);
+    }
+}
+
 void View::render(cairo_t *cr)
 {
     if (m_hidden)
@@ -264,6 +272,47 @@ void Window::nativeResize(Size surface)
 void Window::setIcon(const Image &icon) { m_native->setIcon(icon); }
 
 void Window::setFloatingPanel() { m_native->setFloatingPanel(); }
+
+void Window::setBorderless()
+{
+    if (m_titleBar > 0) {
+        m_titleBar = 0;
+        m_native->resize(m_size);
+    }
+    m_native->setBorderless();
+}
+
+bool Window::moveTo(Point screenTopLeft) { return m_native->moveTo(screenTopLeft); }
+
+void Window::setAlphaValue(double alpha)
+{
+    m_alpha = std::clamp(alpha, 0.0, 1.0);
+    m_native->setOpacity(m_alpha);
+    App::shared().platform()->flush();
+}
+
+void Window::setFloating(bool floating)
+{
+    m_floating = floating;
+    m_native->setAbove(floating);
+    App::shared().platform()->flush();
+}
+
+Point Window::screenOrigin() const { return m_native->toScreen({0, 0}); }
+
+void Window::setKeyEquivalents(const std::vector<uint32_t> &keysyms) { m_native->setKeyEquivalents(keysyms); }
+
+void Window::dragMove(Point fromScreen, Point toScreen, bool start)
+{
+    if (start) {
+        m_dragOrigin = m_native->toScreen({0, 0});
+        // Wayland: the compositor moves it (it can't be placed)
+        if (!m_native->moveTo(m_dragOrigin))
+            m_native->startMove();
+        return;
+    }
+    m_native->moveTo({m_dragOrigin.x + toScreen.x - fromScreen.x, m_dragOrigin.y + toScreen.y - fromScreen.y});
+}
 
 void Window::setUnifiedToolbarHeight(int height)
 {
@@ -485,6 +534,10 @@ void Window::dispatchMouse(Event &e, Point p, bool press, bool release, bool mot
             onOutsideClick(e);
         }
     } else if (motion) {
+        if (onMouseMovedOutside && !m_tracking && (p.x < 0 || p.y < 0 || p.x >= m_size.w || p.y >= m_size.h)) {
+            onMouseMovedOutside(e);
+            return;
+        }
         if (m_tracking) {
             e.type = Event::MouseDragged;
             local(m_tracking)->mouseDragged(e);
@@ -505,8 +558,29 @@ void Window::dispatchMouse(Event &e, Point p, bool press, bool release, bool mot
     }
 }
 
-void Window::nativeButton(bool press, Point p, Point screen, unsigned modifiers, uint32_t timeMs)
+void Window::nativeButton(bool press, Point p, Point screen, unsigned modifiers, uint32_t timeMs, bool secondary)
 {
+    // the right button, or Control and the left one: the view's contextual menu (a menu's own window
+    // takes it as a click)
+    if ((secondary || (press && modifiers == Control) || m_secondaryDown) && m_kind == Titled && (p.y >= m_titleBar || m_secondaryDown)) {
+        if (press && !m_secondaryDown) {
+            m_secondaryDown = true;
+            const Point inContent{p.x, p.y - m_titleBar};
+            if (View *hit = m_content->hitTest(inContent); hit && hit->isEnabled()) {
+                Event e;
+                e.type = Event::MouseDown;
+                e.screen = screen;
+                e.modifiers = modifiers;
+                e.location = hit->fromWindow(inContent);
+                if (hit->acceptsFirstResponder())
+                    makeFirstResponder(hit);
+                hit->rightMouseDown(e);
+            }
+        } else if (!press) {
+            m_secondaryDown = false;
+        }
+        return;
+    }
     // the title bar AquaKit draws: its buttons, and moving the window
     if (m_titleBar > 0 && (p.y < m_titleBar || m_titlePressed >= 0) && !m_tracking) {
         const int b = titleButtonAt(p);
@@ -636,6 +710,14 @@ void Window::nativeDismiss()
 std::unique_ptr<Platform> Platform::wayland() { return nullptr; }
 #endif
 
+
+size_t App::visibleWindowCount() const
+{
+    size_t n = 0;
+    for (const Window *w : m_windows)
+        n += w->isVisible() && w->kind() == Window::Titled;
+    return n;
+}
 
 App &App::shared()
 {

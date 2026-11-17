@@ -3,6 +3,9 @@
 """Takes what the Snow Leopard shell needs from your own Mac OS X 10.6 install DVD.
 
     extract.py DVD.iso [ASSETS]        (ASSETS: .local/assets by default)
+    extract.py .local/media/MacOSX.hfs [ASSETS]   (again, from the partition a first run kept)
+    extract.py --update PKG|DIR... [--assets ASSETS]   an Apple update's packages over the files
+                                                       (the 10.6.8 Combo Update: tools/softwareupdate.py)
 
 The DVD is a hybrid: an ISO 9660 side for Boot Camp and an Apple partition map whose Apple_HFS
 partition is the installer. Its packages are xar archives holding a gzip'd cpio Payload. Only the
@@ -32,10 +35,9 @@ WANTED = {
     "BaseSystem.pkg": [
         # the system's version, build and copyright (About This Mac)
         "./System/Library/CoreServices/SystemVersion.plist",
-        # the menus' and the menu bar's art (HIToolbox draws the menus; CoreUI's recipes say how)
+        # the controls', menus' and title bars' art: CoreUI's ArtFile.bin and SArtFile.bin (its
+        # UI.bundle recipes and HIToolbox's .rsrc are only for reading, in the DVD's packages)
         "./System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Resources/*.png",
-        "./System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Resources/*.rsrc",
-        "./System/Library/PrivateFrameworks/CoreUI.framework/Versions/A/Resources/UI.bundle/*",
         "./System/Library/PrivateFrameworks/CoreUI.framework/Versions/A/Resources/*ArtFile.bin",
         "./System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/*.icns",
         # the types' names (the Finder's Kind: UTTypeDescription, by extension) and their icons
@@ -45,8 +47,18 @@ WANTED = {
         # the disks' icons (the Finder's sidebar: the internal disk, external and removable ones)
         "./System/Library/Extensions/IOStorageFamily.kext/Contents/Resources/*.icns",
         "./System/Library/CoreServices/DefaultDesktop.jpg",
+        # the AirPort menu extra's bars, scanning and off pictures (BaseSystem has AirPort.menu,
+        # Essentials the other extras)
+        "./System/Library/CoreServices/Menu Extras/AirPort.menu/Contents/Resources/*.pdf",
+        # the colour spaces ImageIO gives untagged icns data (Generic RGB, Generic Gray), for
+        # matching them to the screen (_CGImagePluginInitICNS)
+        "./System/Library/ColorSync/Profiles/Generic RGB Profile.icc",
+        "./System/Library/ColorSync/Profiles/Generic Gray Profile.icc",
         "./System/Library/Fonts/LucidaGrande.ttc",
         "./System/Library/Fonts/HelveticaNeue.ttc",
+        # the fonts a Stickies note may be in (its RTF names them: Helvetica, Times, Courier...)
+        "./System/Library/Fonts/*.dfont",
+        "./System/Library/Fonts/Menlo.ttc",
         "./Applications/Utilities/*.app/Contents/Info.plist",
         "./Applications/Utilities/*.app/Contents/Resources/*.icns",
         # Parental Controls' pane is BaseSystem's (the others, Essentials')
@@ -65,14 +77,26 @@ WANTED = {
         "./Applications/Calculator.app/Contents/Resources/English.lproj/*",
         "./Applications/Calculator.app/Contents/PlugIns/*.calcview/Contents/Info.plist",
         "./Applications/Calculator.app/Contents/PlugIns/*.calcview/Contents/Resources/*",
-        # Photo Booth (shell/src/photobooth): its pictures, sounds, nibs and strings, and the system's
-        # compositions its effects are (composition_images takes their embedded pictures out)
+        # Stickies (shell/src/stickies): its default settings and welcome notes, its template's icon,
+        # the self test's note, its nibs and strings; the fonts of /Library/Fonts its notes may use
+        "./Applications/Stickies.app/Contents/Resources/*.plist",
+        "./Applications/Stickies.app/Contents/Resources/*.tiff",
+        "./Applications/Stickies.app/Contents/Resources/*.rtf",
+        "./Applications/Stickies.app/Contents/Resources/English.lproj/*",
+        "./Applications/Stickies.app/Contents/Resources/Stickies.help/*",
+        "./Library/Fonts/*.ttc",
+        "./Library/Fonts/*.ttf",
+        # Photo Booth (shell/src/photobooth): its pictures, sounds, nibs and strings, and the three
+        # compositions whose embedded pictures its effects use (composition_images takes them out;
+        # the effects themselves are in effects.cpp, so the .qtz files go afterwards)
         "./Applications/Photo Booth.app/Contents/Resources/*.png",
         "./Applications/Photo Booth.app/Contents/Resources/*.tiff",
         "./Applications/Photo Booth.app/Contents/Resources/*.aiff",
         "./Applications/Photo Booth.app/Contents/Resources/*.plist",
         "./Applications/Photo Booth.app/Contents/Resources/English.lproj/*",
-        "./System/Library/Compositions/*.qtz",
+        "./System/Library/Compositions/ThermalCamera.qtz",
+        "./System/Library/Compositions/XRay.qtz",
+        "./System/Library/Compositions/ColorPencil.qtz",
         # Preview's thumbnails: IKImageBrowserView's shadow (IKShadowTool's pbShadow* pictures)
         "./System/Library/Frameworks/Quartz.framework/Versions/A/Frameworks/ImageKit.framework/Versions/A/Resources/pbShadow*.tiff",
         # About This Mac: loginwindow's window (its nib, strings and the Mac OS X picture)
@@ -82,6 +106,12 @@ WANTED = {
         "./System/Library/CoreServices/loginwindow.app/Contents/Info.plist",
         # the numbers' formats About This Mac uses (AppleSystemInfo: "%.*f GB")
         "./System/Library/CoreServices/Resources/English.lproj/AppleSystemInfo.strings",
+        # Software Update (shell/src/softwareupdate): its nibs, strings and pictures
+        "./System/Library/CoreServices/Software Update.app/Contents/Info.plist",
+        "./System/Library/CoreServices/Software Update.app/Contents/Resources/*.tif",
+        "./System/Library/CoreServices/Software Update.app/Contents/Resources/*.tiff",
+        "./System/Library/CoreServices/Software Update.app/Contents/Resources/*.icns",
+        "./System/Library/CoreServices/Software Update.app/Contents/Resources/English.lproj/*",
         "./System/Library/CoreServices/Dock.app/Contents/Resources/*.png",
         "./System/Library/CoreServices/Dock.app/Contents/Resources/*.icns",
         "./System/Library/CoreServices/Dock.app/Contents/Resources/*.plist",
@@ -110,6 +140,8 @@ WANTED = {
         "./System/Library/PreferencePanes/*.prefPane/Contents/Resources/*.tiff",
         "./System/Library/PreferencePanes/*.prefPane/Contents/Resources/*.pdf",
         "./System/Library/PreferencePanes/*.prefPane/Contents/Resources/English.lproj/*",
+        # the search field's terms (Fibre Channel keeps them beside its resources, not in English.lproj)
+        "./System/Library/PreferencePanes/*.prefPane/Contents/Resources/*.searchTerms",
         # Preview: its nibs, toolbar, pictures and strings (Preview.app on AquaKit reads them)
         "./Applications/Preview.app/Contents/Resources/*.tiff",
         "./Applications/Preview.app/Contents/Resources/*.tif",
@@ -126,13 +158,10 @@ WANTED = {
         "./System/Library/MonitorPanels/*/Contents/Resources/*.tif*",
         "./System/Library/MonitorPanels/*/Contents/Resources/*.png",
         "./System/Library/MonitorPanels/*/Contents/Resources/*.icns",
-        "./System/Library/CoreServices/Finder.app/Contents/Resources/*.icns",
-        "./System/Library/CoreServices/Finder.app/Contents/Resources/*.png",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.pdf",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.png",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.tif*",
         "./System/Library/CoreServices/SystemUIServer.app/Contents/Resources/*",
-        "./System/Library/CoreServices/Spotlight.app/Contents/Resources/*",
         "./System/Library/CoreServices/loginwindow.app/Contents/Resources/*",
         "./Applications/*.app/Contents/Info.plist",
         "./Applications/*.app/Contents/Resources/*.icns",
@@ -173,6 +202,13 @@ def hfs_partition(iso):
     sys.exit(f"{iso}: no Apple_HFS partition")
 
 
+def is_hfs(path):
+    """An HFS+ volume (the partition carve() writes) rather than the DVD."""
+    with open(path, "rb") as f:
+        f.seek(1024)
+        return f.read(2) in (b"H+", b"HX")
+
+
 def carve(iso, out):
     """The HFS+ partition as a file of its own, for 7z (kept as a cache next to ASSETS)."""
     offset, length = hfs_partition(iso)
@@ -209,10 +245,12 @@ def xar_payload(pkg):
     raise ValueError(f"{pkg}: no Payload")
 
 
-def unpack(pkg, patterns, dest):
+def unpack(pkg, patterns, dest, overwrite=False, progress=None):
+    """The Payload's files matching the patterns, under dest. overwrite: over the files already there
+    (an update's, whatever their dates); progress(bytes) as the Payload is read."""
     offset, length, encoding = xar_payload(pkg)
-    cpio = subprocess.Popen(["cpio", "-idm", "--quiet", "--no-absolute-filenames", *patterns],
-                            cwd=dest, stdin=subprocess.PIPE)
+    cpio = subprocess.Popen(["cpio", "-idm", "--quiet", "--no-absolute-filenames", *(["-u"] if overwrite else []),
+                             *patterns], cwd=dest, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL if overwrite else None)
     with open(pkg, "rb") as f:
         f.seek(offset)
         # The TOC says octet-stream for Payloads that are gzip'd all the same: the bytes tell.
@@ -222,8 +260,12 @@ def unpack(pkg, patterns, dest):
         left = length
         while left:
             chunk = f.read(min(left, 4 << 20))
+            if not chunk:
+                break
             left -= len(chunk)
             cpio.stdin.write(inflate.decompress(chunk) if inflate else chunk)
+            if progress:
+                progress(len(chunk))
         if inflate:
             cpio.stdin.write(inflate.flush())
     cpio.stdin.close()
@@ -340,7 +382,118 @@ def composition_images(assets):
             print(f"    {path.name}: {e}")
 
 
+def is_macho(path):
+    with open(path, "rb") as f:
+        return f.read(4) in (b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+                             b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe")
+
+
+def prune(assets):
+    """What the patterns take beyond the shell's needs: cpio's '*' crosses '/', so Resources/*.png
+    also takes every language's pictures. Only English is kept, and no code (Mach-O)."""
+    for lproj in sorted(assets.rglob("*.lproj"), reverse=True):
+        if lproj.is_dir() and not lproj.is_symlink() and lproj.name not in ("English.lproj", "en.lproj"):
+            shutil.rmtree(lproj)
+    for path in list(assets.rglob("*")):
+        if path.is_file() and not path.is_symlink() and is_macho(path):
+            path.unlink()
+    for qtz in (assets / "System/Library/Compositions").glob("*.qtz"):
+        qtz.unlink()      # composition_images took what Photo Booth reads out of them
+    for d in sorted((p for p in assets.rglob("*") if p.is_dir()), key=lambda p: -len(p.parts)):
+        if not any(d.iterdir()):
+            d.rmdir()
+
+
+def optimize_jpegs(assets):
+    """The pictures' Huffman tables optimized (jpegtran -optimize): the same pixels, about 5%
+    smaller. Baseline still, so that turbojpeg's scaled decoding (the Desktop pane's thumbnails)
+    stays fast."""
+    if not shutil.which("jpegtran"):
+        return
+    for jpg in list(assets.rglob("*.jpg")):
+        out = jpg.with_suffix(".tmp")
+        got = subprocess.run(["jpegtran", "-copy", "all", "-optimize", "-outfile", str(out), str(jpg)],
+                             stderr=subprocess.DEVNULL)
+        if got.returncode == 0 and out.exists() and 0 < out.stat().st_size < jpg.stat().st_size:
+            shutil.copystat(jpg, out)
+            out.replace(jpg)
+        else:
+            out.unlink(missing_ok=True)
+
+
+def system_version(assets):
+    try:
+        with open(assets / "System/Library/CoreServices/SystemVersion.plist", "rb") as f:
+            return plistlib.load(f)
+    except OSError:
+        return {}
+
+
+def update(sources, final):
+    """An Apple update's flat packages (Software Update's, or the Combo Update's) over the files:
+    the patterns of every DVD package taken from each Payload, over a copy of the files that
+    replaces them once complete. Prints "PROGRESS done total" as the Payloads are read."""
+    if not (final / ".complete").exists():
+        sys.exit(f"{final}: no DVD files to update (extract.py DVD.iso first)")
+    pkgs = []
+    for src in sources:
+        src = Path(src).expanduser().resolve()
+        pkgs += sorted(src.glob("*.pkg")) if src.is_dir() else [src]
+    with_payload = []
+    for pkg in pkgs:
+        try:
+            with_payload.append((pkg, xar_payload(pkg)[1]))
+        except (ValueError, OSError, struct.error, zlib.error):
+            print(f"    {pkg.name}: no payload, skipped")    # the product's own package: scripts only
+    if not with_payload:
+        sys.exit("no package with files to install")
+    patterns = list(dict.fromkeys(p for pats in WANTED.values() for p in pats))
+    assets = final.with_name(final.name + ".new")
+    shutil.rmtree(assets, ignore_errors=True)
+    say(f"Copying {final}")
+    shutil.copytree(final, assets, symlinks=True)
+    (assets / ".complete").unlink(missing_ok=True)
+    total = sum(n for _, n in with_payload)
+    done = 0
+
+    def advance(n):
+        nonlocal done
+        done += n
+        print(f"PROGRESS {done} {total}", flush=True)
+
+    for pkg, _ in with_payload:
+        say(f"Installing {pkg.name}")
+        unpack(pkg, patterns, assets, overwrite=True, progress=advance)
+    if any((assets / "System/Library/Compositions").glob("*.qtz")):
+        composition_images(assets)
+    prune(assets)
+    optimize_jpegs(assets)
+    to_json(assets)
+    version = system_version(assets)
+    (assets / ".complete").write_text(f"{version.get('ProductVersion', '10.6')}\n")
+    old = final.with_name(final.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    final.rename(old)
+    assets.rename(final)
+    shutil.rmtree(old)
+    say(f"Done: Mac OS X {version.get('ProductVersion', '?')} ({version.get('ProductBuildVersion', '?')}) in {final}")
+    return 0
+
+
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--update":
+        args = sys.argv[2:]
+        root = Path(__file__).resolve().parent.parent
+        final = root / ".local/assets"
+        if "--assets" in args:
+            i = args.index("--assets")
+            final = Path(args[i + 1]).expanduser().resolve()
+            del args[i:i + 2]
+        if not args:
+            sys.exit("extract.py --update PKG|DIR... [--assets ASSETS]")
+        if not shutil.which("cpio"):
+            sys.exit("cpio is needed (pacman -S cpio)")
+        return update(args, final)
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__.strip())
         return 0 if len(sys.argv) > 1 else 2
@@ -349,12 +502,21 @@ def main():
             sys.exit(f"{tool} is needed (pacman -S 7zip cpio)")
     iso = Path(sys.argv[1]).expanduser().resolve()
     root = Path(__file__).resolve().parent.parent
-    assets = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else root / ".local/assets"
+    final = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else root / ".local/assets"
+    if final.exists() and any(final.iterdir()) and not (final / ".complete").exists():
+        sys.exit(f"{final}: not empty and not a previous extraction; give another folder")
+    # a fresh tree beside it, which replaces the previous extraction only once complete: a run
+    # with fewer patterns leaves nothing of the previous one behind
+    assets = final.with_name(final.name + ".new")
+    shutil.rmtree(assets, ignore_errors=True)
     cache = root / ".local/media"
     cache.mkdir(parents=True, exist_ok=True)
-    assets.mkdir(parents=True, exist_ok=True)
+    assets.mkdir(parents=True)
     hfs = cache / "MacOSX.hfs"
-    carve(iso, hfs)
+    if is_hfs(iso):
+        hfs = iso          # the partition a previous run carved out: no need for the DVD again
+    else:
+        carve(iso, hfs)
     with tempfile.TemporaryDirectory(dir=cache) as tmp:
         for name, patterns in WANTED.items():
             say(f"Taking {name}")
@@ -368,10 +530,22 @@ def main():
             if name == "BaseSystem.pkg":
                 menu_apple(pkg, assets, tmp)
             pkg.unlink()
-    to_json(assets)
     composition_images(assets)
+    prune(assets)
+    optimize_jpegs(assets)
+    to_json(assets)
     (assets / ".complete").write_text("10.6\n")
-    say(f"Done: {assets}")
+    if final.exists():
+        old = final.with_name(final.name + ".old")
+        shutil.rmtree(old, ignore_errors=True)
+        final.rename(old)
+        assets.rename(final)
+        shutil.rmtree(old)
+    else:
+        assets.rename(final)
+    assets = final
+    size = sum(p.stat().st_size for p in assets.rglob("*") if p.is_file() and not p.is_symlink())
+    say(f"Done: {assets} ({size >> 20} MiB)")
     print(f"    The HFS+ partition stays in {hfs} for the next run; delete it to get the space back.")
     return 0
 

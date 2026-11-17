@@ -59,7 +59,14 @@ std::string title(const Operation &op)
                : n == 1  ? format(tr("MT8", "Moving “^0” to “Trash”"), {one})
                          : format(tr("MT_MULT_V1", "Moving ^0 items to “Trash”"), {count});
     case Operation::EmptyTrash:
+    case Operation::SecureEmptyTrash:
         return preparing ? tr("ET1", "Preparing to empty the Trash…") : tr("ET2", "Emptying the Trash…");
+    case Operation::PutBack:
+        return n == 1 ? format(tr("MV4", "Moving “^0” to “^1”"), {one, folderName(dirName(Operation::trashOrigin(src.front())))})
+                      : format(tr("MV_MULT_V1", "Moving ^0 items to “^1”"), {count, folderName(dirName(Operation::trashOrigin(src.front())))});
+    case Operation::Compress:
+        return n == 1 ? format(tr("AR3", "Compressing “^0” to “^1”"), {one, one + ".zip"})
+                      : format(tr("AR_MULT_V1", "Compressing ^0 items to “^1”"), {count, tr("AR40", "Archive") + ".zip"});
     }
     return {};
 }

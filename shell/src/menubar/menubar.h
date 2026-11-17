@@ -53,6 +53,7 @@ private:
     QPointer<QWidget> m_popup;
     App m_app;
     xcb_window_t m_active = 0;
+    bool m_desktopActive = false;   // the desktop (or nothing) in front: the Finder's window commands off
     QImage m_wallpaper;               // the desktop picture: what is behind the bar
     QImage m_generated;               // the bar the window server's filter makes from it
     bool m_generatedApple = false;    // ...with its Apple

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "listview.h"
+#include "labels.h"
 
 #include "foundation.h"
 #include "text.h"
@@ -133,6 +134,21 @@ public:
             if (selected)   // alternateSelectedControlColor with the keyboard, else secondarySelectedControlColor
                 bg = focused ? Color::rgb(56, 117, 215) : Color::gray(212);
             fill(cr, row, bg);
+            // a labelled row: its label's colour from top to bottom, rounded at its ends
+            if (const int label = i < int(l.m_rows.size()) && !selected ? Labels::get(l.m_rows[size_t(i)].item.path) : 0) {
+                const Color c = Labels::color(label);
+                cairo_pattern_t *g = cairo_pattern_create_linear(0, row.y, 0, row.bottom());
+                cairo_pattern_add_color_stop_rgb(g, 0, std::min(1.0, c.r + 0.15), std::min(1.0, c.g + 0.15), std::min(1.0, c.b + 0.15));
+                cairo_pattern_add_color_stop_rgb(g, 1, c.r, c.g, c.b);
+                const double rad = (pitch - 2) / 2;
+                cairo_new_path(cr);
+                cairo_arc(cr, row.x + 2 + rad, row.y + 1 + rad, rad, M_PI / 2, 3 * M_PI / 2);
+                cairo_arc(cr, row.right() - 2 - rad, row.y + 1 + rad, rad, -M_PI / 2, M_PI / 2);
+                cairo_close_path(cr);
+                cairo_set_source(cr, g);
+                cairo_fill(cr);
+                cairo_pattern_destroy(g);
+            }
         }
         const Font font = Font::system(l.textSize);
         const double width = std::max(frame().w, l.contentWidth());
@@ -207,9 +223,21 @@ public:
             return;
         }
         if (e.clickCount == 2 && !(e.modifiers & (Command | Shift))) {
+            m_clickedName = -1;
             if (l.onOpen)
                 l.onOpen(r.item);
             return;
+        }
+        {
+            // a click on the name of the row already selected alone: renaming after a moment
+            const double textX = ColumnSpacing / 2 + indent + TriangleWidth + l.iconSize + 4;
+            const bool onName = !l.m_columns.empty() && l.m_columns.front().id == "name" && px >= textX &&
+                                px < textX + textWidth(r.item.name, Font::system(l.textSize)) + 4;
+            m_clickedName = !(e.modifiers & (Command | Shift)) && e.clickCount == 1 && onName && l.m_selection.size() == 1 &&
+                                    l.m_selection.count(i)
+                                ? i
+                                : -1;
+            m_pressAt = e.location;
         }
         if (e.modifiers & Shift && l.m_anchor >= 0) {
             l.m_selection.clear();
@@ -223,10 +251,40 @@ public:
         l.select(i, e.modifiers & Command);
     }
 
+    void mouseDragged(Event &e) override
+    {
+        if (std::abs(e.location.x - m_pressAt.x) > 3 || std::abs(e.location.y - m_pressAt.y) > 3)
+            m_clickedName = -1;
+    }
+    void mouseUp(Event &) override
+    {
+        ListView &l = *m_list;
+        const int i = m_clickedName;
+        m_clickedName = -1;
+        if (i >= 0 && size_t(i) < l.m_rows.size() && l.onClickName)
+            l.onClickName(l.m_rows[size_t(i)].item);
+    }
+    void rightMouseDown(Event &e) override
+    {
+        ListView &l = *m_list;
+        const int i = int(e.location.y / l.pitch());
+        const bool onItem = i >= 0 && i < int(l.m_rows.size());
+        if (onItem && !l.m_selection.count(i))
+            l.select(i, false);
+        else if (!onItem && !l.m_selection.empty())
+            l.select(-1, false);
+        if (l.onContextMenu)
+            l.onContextMenu(toWindow(e.location), onItem);
+    }
+
     void keyDown(Event &e) override
     {
         ListView &l = *m_list;
         const int n = int(l.m_rows.size());
+        if (e.keysym == XKB_KEY_Return || e.keysym == XKB_KEY_KP_Enter || e.keysym == XKB_KEY_space) {
+            View::keyDown(e);   // the window's: renaming, Quick Look
+            return;
+        }
         const int at = l.m_anchor;
         if (e.modifiers & Command) {
             if ((e.keysym == XKB_KEY_Down || e.keysym == XKB_KEY_o) && l.m_selection.size() == 1 && l.onOpen) {
@@ -294,6 +352,8 @@ private:
     }
 
     ListView *m_list;
+    int m_clickedName = -1;
+    Point m_pressAt;
 };
 
 // ---- the horizontal scroller (CoreUI's, as Preview's pages have it)
@@ -651,6 +711,37 @@ void ListView::reveal(int row)
 {
     if (row >= 0)
         m_scroll->scrollToVisible({0, row * pitch(), frame().w, pitch()});
+}
+
+void ListView::selectPaths(const std::vector<std::string> &paths)
+{
+    m_selection.clear();
+    int first = -1;
+    for (size_t i = 0; i < m_rows.size(); ++i)
+        if (std::find(paths.begin(), paths.end(), m_rows[i].item.path) != paths.end()) {
+            m_selection.insert(int(i));
+            if (first < 0)
+                first = int(i);
+        }
+    m_anchor = first;
+    reveal(first);
+    m_body->setNeedsDisplay();
+    if (onSelectionChanged)
+        onSelectionChanged();
+}
+
+Rect ListView::nameRectInWindow(const std::string &path) const
+{
+    for (size_t i = 0; i < m_rows.size(); ++i)
+        if (m_rows[i].item.path == path) {
+            const Row &r = m_rows[i];
+            const double indent = r.level * (iconSize + 5);
+            const double x = ColumnSpacing / 2 + indent + TriangleWidth + iconSize + 4 - m_hoffset;
+            const double w = (m_columns.empty() ? 300 : m_columns.front().width) - x - m_hoffset;
+            const Point o = m_body->toWindow({x - 2, i * pitch() + 1.5});
+            return {o.x, o.y, std::max(60.0, w), rowHeight};
+        }
+    return {};
 }
 
 } // namespace Finder

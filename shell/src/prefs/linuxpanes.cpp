@@ -277,10 +277,28 @@ void dateTime(NibPane &p)
     });
 }
 
-// ---- Software Update: pacman's (checkupdates)
+// ---- Software Update: Check Now opens the shell's Software Update (Apple's catalog, as on 10.6);
+// without it, pacman's (checkupdates)
+
+std::string softwareUpdateApp()
+{
+    std::string dir = dirName(executablePath());
+    for (int i = 0; i < 5; ++i) {
+        const std::string exe = dir + "/Software Update.app/Contents/MacOS/Software Update";
+        if (isFile(exe))
+            return exe;
+        dir = dirName(dir);
+    }
+    return {};
+}
 
 void softwareUpdate(NibPane &p)
 {
+    if (const std::string app = softwareUpdateApp(); !app.empty()) {
+        if (auto *button = first<Button>(p.nib, "checkNow:"))
+            then(button, [app] { spawn({app}); });
+        return;
+    }
     auto *status = p.nib.outlet<Label>("lastStatusTextField");
     auto *progress = p.nib.outlet<Label>("progressTextField");
     auto settings = std::make_shared<Settings>("panes/" + p.info.id);

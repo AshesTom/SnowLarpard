@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "compositor.h"
 
+#include <QRegion>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -122,10 +124,12 @@ bool Compositor::start(xcb_connection_t *conn, xcb_window_t root, ShadowFor shad
     m_overlayPicture = xcb_generate_id(conn);
     xcb_render_create_picture(conn, m_overlayPicture, m_overlay, m_rootFormat, XCB_RENDER_CP_SUBWINDOW_MODE, &inferiors);
     const xcb_pixmap_t pixmap = xcb_generate_id(conn);
+    m_depth = setup->root_depth;
     xcb_create_pixmap(conn, setup->root_depth, pixmap, root, uint16_t(m_screen.width()), uint16_t(m_screen.height()));
     m_buffer = xcb_generate_id(conn);
     xcb_render_create_picture(conn, m_buffer, pixmap, m_rootFormat, 0, nullptr);
     xcb_free_pixmap(conn, pixmap);   // the picture keeps it
+    m_mirrorAtom = internAtom(conn, "_SNOWLEOPARD_MAGIC_MIRROR");
     m_black = xcb_generate_id(conn);
     xcb_render_create_solid_fill(conn, m_black, {0, 0, 0, 0xffff});
     m_damage = xcb_generate_id(conn);
@@ -140,6 +144,18 @@ bool Compositor::start(xcb_connection_t *conn, xcb_window_t root, ShadowFor shad
     connect(&m_animTimer, &QTimer::timeout, this, [this] { stepAnimations(); });
     damageAll();
     return true;
+}
+
+void Compositor::setOpacity(xcb_window_t frame, double opacity)
+{
+    if (opacity >= 1)
+        m_opacity.remove(frame);
+    else
+        m_opacity.insert(frame, opacity);
+    if (Win *w = m_windows.value(frame))
+        damageWindow(w);
+    else
+        damageAll();
 }
 
 Compositor::Win *Compositor::add(xcb_window_t id)
@@ -423,6 +439,17 @@ void Compositor::handleEvent(xcb_generic_event_t *ev)
         }
         return;
     }
+    if (type == XCB_PROPERTY_NOTIFY) {
+        auto *e = reinterpret_cast<xcb_property_notify_event_t *>(ev);
+        if (Win *w = m_windows.value(e->window); w && e->atom == m_mirrorAtom) {
+            damageMirror(w);   // where it was
+            w->mirror = -1;
+            readMirror(w);
+            damageMirror(w);
+            schedule();
+        }
+        return;
+    }
     if (type == m_shapeEvent) {
         auto *e = reinterpret_cast<xcb_shape_notify_event_t *>(ev);
         if (Win *w = m_windows.value(e->affected_window)) {
@@ -526,6 +553,26 @@ void Compositor::paint()
         xcb_xfixes_set_region(m_conn, m_damage, 1, &all);
         m_all = false;
     }
+    // A mirror shows what is beside it: drawn again when that changes, and that drawn again with it
+    // (outside the damage the buffer still has what was over it, the Dock's own icons)
+    bool anyMirror = false;
+    for (Win *w : std::as_const(m_order))
+        if (w->mapped && !w->destroyed && (readMirror(w), w->mirror > 0))
+            anyMirror = true;
+    if (anyMirror) {
+        QRect damaged;
+        if (auto *r = xcb_xfixes_fetch_region_reply(m_conn, xcb_xfixes_fetch_region(m_conn, m_damage), nullptr)) {
+            damaged = QRect(r->extents.x, r->extents.y, r->extents.width, r->extents.height);
+            free(r);
+        }
+        for (Win *w : std::as_const(m_order)) {
+            if (!w->mapped || w->destroyed || w->mirror <= 0)
+                continue;
+            const QRect target = mirrorTarget(w), source = mirrorSource(w);
+            if (damaged.intersects(target) || damaged.intersects(source))
+                damageMirror(w);
+        }
+    }
     const uint16_t sw = uint16_t(m_screen.width()), sh = uint16_t(m_screen.height());
     xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_damage, 0, 0);
     const xcb_rectangle_t all = toXcb(m_screen);
@@ -555,6 +602,8 @@ void Compositor::paint()
                                      int16_t(seen.x() - whole.x()), int16_t(seen.y() - whole.y()), int16_t(seen.x()),
                                      int16_t(seen.y()), uint16_t(seen.width()), uint16_t(seen.height()));
         }
+        if (w->mirror > 0)
+            drawMirror(w);
         // the window inside its outline (a frame's round corners): outside it its pixels mean nothing
         if (!w->shape) {
             w->shape = xcb_generate_id(m_conn);
@@ -564,7 +613,26 @@ void Compositor::paint()
         xcb_xfixes_translate_region(m_conn, m_scratch, int16_t(g.x()), int16_t(g.y()));
         xcb_xfixes_intersect_region(m_conn, m_scratch, m_damage, m_scratch);
         xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_scratch, 0, 0);
-        xcb_render_composite(m_conn, w->alpha ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, w->picture, XCB_NONE, m_buffer, 0,
+        const double opacity = m_opacity.value(w->id, 1.0);
+        xcb_render_picture_t mask = XCB_NONE;
+        if (opacity < 1) {
+            // the window's pixels through a solid alpha (a repeated 1 x 1 A8 picture)
+            const int level = qBound(0, int(std::lround(opacity * 255)), 255);
+            mask = m_opacityMasks.value(level);
+            if (!mask) {
+                const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+                xcb_create_pixmap(m_conn, 8, pixmap, m_root, 1, 1);
+                mask = xcb_generate_id(m_conn);
+                const uint32_t repeat = 1;
+                xcb_render_create_picture(m_conn, mask, pixmap, m_a8, XCB_RENDER_CP_REPEAT, &repeat);
+                const xcb_render_color_t color = {0, 0, 0, uint16_t(level * 257)};
+                const xcb_rectangle_t one = {0, 0, 1, 1};
+                xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, mask, color, 1, &one);
+                xcb_free_pixmap(m_conn, pixmap);
+                m_opacityMasks.insert(level, mask);
+            }
+        }
+        xcb_render_composite(m_conn, w->alpha || mask ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, w->picture, mask, m_buffer, 0,
                              0, 0, 0, int16_t(g.x()), int16_t(g.y()), uint16_t(g.width()), uint16_t(g.height()));
         xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_damage, 0, 0);
     }
@@ -831,4 +899,97 @@ QRect Compositor::drawAnimation(const Animation &a, const Snapshot &s)
     const xcb_render_transform_t identity = transform(1, 1, 0, 0);
     xcb_render_set_picture_transform(m_conn, s.picture, identity);
     return drawn;
+}
+
+// ---- the magic mirror
+
+// CGSSetMagicMirror(scale, connection, region, position, level, order, window): the Dock gives its
+// floor's quadrangle (DOCKFloorLayer's _pt1 to _pt4, CGSQuadrangleToRegion), position 1 for a Dock
+// at the bottom, 3 at the left, 4 at the right, scale 1. The window server (_adjustMagicMirror) then
+// makes a window named "MagicMirror" just under the Dock, opacity 1, clipped to the region, that
+// shows the windows under it (_CGXUpdateMagicMirror redraws them in a framebuffer of their own)
+// through scale(1, -1/scale) about the region's top edge for the bottom (its bottom edge for the
+// top, its right one for the left, its left one for the right): what is just over the floor,
+// turned over onto it. The Dock's glass then goes over that.
+void Compositor::readMirror(Win *w)
+{
+    if (w->mirror >= 0)
+        return;
+    w->mirror = 0;
+    w->mirrorQuad.clear();
+    auto *r = xcb_get_property_reply(m_conn, xcb_get_property(m_conn, 0, w->id, m_mirrorAtom, XCB_ATOM_CARDINAL, 0, 9), nullptr);
+    if (!r)
+        return;
+    if (r->format == 32 && xcb_get_property_value_length(r) >= 9 * 4) {
+        const auto *v = static_cast<const int32_t *>(xcb_get_property_value(r));
+        if (v[0] >= 1 && v[0] <= 4) {
+            w->mirror = v[0];
+            for (int i = 0; i < 4; ++i)
+                w->mirrorQuad << QPoint(v[1 + 2 * i], v[2 + 2 * i]);
+        }
+    }
+    free(r);
+}
+
+QRect Compositor::mirrorTarget(const Win *w) const
+{
+    return w->mirrorQuad.boundingRect().translated(w->geometry.topLeft()) & m_screen;
+}
+
+QRect Compositor::mirrorSource(const Win *w) const
+{
+    const QRect q = w->mirrorQuad.boundingRect().translated(w->geometry.topLeft());
+    switch (w->mirror) {
+    case 1: return q.translated(0, -q.height()) & m_screen;
+    case 2: return q.translated(0, q.height()) & m_screen;
+    case 3: return q.translated(q.width(), 0) & m_screen;
+    case 4: return q.translated(-q.width(), 0) & m_screen;
+    default: return {};
+    }
+}
+
+void Compositor::damageMirror(const Win *w)
+{
+    if (w->mirror <= 0 || !w->mapped)
+        return;
+    damageRect(mirrorTarget(w));
+    damageRect(mirrorSource(w));
+}
+
+void Compositor::drawMirror(const Win *w)
+{
+    const QRect target = mirrorTarget(w), source = mirrorSource(w);
+    if (target.isEmpty() || source.isEmpty())
+        return;
+    const QRect q = w->mirrorQuad.boundingRect().translated(w->geometry.topLeft());
+    // what is beside it, copied first (the buffer isn't read and written at once)
+    const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+    xcb_create_pixmap(m_conn, m_depth, pixmap, m_root, uint16_t(source.width()), uint16_t(source.height()));
+    const xcb_render_picture_t copy = xcb_generate_id(m_conn);
+    xcb_render_create_picture(m_conn, copy, pixmap, m_rootFormat, 0, nullptr);
+    xcb_free_pixmap(m_conn, pixmap);
+    xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_SRC, m_buffer, XCB_NONE, copy, int16_t(source.x()), int16_t(source.y()), 0, 0, 0, 0,
+                         uint16_t(source.width()), uint16_t(source.height()));
+    // Render reads the source at T(destination): the reflection about the edge, into the copy
+    auto fixed = [](double v) { return xcb_render_fixed_t(std::lround(v * 65536)); };
+    xcb_render_transform_t t = {fixed(1), 0, fixed(-source.x()), 0, fixed(1), fixed(-source.y()), 0, 0, fixed(1)};
+    switch (w->mirror) {
+    case 1: t.matrix22 = fixed(-1), t.matrix23 = fixed(2.0 * q.top() - source.y()); break;
+    case 2: t.matrix22 = fixed(-1), t.matrix23 = fixed(2.0 * (q.top() + q.height()) - source.y()); break;
+    case 3: t.matrix11 = fixed(-1), t.matrix13 = fixed(2.0 * (q.left() + q.width()) - source.x()); break;
+    case 4: t.matrix11 = fixed(-1), t.matrix13 = fixed(2.0 * q.left() - source.x()); break;
+    }
+    xcb_render_set_picture_transform(m_conn, copy, t);
+    // clipped to the quadrangle (CGSQuadrangleToRegion), the screen and what is drawn now
+    const QRegion quad = QRegion(w->mirrorQuad.translated(w->geometry.topLeft())) & QRegion(m_screen);
+    std::vector<xcb_rectangle_t> rects;
+    for (const QRect &r : quad)
+        rects.push_back(toXcb(r));
+    xcb_xfixes_set_region(m_conn, m_scratch, uint32_t(rects.size()), rects.data());
+    xcb_xfixes_intersect_region(m_conn, m_scratch, m_damage, m_scratch);
+    xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_scratch, 0, 0);
+    xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_SRC, copy, XCB_NONE, m_buffer, int16_t(target.x()), int16_t(target.y()), 0, 0,
+                         int16_t(target.x()), int16_t(target.y()), uint16_t(target.width()), uint16_t(target.height()));
+    xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_damage, 0, 0);
+    xcb_render_free_picture(m_conn, copy);
 }

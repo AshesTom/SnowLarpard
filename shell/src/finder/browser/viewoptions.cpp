@@ -272,6 +272,16 @@ void ViewOptions::fill()
     static const char *const keys[] = {"VO14", "VO15", "VO16", "VO17"};
     static const char *const fallbacks[] = {"Always open in icon view", "Always open in list view", "Always open in column view",
                                             "Always open in Cover Flow"};
+    // the desktop's page: the icon view's without what only a folder has
+    for (View *v : m_nib->bound(base + "nodeHasCustomViewStyle", "value"))
+        if (auto *c = dynamic_cast<CheckBox *>(v))
+            c->setEnabled(!s.desktop);
+    if (View *b = m_nib->withTitle("Use as Defaults"))
+        b->setHidden(s.desktop);
+    for (const char *title : {"White", "Color", "Picture"})
+        if (View *v = m_nib->withTitle(title))
+            if (View *group = dynamic_cast<RadioGroup *>(v->superview()) ? v->superview() : v)
+                group->setEnabled(!s.desktop);
     for (View *v : m_nib->bound(base + "nodeHasCustomViewStyle", "value"))
         if (auto *c = dynamic_cast<CheckBox *>(v); c && !c->isHidden()) {
             c->title = tr(keys[std::clamp(s.view, 0, 3)], fallbacks[std::clamp(s.view, 0, 3)]);

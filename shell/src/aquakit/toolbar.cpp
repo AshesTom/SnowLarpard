@@ -104,7 +104,7 @@ void Toolbar::layout()
         if (it.view) {
             it.view->setHidden(false);
             const double h = it.view->frame().h > 0 ? std::min(it.view->frame().h, ControlHeight) : ControlHeight;
-            it.view->setFrame({std::floor(x + (iw - cw) / 2), ControlTop + std::floor((ControlHeight - h) / 2), cw, h});
+            it.view->setFrame({std::floor(x + (iw - cw) / 2), controlTop() + std::floor((ControlHeight - h) / 2), cw, h});
         }
         x += iw;
     }

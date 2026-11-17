@@ -24,8 +24,8 @@ if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v dbus-run-session >/dev/n
 fi
 state=${XDG_STATE_HOME:-$HOME/.local/state}/snowleopard
 mkdir -p "$state"
-pids=()
-cleanup() { ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null; }
+pids=() shell=() menubar=
+cleanup() { kill ${menubar:+"$menubar"} "${shell[@]}" "${pids[@]}" 2>/dev/null; }
 trap cleanup EXIT
 trap 'exit 143' TERM INT HUP
 
@@ -60,9 +60,25 @@ if [[ ${1:-} != --inside ]]; then
         sleep 0.05
     done
 fi
-# SystemUIServer first: its registrar must be there before applications start
-"$apps/SystemUIServer.app/Contents/MacOS/SystemUIServer" >"$state/SystemUIServer.log" 2>&1 &
-menubar=$!
-"$apps/Finder.app/Contents/MacOS/Finder" >"$state/Finder.log" 2>&1 & pids+=($!)
-"$apps/Dock.app/Contents/MacOS/Dock" >"$state/Dock.log" 2>&1 & pids+=($!)
-wait $menubar
+# Software Update's tools (its catalog, its downloads, extract.py --update)
+if [[ -z ${SNOWLEOPARD_TOOLS:-} ]]; then
+    for t in "$root/tools" "$root/../tools"; do
+        [[ -f $t/softwareupdate.py ]] && { export SNOWLEOPARD_TOOLS=$(cd -- "$t" && pwd); break; }
+    done
+fi
+updater="$apps/Software Update.app/Contents/MacOS/Software Update"
+rm -f -- "$state/install-updates"
+while :; do
+    # SystemUIServer first: its registrar must be there before applications start
+    "$apps/SystemUIServer.app/Contents/MacOS/SystemUIServer" >"$state/SystemUIServer.log" 2>&1 &
+    menubar=$!
+    "$apps/Finder.app/Contents/MacOS/Finder" >"$state/Finder.log" 2>&1 & shell=($!)
+    "$apps/Dock.app/Contents/MacOS/Dock" >"$state/Dock.log" 2>&1 & shell+=($!)
+    wait $menubar
+    kill "${shell[@]}" 2>/dev/null
+    wait "${shell[@]}" 2>/dev/null
+    # Software Update's Restart (an update that installs at log out): what it downloaded, installed
+    # over the login screen's picture; then the session starts again on the new files
+    [[ -s $state/install-updates && -x $updater ]] || break
+    "$updater" --install-at-logout >"$state/SoftwareUpdate.log" 2>&1
+done

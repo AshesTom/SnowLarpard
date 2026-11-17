@@ -79,8 +79,8 @@ void Button::draw(cairo_t *cr)
     TextStyle t;
     t.align = Align::Center;
     t.color = titleColor.a > 0 ? titleColor : textColor(isEnabled());
-    if (kind == Plain)
-        t.font = font;
+    // the cell's font (a nib's: NSSupport); a small control's otherwise the small system font
+    t.font = small && font.size == 13 && !font.bold ? Font::system(11) : font;
     switch (kind) {
     case Push:
         CoreUI::pushButton(cr, bounds(), s, isDefault);
@@ -306,16 +306,20 @@ public:
     std::function<void(int)> done;
     double opened = now();
     bool moved = false;
+    MenuView *parentMenu = nullptr;   // a submenu's
+    int parentItem = -1;              // the item it opened from
+    MenuView *child = nullptr;        // the submenu open beside it
+    double keyColumn = 0;             // where the key equivalents start
 
-    int itemAt(Point p) const
+    int itemAt(Point p, bool disabledToo = false) const
     {
         if (p.x < 0 || p.x >= frame().w)
             return -1;
         for (size_t i = 0; i < items.size(); ++i) {
             const double top = Menu::itemTop(items, int(i));
-            const double h = items[i].separator ? Menu::SeparatorHeight : Menu::ItemHeight;
+            const double h = items[i].separator ? Menu::SeparatorHeight : !items[i].swatches.empty() ? Menu::SwatchRowHeight : Menu::ItemHeight;
             if (p.y >= top && p.y < top + h)
-                return items[i].separator || !items[i].enabled ? -1 : int(i);
+                return items[i].separator || (!items[i].enabled && !disabledToo) ? -1 : int(i);
         }
         return -1;
     }
@@ -329,6 +333,10 @@ public:
                 fill(cr, Rect{1, top + 5, frame().w - 2, 1}, CoreUI::color(CoreUI::MenuSeparator));
                 continue;
             }
+            if (!items[i].swatches.empty()) {
+                drawSwatches(cr, items[i], top, int(i) == highlighted ? swatch : -1);
+                continue;
+            }
             const Rect row{0, top, frame().w, Menu::ItemHeight};
             const bool hi = int(i) == highlighted;
             if (hi)
@@ -338,40 +346,163 @@ public:
             t.color = !items[i].enabled ? Color::gray(0, 0.3) : hi ? Color::gray(255) : Color::gray(0);
             if (items[i].checked)
                 drawText(cr, "✓", Rect{6, top, 14, Menu::ItemHeight}, t);
-            drawText(cr, items[i].title, Rect{21, top, frame().w - 21 - 18, Menu::ItemHeight}, t);
+            double x = 21;
+            if (!items[i].image.isNull()) {
+                items[i].image.draw(cr, Rect{x, top + 1, 16, 16});
+                x += 20;
+            }
+            drawText(cr, items[i].title, Rect{x, top, frame().w - x - 18, Menu::ItemHeight}, t);
+            if (!items[i].keyEquivalent.empty())
+                drawText(cr, items[i].keyEquivalent, Rect{keyColumn, top, frame().w - keyColumn - 10, Menu::ItemHeight}, t);
+            if (!items[i].submenu.empty()) {
+                // the submenu's arrow: a triangle pointing right
+                const double ax = frame().w - 15, ay = top + std::floor(Menu::ItemHeight / 2);
+                cairo_move_to(cr, ax, ay - 4.5);
+                cairo_line_to(cr, ax + 7, ay);
+                cairo_line_to(cr, ax, ay + 4.5);
+                cairo_close_path(cr);
+                t.color.set(cr);
+                cairo_fill(cr);
+            }
+        }
+    }
+    int swatch = -1;   // the label row's swatch under the pointer
+    static constexpr double SwatchLeft = 21, SwatchPitch = 19, SwatchSize = 15;
+    int swatchAt(const MenuItem &item, double x) const
+    {
+        const int s = int(std::floor((x - SwatchLeft + 2) / SwatchPitch));
+        return s >= 0 && s < int(item.swatches.size()) ? s : -1;
+    }
+    void drawSwatches(cairo_t *cr, const MenuItem &item, double top, int hover)
+    {
+        TextStyle t;
+        t.font = font;
+        t.color = item.enabled ? Color::gray(0) : Color::gray(0, 0.3);
+        drawText(cr, item.title, Rect{SwatchLeft, top, frame().w - SwatchLeft - 10, Menu::ItemHeight}, t);
+        const double y = top + Menu::ItemHeight + 1;
+        for (size_t k = 0; k < item.swatches.size(); ++k) {
+            const double x = SwatchLeft + k * SwatchPitch;
+            const Rect r{x + 0.5, y + 0.5, SwatchSize - 1, SwatchSize - 1};
+            if (int(k) == hover || int(k) == item.swatchChecked) {
+                // the hovered or current swatch: a grey square around it
+                cairo_rectangle(cr, x - 2.5, y - 2.5, SwatchSize + 4, SwatchSize + 4);
+                cairo_set_source_rgba(cr, 0, 0, 0, int(k) == hover ? 0.45 : 0.25);
+                cairo_set_line_width(cr, 1);
+                cairo_stroke(cr);
+            }
+            if (k == 0) {
+                // none: a cross
+                cairo_set_source_rgba(cr, 0, 0, 0, 0.55);
+                cairo_set_line_width(cr, 1.5);
+                cairo_move_to(cr, x + 4, y + 4);
+                cairo_line_to(cr, x + SwatchSize - 4, y + SwatchSize - 4);
+                cairo_move_to(cr, x + SwatchSize - 4, y + 4);
+                cairo_line_to(cr, x + 4, y + SwatchSize - 4);
+                cairo_stroke(cr);
+                continue;
+            }
+            const Color c = item.swatches[k];
+            cairo_pattern_t *g = cairo_pattern_create_linear(0, r.y, 0, r.bottom());
+            cairo_pattern_add_color_stop_rgb(g, 0, std::min(1.0, c.r + 0.18), std::min(1.0, c.g + 0.18), std::min(1.0, c.b + 0.18));
+            cairo_pattern_add_color_stop_rgb(g, 1, c.r, c.g, c.b);
+            cairo_rectangle(cr, r.x, r.y, r.w, r.h);
+            cairo_set_source(cr, g);
+            cairo_fill_preserve(cr);
+            cairo_pattern_destroy(g);
+            cairo_set_source_rgba(cr, c.r * 0.6, c.g * 0.6, c.b * 0.6, 1);
+            cairo_set_line_width(cr, 1);
+            cairo_stroke(cr);
         }
     }
     void mouseMoved(Event &e) override { track(e.location); }
     void mouseDragged(Event &e) override { track(e.location); }
     void mouseExited(Event &) override
     {
+        if (child)
+            return;   // the submenu keeps its item highlighted
         highlighted = -1;
         setNeedsDisplay();
+    }
+    // the pointer outside this menu's window (a grab): over the menu it came from, or nowhere
+    bool forwardToParent(Point screen)
+    {
+        if (!parentMenu || !parentMenu->window())
+            return false;
+        const Point o = parentMenu->window()->toScreen({0, 0});
+        const Point p{screen.x - o.x, screen.y - o.y};
+        if (p.x < 0 || p.y < 0 || p.x >= parentMenu->frame().w || p.y >= parentMenu->frame().h)
+            return parentMenu->forwardToParent(screen);
+        parentMenu->track(p);
+        return true;
     }
     void track(Point p)
     {
         moved = true;
         const int i = itemAt(p);
-        if (i != highlighted) {
+        const int sw = i >= 0 && !items[size_t(i)].swatches.empty() ? swatchAt(items[size_t(i)], p.x) : -1;
+        if (i != highlighted || sw != swatch) {
             highlighted = i;
+            swatch = sw;
             setNeedsDisplay();
         }
+        // a hierarchical item opens its submenu; another item closes it
+        if (child && child->parentItem != i)
+            closeChild();
+        if (i >= 0 && !items[size_t(i)].submenu.empty() && !child)
+            openChild(i);
+    }
+    void openChild(int i);
+    void closeChild();
+    MenuView *root()
+    {
+        MenuView *m = this;
+        while (m->parentMenu)
+            m = m->parentMenu;
+        return m;
     }
     void mouseUp(Event &e) override
     {
         // a press and release on the button opens it; a release on an item after dragging chooses
-        if (!moved && now() - opened < 0.3)
+        if (!moved && now() - root()->opened < 0.3)
             return;
-        finish(itemAt(e.location));
+        const int i = itemAt(e.location);
+        if (i >= 0 && !items[size_t(i)].submenu.empty())
+            return;   // a hierarchical item only opens its submenu
+        if (i >= 0 && !items[size_t(i)].swatches.empty()) {
+            const int sw = swatchAt(items[size_t(i)], e.location.x);
+            if (sw >= 0)
+                finish(Menu::submenuChoice(i, sw));
+            return;
+        }
+        choose(i);
+    }
+    // an item of this menu chosen (-1: none): the whole chain closes
+    void choose(int i)
+    {
+        if (parentMenu) {
+            MenuView *p = parentMenu;
+            const int item = parentItem;
+            p->finish(i < 0 ? -1 : Menu::submenuChoice(item, i));
+            return;
+        }
+        finish(i);
     }
     void mouseDown(Event &) override {}
     void keyDown(Event &e) override
     {
         if (e.keysym == XKB_KEY_Escape)
-            finish(-1);
-        else if (e.keysym == XKB_KEY_Return || e.keysym == XKB_KEY_KP_Enter || e.keysym == XKB_KEY_space)
-            finish(highlighted);
-        else if (e.keysym == XKB_KEY_Down || e.keysym == XKB_KEY_Up) {
+            root()->finish(-1);
+        else if (e.keysym == XKB_KEY_Return || e.keysym == XKB_KEY_KP_Enter || e.keysym == XKB_KEY_space) {
+            if (highlighted >= 0 && !items[size_t(highlighted)].submenu.empty())
+                openChild(highlighted);
+            else
+                choose(highlighted);
+        } else if (e.keysym == XKB_KEY_Right && highlighted >= 0 && !items[size_t(highlighted)].submenu.empty()) {
+            openChild(highlighted);
+        } else if (e.keysym == XKB_KEY_Left && parentMenu) {
+            MenuView *p = parentMenu;
+            p->closeChild();
+        } else if (e.keysym == XKB_KEY_Down || e.keysym == XKB_KEY_Up) {
             const int step = e.keysym == XKB_KEY_Down ? 1 : -1;
             for (int i = highlighted + step; i >= 0 && i < int(items.size()); i += step)
                 if (!items[size_t(i)].separator && items[size_t(i)].enabled) {
@@ -386,9 +517,104 @@ public:
 };
 
 std::unique_ptr<Window> openMenu;
+std::vector<std::unique_ptr<Window>> openSubmenus;   // the open submenus, outermost first
+
+std::unique_ptr<Window> makeMenuWindow(Window *parent, Point at, const std::vector<MenuItem> &items, double minWidth, Font font,
+                                       MenuView *&view)
+{
+    double title = 0, keys = 0;
+    bool images = false, arrows = false;
+    for (const MenuItem &i : items) {
+        title = std::max(title, textWidth(i.title, font));
+        if (!i.swatches.empty())
+            title = std::max(title, i.swatches.size() * MenuView::SwatchPitch);
+        keys = std::max(keys, i.keyEquivalent.empty() ? 0.0 : textWidth(i.keyEquivalent, font));
+        images = images || !i.image.isNull();
+        arrows = arrows || !i.submenu.empty();
+    }
+    const double left = 21 + (images ? 20 : 0);
+    double w = std::max(minWidth, left + title + 30 + (keys > 0 ? keys + 20 : 0) + (arrows ? 10 : 0));
+    const double h = Menu::itemTop(items, int(items.size())) + Menu::Padding;
+    auto win = std::make_unique<Window>(Size{std::ceil(w), std::ceil(h)}, "menu", Window::Menu, parent, at);
+    view = win->contentView()->add<MenuView>();
+    view->setFrame({0, 0, std::ceil(w), std::ceil(h)});
+    view->items = items;
+    view->font = font;
+    view->keyColumn = std::ceil(w) - 10 - keys - (arrows ? 10 : 0);
+    MenuView *v = view;
+    win->makeFirstResponder(v);
+    win->onOutsideClick = [v](Event &e) {
+        if (e.type == Event::MouseDown || e.type == Event::MouseUp) {
+            // a release over the menu it came from chooses there
+            if (e.type == Event::MouseUp && v->parentMenu && v->forwardToParent(e.screen)) {
+                MenuView *p = v->parentMenu;
+                while (p) {
+                    const Point o = p->window()->toScreen({0, 0});
+                    const Point q{e.screen.x - o.x, e.screen.y - o.y};
+                    if (q.x >= 0 && q.y >= 0 && q.x < p->frame().w && q.y < p->frame().h) {
+                        const int i = p->itemAt(q);
+                        if (i >= 0 && p->items[size_t(i)].submenu.empty())
+                            p->choose(i);
+                        return;
+                    }
+                    p = p->parentMenu;
+                }
+                return;
+            }
+            if (e.type == Event::MouseDown)
+                v->root()->finish(-1);
+        }
+    };
+    win->onMouseMovedOutside = [v](Event &e) {
+        if (!v->forwardToParent(e.screen) && v->highlighted >= 0 && !v->child) {
+            v->highlighted = -1;
+            v->setNeedsDisplay();
+        }
+    };
+    return win;
+}
+
+void MenuView::openChild(int i)
+{
+    closeChild();
+    Window *w = window();
+    if (!w)
+        return;
+    // beside the item, its first item level with it
+    const Point at{frame().w - 3, Menu::itemTop(items, i) - Menu::Padding};
+    MenuView *v = nullptr;
+    auto win = makeMenuWindow(w, at, items[size_t(i)].submenu, 0, font, v);
+    v->parentMenu = this;
+    v->parentItem = i;
+    child = v;
+    win->show();
+    win->grabInput();
+    openSubmenus.push_back(std::move(win));
+}
+
+void MenuView::closeChild()
+{
+    if (!child)
+        return;
+    child->closeChild();
+    Window *cw = child->window();
+    child = nullptr;
+    for (auto it = openSubmenus.begin(); it != openSubmenus.end(); ++it)
+        if (it->get() == cw) {
+            (*it)->close();
+            std::unique_ptr<Window> gone = std::move(*it);
+            openSubmenus.erase(it);
+            App::shared().later([g = std::shared_ptr<Window>(std::move(gone))] {});
+            break;
+        }
+    if (Window *w = window())
+        w->grabInput();   // the keyboard and the pointer back to this menu
+    setNeedsDisplay();
+}
 
 void MenuView::finish(int index)
 {
+    closeChild();
     auto cb = done;
     Window *w = window();
     done = nullptr;
@@ -406,28 +632,16 @@ double Menu::itemTop(const std::vector<MenuItem> &items, int index)
 {
     double y = Padding;
     for (int i = 0; i < index && size_t(i) < items.size(); ++i)
-        y += items[size_t(i)].separator ? SeparatorHeight : ItemHeight;
+        y += items[size_t(i)].separator ? SeparatorHeight : !items[size_t(i)].swatches.empty() ? SwatchRowHeight : ItemHeight;
     return y;
 }
 
 void Menu::popUp(Window *parent, Point at, const std::vector<MenuItem> &items, double minWidth, Font font, std::function<void(int)> done)
 {
-    double w = minWidth;
-    for (const MenuItem &i : items)
-        w = std::max(w, 21 + textWidth(i.title, font) + 30);
-    const double h = itemTop(items, int(items.size())) + Padding;
     // the window system keeps it on the screen (X11: under the menu bar; Wayland: the compositor slides it)
-    openMenu = std::make_unique<Window>(Size{std::ceil(w), std::ceil(h)}, "menu", Window::Menu, parent, at);
-    auto *v = openMenu->contentView()->add<MenuView>();
-    v->setFrame({0, 0, std::ceil(w), std::ceil(h)});
-    v->items = items;
-    v->font = font;
+    MenuView *v = nullptr;
+    openMenu = makeMenuWindow(parent, at, items, minWidth, font, v);
     v->done = std::move(done);
-    openMenu->makeFirstResponder(v);
-    openMenu->onOutsideClick = [v](Event &e) {
-        if (e.type == Event::MouseDown)
-            v->finish(-1);
-    };
     openMenu->show();
     openMenu->grabInput();
 }
@@ -589,7 +803,24 @@ void TextField::setText(const std::string &t)
 {
     text = t;
     m_caret = std::min(m_caret, text.size());
+    m_anchor = m_caret;
     setNeedsDisplay();
+}
+
+void TextField::selectRange(size_t from, size_t to)
+{
+    m_anchor = std::min(from, text.size());
+    m_caret = std::min(to, text.size());
+    m_keepSelection = !isFirstResponder();
+    m_caretOn = true;
+    setNeedsDisplay();
+}
+
+void TextField::deleteSelection()
+{
+    const size_t a = std::min(m_anchor, m_caret), b = std::max(m_anchor, m_caret);
+    text.erase(a, b - a);
+    m_caret = m_anchor = a;
 }
 
 void TextField::draw(cairo_t *cr)
@@ -617,8 +848,21 @@ void TextField::draw(cairo_t *cr)
         p.color = Color::gray(0, 0.4);
         drawText(cr, placeholder, r, p);
     }
+    if (isFirstResponder() && hasSelection() && !secure) {
+        // the selected text's background (NSColor selectedTextBackgroundColor), lighter without the key
+        const size_t a = std::min(m_anchor, m_caret), b = std::max(m_anchor, m_caret);
+        double x0 = r.x + textWidth(text.substr(0, a), font), x1 = r.x + textWidth(text.substr(0, b), font);
+        double shift = 0;
+        if (align == Align::Right)
+            shift = r.w - textWidth(str, font);
+        else if (align == Align::Center)
+            shift = (r.w - textWidth(str, font)) / 2;
+        const double h = std::round(font.size + 3);
+        fill(cr, Rect{std::round(x0 + shift), std::round(mid - h / 2 + 1), std::round(x1 - x0), h},
+             windowIsKey() ? Color{181 / 255.0, 213 / 255.0, 1, 1} : Color::gray(212));
+    }
     drawText(cr, str, r, t);
-    if (isFirstResponder() && m_caretOn && windowIsKey()) {
+    if (isFirstResponder() && m_caretOn && windowIsKey() && !hasSelection()) {
         // the caret after the characters before it (the dots for a secure field)
         std::string before = text.substr(0, m_caret);
         if (secure) {
@@ -655,7 +899,7 @@ void TextField::mouseDown(Event &e)
 {
     if (style == Search && !text.empty() && e.location.x > frame().w - 20) {
         text.clear();
-        m_caret = 0;
+        m_caret = m_anchor = 0;
         if (onChange)
             onChange(text);
     } else {
@@ -669,6 +913,19 @@ void TextField::mouseDown(Event &e)
             if (at == text.size())
                 break;
         }
+        // a double click selects the word, a shift-click extends
+        if (e.clickCount == 2) {
+            size_t a = m_caret, b = m_caret;
+            auto word = [](char c) { return c != ' ' && c != '.' && c != '-' && c != '_' && c != '/'; };
+            while (a > 0 && word(text[a - 1]))
+                --a;
+            while (b < text.size() && word(text[b]))
+                ++b;
+            m_anchor = a;
+            m_caret = b;
+        } else if (!(e.modifiers & Shift)) {
+            m_anchor = m_caret;
+        }
     }
     m_caretOn = true;
     setNeedsDisplay();
@@ -676,30 +933,58 @@ void TextField::mouseDown(Event &e)
 
 void TextField::keyDown(Event &e)
 {
+    if (onKey && onKey(e))
+        return;
     const std::string before = text;
+    const bool shift = e.modifiers & Shift;
+    auto moveTo = [&](size_t at) {
+        m_caret = at;
+        if (!shift)
+            m_anchor = m_caret;
+    };
+    if ((e.modifiers & Command) && e.keysym == XKB_KEY_a) {
+        selectAll();
+        return;
+    }
+    if (e.modifiers & Command) {
+        View::keyDown(e);
+        return;
+    }
     switch (e.keysym) {
     case XKB_KEY_BackSpace:
-        if (m_caret > 0) {
+        if (hasSelection())
+            deleteSelection();
+        else if (m_caret > 0) {
             const size_t p = prevChar(text, m_caret);
             text.erase(p, m_caret - p);
-            m_caret = p;
+            m_caret = m_anchor = p;
         }
         break;
     case XKB_KEY_Delete:
-        if (m_caret < text.size())
+        if (hasSelection())
+            deleteSelection();
+        else if (m_caret < text.size())
             text.erase(m_caret, nextChar(text, m_caret) - m_caret);
         break;
-    case XKB_KEY_Left: m_caret = prevChar(text, m_caret); break;
-    case XKB_KEY_Right: m_caret = nextChar(text, m_caret); break;
-    case XKB_KEY_Home: m_caret = 0; break;
-    case XKB_KEY_End: m_caret = text.size(); break;
+    case XKB_KEY_Left:
+        moveTo(hasSelection() && !shift ? std::min(m_anchor, m_caret) : prevChar(text, m_caret));
+        break;
+    case XKB_KEY_Right:
+        moveTo(hasSelection() && !shift ? std::max(m_anchor, m_caret) : nextChar(text, m_caret));
+        break;
+    case XKB_KEY_Home: moveTo(0); break;
+    case XKB_KEY_End: moveTo(text.size()); break;
     case XKB_KEY_Escape:
+        if (onCancel) {
+            onCancel();
+            return;
+        }
         if (style != Search) {
             View::keyDown(e);
             return;
         }
         text.clear();
-        m_caret = 0;
+        m_caret = m_anchor = 0;
         break;
     case XKB_KEY_Return:
     case XKB_KEY_KP_Enter:
@@ -716,8 +1001,11 @@ void TextField::keyDown(Event &e)
             View::keyDown(e);
             return;
         }
+        if (hasSelection())
+            deleteSelection();
         text.insert(m_caret, e.text);
         m_caret += e.text.size();
+        m_anchor = m_caret;
     }
     m_caretOn = true;
     setNeedsDisplay();
@@ -739,7 +1027,9 @@ void TextField::focusChanged()
         App::shared().removeTimer(m_blink);
     m_blink = 0;
     if (isFirstResponder()) {
-        m_caret = text.size();
+        if (!m_keepSelection)
+            m_caret = m_anchor = text.size();
+        m_keepSelection = false;
         m_caretOn = true;
         m_blink = App::shared().addTimer(0.53, true, [this] {
             m_caretOn = !m_caretOn;
@@ -973,16 +1263,18 @@ void OutlineView::draw(cairo_t *cr)
             // 0x25 (171) (_kPairs 0x3f460, kColorTable 0x3fb60)
             const Rect band{0, y, frame().w, rowHeight};
             cairo_pattern_t *g = cairo_pattern_create_linear(0, y, 0, y + rowHeight);
-            cairo_pattern_add_color_stop_rgb(g, 0, 207 / 255.0, 207 / 255.0, 207 / 255.0);
-            cairo_pattern_add_color_stop_rgb(g, 1, 233 / 255.0, 233 / 255.0, 233 / 255.0);
+            // (Generic RGB, as CoreUI's gradients: matched to the screen)
+            const Color from = Color::genericGray(207), to = Color::genericGray(233);
+            cairo_pattern_add_color_stop_rgb(g, 0, from.r, from.g, from.b);
+            cairo_pattern_add_color_stop_rgb(g, 1, to.r, to.g, to.b);
             cairo_set_source(cr, g);
             cairo_rectangle(cr, band.x, band.y, band.w, band.h);
             cairo_fill(cr);
             cairo_pattern_destroy(g);
-            fill(cr, Rect{0, y, band.w, 1}, Color::gray(202));
+            fill(cr, Rect{0, y, band.w, 1}, Color::genericGray(202));
             fill(cr, Rect{0, y + 1, 1, rowHeight - 2}, Color::gray(0, 0.1));
             fill(cr, Rect{band.w - 1, y + 1, 1, rowHeight - 2}, Color::gray(0, 0.1));
-            fill(cr, Rect{0, y + rowHeight - 1, band.w, 1}, Color::gray(171));
+            fill(cr, Rect{0, y + rowHeight - 1, band.w, 1}, Color::genericGray(171));
         }
         if (sel)   // alternateSelectedControlColor when it has the keyboard, else secondarySelectedControlColor
             fill(cr, Rect{0, y, frame().w, rowHeight}, focused ? Color::rgb(56, 117, 215) : Color::gray(212));

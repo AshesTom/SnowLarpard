@@ -377,6 +377,11 @@ void ColumnView::keyDown(Event &e)
         return;
     }
     switch (e.keysym) {
+    case XKB_KEY_Return:
+    case XKB_KEY_KP_Enter:
+    case XKB_KEY_space:
+        View::keyDown(e);   // the window's: renaming, Quick Look
+        return;
     case XKB_KEY_Down:
         if (n)
             select(m_active, c.selected < 0 ? 0 : std::min(n - 1, c.selected + 1));
@@ -408,6 +413,82 @@ void ColumnView::keyDown(Event &e)
         return;
     }
     View::keyDown(e);
+}
+
+void ColumnView::refresh()
+{
+    for (size_t i = 0; i < m_columns.size(); ++i) {
+        Column &c = m_columns[i];
+        const std::string selected = c.selected >= 0 && size_t(c.selected) < c.items.size() ? c.items[size_t(c.selected)].name : "";
+        c.items = list(c.folder);
+        c.selected = -1;
+        for (size_t k = 0; k < c.items.size(); ++k)
+            if (c.items[k].name == selected)
+                c.selected = int(k);
+        if (c.selected < 0) {
+            // its selection is gone: the columns after it too
+            m_columns.erase(m_columns.begin() + long(i) + 1, m_columns.end());
+            m_active = std::min(m_active, m_columns.size() - 1);
+            break;
+        }
+    }
+    setNeedsDisplay();
+    if (onChanged)
+        onChanged();
+}
+
+bool ColumnView::shows(const std::string &folder) const
+{
+    for (const Column &c : m_columns)
+        if (c.folder == folder)
+            return true;
+    return false;
+}
+
+void ColumnView::selectPaths(const std::vector<std::string> &paths)
+{
+    for (const std::string &p : paths)
+        for (size_t i = m_columns.size(); i-- > 0;)
+            for (size_t k = 0; k < m_columns[i].items.size(); ++k)
+                if (m_columns[i].items[k].path == p) {
+                    select(i, int(k));
+                    return;
+                }
+}
+
+Rect ColumnView::nameRectInWindow(const std::string &path) const
+{
+    for (size_t i = 0; i < m_columns.size(); ++i)
+        for (size_t k = 0; k < m_columns[i].items.size(); ++k)
+            if (m_columns[i].items[k].path == path) {
+                const double x = columnX(i) + (showIcons ? 3 + iconSize + 4 : 6) - 2;
+                const double y = k * rowHeight() - m_columns[i].offset;
+                const Point o = toWindow({x, y});
+                return {o.x, o.y, m_columns[i].width - (x - columnX(i)) - 18, rowHeight()};
+            }
+    return {};
+}
+
+void ColumnView::rightMouseDown(Event &e)
+{
+    bool onItem = false;
+    for (size_t i = 0; i < m_columns.size(); ++i) {
+        const double x = columnX(i), w = m_columns[i].width;
+        if (e.location.x < x || e.location.x >= x + w)
+            continue;
+        Column &c = m_columns[i];
+        const int row = int((e.location.y + c.offset) / rowHeight());
+        if (row >= 0 && row < int(c.items.size())) {
+            onItem = true;
+            if (c.selected != row || m_active != i)
+                select(i, row);
+        } else {
+            m_active = i;
+        }
+        break;
+    }
+    if (onContextMenu)
+        onContextMenu(toWindow(e.location), onItem);
 }
 
 } // namespace Finder

@@ -10,14 +10,27 @@ partition map whose `Apple_HFS` partition is the installer. `tools/extract.py`:
 3. reads each flat package (xar: a zlib'd XML table of contents, then the heap) and streams its
    `Payload` (gzip'd cpio, odc format; the TOC sometimes says octet-stream: the gzip magic
    decides) through `cpio` with only the wanted paths;
-4. converts the plists and `.strings` files (UTF-16, OpenStep syntax) to JSON beside them.
+4. takes the pictures Photo Booth's effects use out of three compositions, then prunes what the
+   patterns took beyond the shell's needs (cpio's `*` crosses `/`): the other languages' `.lproj`,
+   Mach-O code, the `.qtz` files;
+5. optimizes the JPEGs' Huffman tables (`jpegtran -optimize`, when there: the same pixels, ~5% less);
+6. converts the plists and `.strings` files (UTF-16, OpenStep syntax) to JSON beside them.
+
+It builds a fresh tree beside `.local/assets` and swaps it in when complete, so a run never leaves
+files of an earlier one behind. Given `.local/media/MacOSX.hfs` (kept by the first run) instead of
+the DVD, it extracts again without it. The result is about 150 MiB, half of it the desktop pictures.
 
 | package | what the shell takes |
 |---|---|
-| BaseSystem | CoreTypes' icons, Lucida Grande, Helvetica Neue, DefaultDesktop.jpg, Utilities' icons |
-| Essentials | Dock.app's and Finder.app's resources, the Menu Extras' art, the applications' icons |
+| BaseSystem | CoreUI's `ArtFile.bin`/`SArtFile.bin` (the controls' art), HIToolbox's pictures, CoreTypes' and the disks' icons and the types' names, LaunchServices' strings, Lucida Grande, Helvetica Neue, the .dfont fonts and Menlo, DefaultDesktop.jpg, SystemVersion.plist, AirPort.menu's pictures, Utilities' icons, Parental Controls' pane; QuartzCore's menu bar Apple (32 x 22 RGBA, out of the library) |
+| Essentials | Dock.app's, Finder.app's (nibs, canned searches), SystemUIServer's and the Menu Extras' resources; loginwindow's About This Mac; System Preferences' and its panes' and monitor panels' nibs, pictures and search terms; Preview's, Photo Booth's and Stickies' resources; the fonts of /Library/Fonts (Stickies' notes); three compositions' embedded pictures; the User Template's PDFs; the applications' icons and Info.plist |
 | MediaFiles | the desktop pictures |
-| Safari, Mail, iTunes, iCal, AddressBook, iChat, DVDPlayer | their icons |
+| Mail | Mail.app's pictures, toolbars, English nibs and strings, its icon |
+| Safari, iTunes, iCal, AddressBook, iChat, DVDPlayer | their icons and Info.plist |
+
+Only English resources are kept. HIToolbox's `.rsrc`, CoreUI's `UI.bundle` recipes, the frameworks'
+code and everything else stay in the packages: for reverse engineering, take them out of the
+packages into `.local/media/re`, not from `.local/assets`.
 
 Everything lands in `.local/assets` at its Mac path, so the code names files as the Mac does
 (`Assets::image("/System/Library/CoreServices/Dock.app/Contents/Resources/scurve-m.png")`).
@@ -60,6 +73,8 @@ shell/src/preview  Preview.app, on AquaKit: PDFs (poppler) and pictures, the too
                    the sidebar; the Dock's stacks open their documents in it (Apps::openFile)
 shell/src/photobooth  Photo Booth.app, on AquaKit: the camera through Video4Linux (camera), the effects' compositions
                    on the processor (effects), ~/Pictures/Photo Booth and its Recents.plist (library)
+shell/src/stickies  Stickies.app, on AquaKit: ~/Library/StickiesDatabase (NSArchiver's typedstream, database),
+                   the notes' RTFD (richtext) and their text view (textview), the notes' own frames
 shell/src/windowserver  WindowServer: the window manager, 10.6's title bars; its compositor (compositor.cpp:
                    Composite, Damage and Render), which puts the windows together over their shadows
 shell/src/menubar/appmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu

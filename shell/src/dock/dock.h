@@ -6,6 +6,8 @@
 // largesize, magnification, autohide, orientation, persistent-apps).
 #pragma once
 
+#include <QPolygonF>
+
 #include "apps.h"
 
 #include <QElapsedTimer>
@@ -82,6 +84,7 @@ private:
     QPointF m_pressPos;
     qreal m_hideOffset = 0;        // 0 shown .. 1 hidden
     QRectF m_floor;                // the floor's front edge rectangle, for hit tests
+    QPolygonF m_floorQuad;         // the floor's quadrangle as drawn (the magic mirror's)
     QImage m_wallpaper;            // under the Dock when nothing composites
     QHash<QString, QImage> m_iconCache;
     QElapsedTimer m_clock;

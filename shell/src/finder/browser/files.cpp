@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "files.h"
 
+#include "appkit.h"
 #include "foundation.h"
 
 #include <dirent.h>
@@ -134,9 +135,31 @@ std::string userDir(const std::string &xdgName, const std::string &fallback)
     return fallback;
 }
 
+namespace {
+
+// the volumes, read again at most every two seconds (each icon drawn asks)
+const std::vector<Volume> &cachedVolumes()
+{
+    static std::vector<Volume> v;
+    static double at = -10;
+    if (AK::now() - at > 2) {
+        v = volumes();
+        at = AK::now();
+    }
+    return v;
+}
+
+} // namespace
+
 std::vector<Item> list(const std::string &folder)
 {
     std::vector<Item> out;
+    if (folder == ComputerFolder) {
+        // Go > Computer: the disks (the Network's place left out: GIO's network:// isn't a folder)
+        for (const Volume &v : volumes())
+            out.push_back(Item{v.name, v.path, true});
+        return out;
+    }
     DIR *d = opendir(folder.c_str());
     if (!d)
         return out;
@@ -166,6 +189,40 @@ Image coreTypesIcon(const std::string &name, int size) { return iconFile(CoreTyp
 
 Image icon(const Item &item, int size, bool preview)
 {
+    if (item.folder && item.path == ComputerFolder)
+        return coreTypesIcon("com.apple.imac-aluminum-24", size);   // the computer's model icon (10.6's iMac)
+    if (item.folder)
+        for (const Volume &v : cachedVolumes())
+            if (v.path == item.path)
+                return volumeIcon(v, size);
+    // an alias (a symbolic link): its original's icon with CoreTypes' AliasBadgeIcon over it
+    struct stat lst;
+    if (lstat(item.path.c_str(), &lst) == 0 && S_ISLNK(lst.st_mode)) {
+        static std::map<std::string, Image> aliases;
+        const std::string key = item.path + '@' + std::to_string(size);
+        auto it = aliases.find(key);
+        if (it != aliases.end())
+            return it->second;
+        char real[4096];
+        Item original = item;
+        original.path = realpath(item.path.c_str(), real) ? std::string(real) : item.path;
+        original.name = fileName(original.path);
+        original.folder = isDir(original.path);
+        Image base = original.path != item.path ? icon(original, size, preview) : coreTypesIcon("GenericDocumentIcon", size);
+        const Image badge = coreTypesIcon("AliasBadgeIcon", size);
+        cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+        cairo_t *cr = cairo_create(s);
+        if (!base.isNull()) {
+            const Size fit = scaledToFit(base.size(), {double(size), double(size)});
+            base.draw(cr, Rect{(size - fit.w) / 2, (size - fit.h) / 2, fit.w, fit.h});
+        }
+        if (!badge.isNull())
+            badge.draw(cr, Rect{0, 0, double(size), double(size)});
+        cairo_destroy(cr);
+        if (aliases.size() > 200)
+            aliases.clear();
+        return aliases[key] = Image(s);
+    }
     if (item.folder)
         return coreTypesIcon(specialFolderIcon(item.path), size);
     const std::string ext = extension(item.name);
@@ -210,6 +267,11 @@ Image icon(const Item &item, int size, bool preview)
 
 std::string displayName(const std::string &path)
 {
+    if (path == ComputerFolder) {
+        char host[256] = "Computer";
+        gethostname(host, sizeof host - 1);
+        return host;
+    }
     const char *data = std::getenv("XDG_DATA_HOME");
     if (path == (data && *data ? std::string(data) : home() + "/.local/share") + "/Trash/files")
         return "Trash";

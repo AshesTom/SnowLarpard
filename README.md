@@ -52,7 +52,9 @@ It follows the same idea as Winedows' native shell (XP) and the Aqua session of 
 | **System Preferences** | Show All and every pane, built from its own nib | AquaKit |
 | **Preview** | PDFs and pictures in 10.6's document window | AquaKit, poppler |
 | **loginwindow** | About This Mac | AquaKit |
+| **Software Update** | Mac OS X 10.6.8, from Apple's own catalog | AquaKit |
 | **Mail** | Early: IMAP and SMTP, passwords in the desktop's keyring | AquaKit, libcurl, libsecret |
+| **Stickies** | Stickies 7.0: its database, its notes' colours and frames, Arrange, Find, Import and Export | AquaKit |
 
 **AquaKit** is a small AppKit without Qt: AppKit's skeleton on cairo and pango, with controls
 drawn by CoreUI's own renderer (reversed), on Wayland or X11.
@@ -75,7 +77,7 @@ mix reversed from CoreGraphics). `SNOWLEOPARD_FONT_SMOOTHING=0` keeps the text g
 Dependencies (Arch / CachyOS):
 
 ```sh
-sudo pacman -S --needed cmake qt6-base qt6-imageformats libxcb xcb-util-keysyms cairo pango libjpeg-turbo libtiff libxkbcommon wayland wayland-protocols poppler-glib 7zip cpio python-xlib
+sudo pacman -S --needed cmake qt6-base qt6-imageformats libxcb xcb-util-keysyms cairo pango libjpeg-turbo libtiff lcms2 zlib libxkbcommon wayland wayland-protocols poppler-glib 7zip cpio python-xlib
 ```
 
 Then, in a window of your current desktop (Xephyr, or Xwayland's window under Wayland):
@@ -86,9 +88,12 @@ Then, in a window of your current desktop (Xephyr, or Xwayland's window under Wa
 ./sl.sh -- 1600x1000                      # at a size
 ```
 
-Nothing on your system is touched: the DVD's files and the build go to `.local/`.
-`tools/extract.py` keeps the DVD's HFS+ partition in `.local/media/MacOSX.hfs` (6 GB) to make
-later runs faster: delete it when you're done extracting.
+Nothing on your system is touched: the DVD's files and the build go to `.local/`, and the session
+has a home of its own, `.local/home/<you>` (Desktop, Documents, Downloads... as a new 10.6 account
+has them; `SL_HOME=$HOME ./sl.sh --` to use yours).
+`tools/extract.py` keeps only what the shell reads (about 150 MB in `.local/assets`) and the
+DVD's HFS+ partition in `.local/media/MacOSX.hfs` (6 GB), from which it can extract again without
+the DVD (`tools/extract.py .local/media/MacOSX.hfs`): delete it when you're done extracting.
 
 <details>
 <summary><b>Running one application by itself</b></summary>
@@ -141,7 +146,9 @@ Restart and Shut Down only act on the computer with `SNOWLEOPARD_POWER=1`.
 - **The applications' own menus**, over D-Bus (the global menu: Qt and KDE applications by
   themselves, GTK ones through appmenu-gtk-module).
 - **Menu extras**: Spotlight (finds applications for now), the clock, the battery, the volume
-  (a slider, through `pactl`).
+  (a slider, through `pactl`), AirPort (the networks with their bars, joining, Turn AirPort Off,
+  through NetworkManager) and Bluetooth (the devices and their submenus, Discoverable, through
+  `bluetoothctl`), as 10.6.8's AirPort.menu and Bluetooth.menu make them.
 - The bar is **translucent**, made from the desktop as 10.6's window server makes it (its menu
   bar filter, reversed from CoreGraphics and QuartzCore).
   `AppleEnableMenuBarTransparency=false` in `~/.config/snowleopard/menubar.conf` makes it
@@ -176,8 +183,15 @@ and its stacks.
 
 <div align="center"><img src="docs/images/finder.png" alt="A Finder window in icon view, with its sidebar, toolbar and status bar" width="680"></div>
 
-- **The desktop**: the desktop picture with its placement, and its contextual menu (New Folder,
-  Change Desktop Background…).
+- **The desktop**: the desktop picture with its placement, and **its icons**: the disks
+  (as Preferences asks) and the Desktop folder's items, on the Finder's own grid (from the top
+  right, column by column), moved and kept where you put them (the Desktop folder's `.DS_Store`),
+  selected by a click or a rectangle, opened, renamed, labelled; dragged into a Finder window or
+  from one onto the desktop; their contextual menus (Open, Open With ▸, Move to Trash or Eject,
+  Get Info, Compress, Duplicate, Make Alias, Quick Look, Copy, Label:) and the desktop's (New
+  Folder where you clicked, Change Desktop Background…, Clean Up, Arrange By ▸, Show View Options
+  for the desktop's icon size, spacing and labels); the menu bar's commands and the keys apply to
+  them while the desktop is in front.
 - **The browser window**, without Qt, laid out by the Finder's own nibs and grid: the toolbar
   (Back/Forward, the view buttons, Quick Look, Action, Search) with CoreUI's template images,
   the sidebar (DEVICES, PLACES, SEARCH FOR) in the source list's colours, icons from CoreTypes
@@ -206,6 +220,31 @@ and its stacks.
   ⌘C ⌘V, Duplicate (⌘D: "notes copy.txt", "notes copy 2.txt"), Move to Trash (⌘⌫) and Empty
   Trash (⇧⌘⌫) in the freedesktop Trash the Dock shows, with the Finder's Copy window (its
   progress and time left) and its "replace?" question.
+- **The menu bar's File, Edit, View and Go**, as the Finder's `MenuBar.nib` has them, and every
+  one of their key equivalents in its windows: New Folder (its name ready to type), Open, Get
+  Info, Compress (`.zip`), Duplicate, Make Alias (a symbolic link with the alias arrow), Quick
+  Look, Show Original, Add to Sidebar, Move to Trash / Put Back, Eject, Find, Undo (rename, new
+  folder, copy, move, Trash), Copy and Paste, Select All, the four views, Clean Up, Arrange By and
+  Keep Arranged By, the path bar, the status bar, the sidebar, the toolbar, Back, Forward,
+  Enclosing Folder, Computer, Home, Desktop, Network, Applications, Documents, Recent Folders,
+  **Go to Folder…** (⇧⌘G, Tab completes) and **Connect to Server…** (⌘K, mounted by GIO).
+- **The contextual menu** (the right button or Control-click), item for item as the Finder builds
+  it (its table, reversed from the decrypted Finder): Open, Open With ▸ (the desktop's
+  applications for the type), Move to Trash, Get Info, Compress, Duplicate, Make Alias, Quick
+  Look, Copy, Paste, Clean Up, Arrange By ▸, Show View Options, and the **Label:** swatches; the
+  sidebar's (Eject, Remove from Sidebar, Sidebar Preferences).
+- **Renaming in place**: Return, or a click on the selected name; the name without its extension
+  selected, the extension change asked about, the name taken refused.
+- **Labels**: the seven colours of HIServices on the icons' names and the list's rows, kept in the
+  item's FinderInfo (`user.com.apple.FinderInfo`), as a Mac keeps them.
+- **Quick Look** (the space bar, ⌘Y, the toolbar's eye): pictures, PDFs, text, or the icon and
+  its information, in the dark panel; the arrows go through the selection.
+- **Search**: the toolbar's field (names, in This Mac or the window's folder) and the sidebar's
+  SEARCH FOR (Today, Yesterday, Past Week, All Images, All Movies, All Documents: the DVD's own
+  canned searches' queries).
+- **Finder Preferences** (⌘,), from its nib: General (the new window's folder, folders in new
+  windows), Labels (their names), Sidebar (what it shows), Advanced (the Trash's warning, Empty
+  Trash securely, the search's scope).
 
 ### System Preferences
 
@@ -223,7 +262,20 @@ choose.
 
 loginwindow's own panel, filled as 10.6 fills it: the version line that turns into the build
 when clicked, your processor and its L3 cache, your memory modules, the startup disk. Reversed
-from loginwindow's PowerPC code.
+from loginwindow's PowerPC code. The version is your files' own: 10.6 from the DVD, 10.6.8 once
+Software Update has installed it.
+
+### Software Update
+
+The DVD is 10.6 (10A432). Apple menu ▸ Software Update… (or About This Mac's button) reads Apple's
+own Snow Leopard catalog, as 10.6's Software Update does, and offers the **Mac OS X Update Combined
+10.6.8 v1.1** (1.07 GB): its own windows, from its nibs (checking, the alert, Show Details, the
+download). Restart ends the session, installs the update's files over the DVD's on the login
+screen's picture, and starts the session again on 10.6.8. Nothing of Apple's is in this
+repository: the update comes from Apple's servers, like the DVD from your copy.
+
+From a terminal: `tools/softwareupdate.py scan`, `download KEY`, `install KEY`; or, with the
+Combo Update's packages at hand, `tools/extract.py --update PKG...`.
 
 ### Preview
 
@@ -275,7 +327,8 @@ The programs watch these files: change one and the Dock or the menu bar follows.
 sl.sh                 runs everything in a window of your desktop
 install.sh            installs the session for the login screen
 session/              snowleopard-session: the X session; snowleopard-wayland: it from a Wayland login
-tools/extract.py      takes the files out of the DVD (partition map, HFS+, xar, cpio)
+tools/extract.py      takes the files out of the DVD (partition map, HFS+, xar, cpio), and an update's
+tools/softwareupdate.py  Apple's update catalog: what applies, its download, its installation
 shell/src/common      aquashell, shared by every program (assets, apps, X11, session)
 shell/src/menubar     SystemUIServer.app
 shell/src/dock        Dock.app
@@ -285,6 +338,7 @@ shell/src/aquakit     AquaKit: AppKit's skeleton on cairo and pango, CoreUI's re
 shell/src/prefs       System Preferences.app
 shell/src/preview     Preview.app
 shell/src/loginwindow About This Mac
+shell/src/softwareupdate  Software Update.app
 shell/src/mail        Mail.app
 ```
 
@@ -293,6 +347,8 @@ shell/src/mail        Mail.app
 - [docs/reverse-status.md](docs/reverse-status.md): what was reversed from the frameworks, and
   how.
 - [docs/mail-reverse.md](docs/mail-reverse.md): the first pass over Mail.
+- [docs/update-10.6.8.md](docs/update-10.6.8.md): 10.6.8 against the DVD's 10.6, and Software
+  Update.
 
 ## License
 

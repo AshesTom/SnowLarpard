@@ -2,8 +2,9 @@
 // loginwindow's About This Mac, on AquaKit: its own nib (AboutThisMac.nib) filled and laid out as
 // -[AboutThisMacController updateAboutBox] does on 10.6, reversed from loginwindow's PowerPC slice
 // (the Intel ones are encrypted): the version line that turns into the build and the serial number
-// when clicked, the processor, its L3 cache, the memory, the startup disk; More Info... and
-// Software Update... open their Linux counterparts.
+// when clicked, the processor, its L3 cache, the memory, the startup disk; More Info... opens its Linux
+// counterpart, Software Update... the shell's Software Update. The version and build are the files' own
+// (SystemVersion.plist): 10.6.8 once Software Update has installed the Combo Update.
 //   loginwindow --about
 #include "controls.h"
 #include "foundation.h"
@@ -395,10 +396,11 @@ private:
         }
         if (profilerText)
             profilerText->setText(format(profilerText->text(), {"System Profiler"}));
-        // Software Update: the shell's System Preferences' pane
+        // Software Update: the shell's own (Apple's catalog), else System Preferences' pane
+        m_updater = ownApp("Software Update");
         m_preferences = ownApp("System Preferences");
         if (softwareUpdate) {
-            softwareUpdate->setEnabled(!m_preferences.empty());
+            softwareUpdate->setEnabled(!m_updater.empty() || !m_preferences.empty());
             softwareUpdate->action = [this] { launch(false); };
         }
         if (updateText)
@@ -410,7 +412,9 @@ private:
     // while the application starts; then the panel closes
     void launch(bool profiler)
     {
-        const bool ok = profiler ? spawn({m_profiler}) : spawn({m_preferences, "--pane", "softwareupdate"});
+        const bool ok = profiler            ? spawn({m_profiler})
+                        : !m_updater.empty() ? spawn({m_updater})
+                                             : spawn({m_preferences, "--pane", "softwareupdate"});
         if (!ok)
             return;
         Button *button = profiler ? moreInfo : softwareUpdate;
@@ -574,7 +578,7 @@ private:
     ProgressIndicator *profilerProgress = nullptr, *updateProgress = nullptr;
     std::vector<std::string> m_states;
     int m_state = 0;
-    std::string m_copyright, m_profiler, m_preferences;
+    std::string m_copyright, m_profiler, m_preferences, m_updater;
 };
 
 } // namespace

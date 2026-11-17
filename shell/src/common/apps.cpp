@@ -52,6 +52,7 @@ const QVector<MacApp> &macApps()
         {"/Applications/DVD Player.app", "DVD Player", {"vlc"}},
         {"/Applications/TextEdit.app", "TextEdit", {"org.kde.kwrite", "org.gnome.TextEditor", "org.xfce.mousepad", "gedit"}},
         {"/Applications/Calculator.app", "Calculator", {"org.kde.kcalc", "org.gnome.Calculator", "qalculate-gtk"}},
+        {"/Applications/Stickies.app", "Stickies", {"org.kde.knotes", "xpad"}},
         {"/Applications/Dictionary.app", "Dictionary", {"org.gnome.Dictionary"}},
         {"/Applications/Font Book.app", "Font Book", {"org.gnome.font-viewer", "org.kde.kfontview"}},
         {"/Applications/Image Capture.app", "Image Capture", {"org.kde.skanlite", "simple-scan", "org.gnome.SimpleScan"}},
@@ -191,7 +192,8 @@ const QStringList &ownBundles()
 {
     static const QStringList list = {"/Applications/System Preferences.app", "/Applications/Preview.app",
                                      "/Applications/Mail.app", "/Applications/Photo Booth.app",
-                                     "/Applications/Calculator.app"};
+                                     "/Applications/Calculator.app", "/Applications/Stickies.app",
+                                     "/System/Library/CoreServices/Software Update.app"};
     return list;
 }
 

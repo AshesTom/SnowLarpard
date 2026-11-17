@@ -47,6 +47,7 @@ public:
     };
     std::vector<WindowEntry> windows() const;
     int outletObject(const std::string &name) const;   // the archived object an owner's outlet names
+    std::vector<int> outletObjects(const std::string &name) const;   // every object's outlets of that name
     // A window's content, its controls added to controls() (the caller owns it)
     View *instantiateWindow(int object, Size *size);
 
@@ -92,6 +93,7 @@ private:
     std::string m_resources;
     int m_owner = -1;
     std::map<std::string, int> m_ownerOutlets;
+    std::multimap<std::string, int> m_allOutlets;   // every object's outlets
     std::map<int, std::string> m_actions;   // control -> selector
     struct Binding {
         int source;

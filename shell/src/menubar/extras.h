@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // The menu extras at the right of the menu bar: the volume, the battery, the clock and Spotlight,
-// drawn with the icons of their .menu bundles on the DVD.
+// drawn with the icons of their .menu bundles on the DVD (AirPort and Bluetooth: airport.h, bluetooth.h).
 #pragma once
 
 #include <QImage>
@@ -8,6 +8,7 @@
 #include <QPainter>
 #include <QRect>
 
+class QAction;
 class QMenu;
 class QWidget;
 
@@ -83,3 +84,13 @@ private:
 
 // A menu-bar icon (black PDF art) for a state: white when highlighted, as the Mac draws templates.
 QImage menuIcon(const QString &macPath, int height, qreal dpr, bool white);
+// The icon centred in the extra's rectangle.
+void drawCentered(QPainter &p, const QRect &r, const QImage &img);
+// System Preferences on a pane (its short name: "network", "bluetooth", "sound"...).
+void openPreferencePane(const QString &pane);
+// Items taken out of a menu (deleted if the menu owns them), once their successors are in: a menu on
+// screen emptied, even for a moment, has no width and the X server takes it down (and every popup with
+// it), as QMenu::clear() does to it.
+void removeActions(QMenu *menu, const QList<QAction *> &actions);
+// The first of these programs found on the PATH, started with the arguments; false if none is.
+bool startFirst(const QStringList &programs, const QStringList &args = {});

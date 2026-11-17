@@ -43,6 +43,11 @@ public:
     std::function<void(const Item &)> onOpen;
     std::function<void()> onSelectionChanged;
     std::function<void()> onBack;
+    // the rows with these paths selected (a new folder, pasted items), the first shown
+    void selectPaths(const std::vector<std::string> &paths);
+    AK::Rect nameRectInWindow(const std::string &path) const;   // the rename field's place
+    std::function<void(AK::Point inWindow, bool onItem)> onContextMenu;
+    std::function<void(const Item &)> onClickName;   // a click on the name of the row selected alone
 
     void setFrame(const AK::Rect &r) override;
     void focus();

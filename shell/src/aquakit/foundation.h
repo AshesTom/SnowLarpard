@@ -21,6 +21,9 @@ std::string tr(const std::string &bundle, const std::string &table, const std::s
 std::map<std::string, std::string> plistStrings(const std::string &macPath);
 // Lucida Grande and Helvetica Neue from the DVD, for the text
 void registerFonts();
+// Every font of the DVD's /System/Library/Fonts and /Library/Fonts (a Stickies note's Helvetica,
+// Times, Marker Felt...), for the programs whose documents name them
+void registerAllFonts();
 } // namespace Assets
 
 // ~/.config/snowleopard/<name>.conf, its [General] section as QSettings writes it

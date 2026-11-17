@@ -566,9 +566,9 @@ const wl_pointer_listener pointerListener = [] {
     };
     l.button = [](void *, wl_pointer *, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
         wl->lastSerial = serial;
-        if (button == BTN_LEFT && wl->pointerFocus)
+        if ((button == BTN_LEFT || button == BTN_RIGHT) && wl->pointerFocus)
             wl->pointerFocus->window->nativeButton(state == WL_POINTER_BUTTON_STATE_PRESSED, wl->pointerAt, wl->pointerAt,
-                                                   wl->modifiers(), time);
+                                                   wl->modifiers(), time, button == BTN_RIGHT);
     };
     l.axis = [](void *, wl_pointer *, uint32_t, uint32_t axis, wl_fixed_t value) {   // axis: 10 a wheel notch
         if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL && wl->pointerFocus)

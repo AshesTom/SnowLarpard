@@ -212,7 +212,19 @@ public:
     void show() override
     {
         X11Platform &p = *X;
-        if (m_kind == Window::Titled) {
+        m_mapped = true;
+        if (m_kind == Window::Titled && m_hasPosition) {
+            // where the program put it (a Stickies note's saved frame): USPosition, kept by WindowServer
+            uint32_t hints[18] = {};
+            hints[0] = 1 | (m_resizable ? 16 : 0);
+            hints[1] = uint32_t(int32_t(std::lround(m_position.x)));
+            hints[2] = uint32_t(int32_t(std::lround(m_position.y)));
+            hints[5] = uint32_t(m_minSize.w);
+            hints[6] = uint32_t(m_minSize.h);
+            X->property(m_id, "WM_NORMAL_HINTS", X->atom("WM_SIZE_HINTS"), 32, 18, hints);
+            const uint32_t pos[] = {hints[1], hints[2]};
+            xcb_configure_window(p.conn, m_id, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, pos);
+        } else if (m_kind == Window::Titled) {
             // in the middle of the screen, a third down (as -[NSWindow center])
             const Rect s = p.screenFrame();
             const uint32_t pos[] = {uint32_t(std::max(0.0, (s.w - m_size.w) / 2)), uint32_t(std::max(22.0, (s.h - m_size.h) / 3))};
@@ -232,6 +244,7 @@ public:
     }
     void hide() override
     {
+        m_mapped = false;
         ungrab();
         xcb_unmap_window(X->conn, m_id);
     }
@@ -305,6 +318,7 @@ public:
     {
         // WM_NORMAL_HINTS: the smallest size only (WindowServer's size box resizes it)
         m_resizable = true;
+        m_minSize = minSize;
         uint32_t hints[18] = {};
         hints[0] = 16;   // PMinSize
         hints[5] = uint32_t(minSize.w);
@@ -332,6 +346,57 @@ public:
         hints[5] = hints[7] = uint32_t(m_size.w);
         hints[6] = hints[8] = uint32_t(m_size.h);
         X->property(m_id, "WM_NORMAL_HINTS", X->atom("WM_SIZE_HINTS"), 32, 18, hints);
+    }
+    void setBorderless() override
+    {
+        // _MOTIF_WM_HINTS: flags MWM_HINTS_DECORATIONS, decorations none (WindowServer draws no frame)
+        const uint32_t motif[5] = {2, 0, 0, 0, 0};
+        X->property(m_id, "_MOTIF_WM_HINTS", X->atom("_MOTIF_WM_HINTS"), 32, 5, motif);
+    }
+    void setOpacity(double alpha) override
+    {
+        // _NET_WM_WINDOW_OPACITY, 0 to 0xffffffff, which WindowServer's compositor reads; none when opaque
+        if (alpha >= 1) {
+            xcb_delete_property(X->conn, m_id, X->atom("_NET_WM_WINDOW_OPACITY"));
+            return;
+        }
+        const uint32_t v = uint32_t(std::lround(std::clamp(alpha, 0.0, 1.0) * 0xffffffffu));
+        X->property(m_id, "_NET_WM_WINDOW_OPACITY", XCB_ATOM_CARDINAL, 32, 1, &v);
+    }
+    void setKeyEquivalents(const std::vector<uint32_t> &keysyms) override
+    {
+        X->property(m_id, "_SNOWLEOPARD_KEY_EQUIVALENTS", XCB_ATOM_CARDINAL, 32, keysyms.size(), keysyms.data());
+    }
+    void setAbove(bool above) override
+    {
+        // before it is shown, its _NET_WM_STATE; after, the window manager asked (EWMH: action, the state)
+        const xcb_atom_t state = X->atom("_NET_WM_STATE_ABOVE");
+        if (!m_mapped) {
+            if (above)
+                X->property(m_id, "_NET_WM_STATE", XCB_ATOM_ATOM, 32, 1, &state);
+            else
+                xcb_delete_property(X->conn, m_id, X->atom("_NET_WM_STATE"));
+            return;
+        }
+        xcb_client_message_event_t ev = {};
+        ev.response_type = XCB_CLIENT_MESSAGE;
+        ev.format = 32;
+        ev.window = m_id;
+        ev.type = X->atom("_NET_WM_STATE");
+        ev.data.data32[0] = above ? 1 : 0;
+        ev.data.data32[1] = state;
+        ev.data.data32[3] = 1;   // a normal application
+        xcb_send_event(X->conn, 0, X->screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                       reinterpret_cast<const char *>(&ev));
+    }
+    bool moveTo(Point p) override
+    {
+        m_hasPosition = true;
+        m_position = p;
+        const uint32_t v[] = {uint32_t(int32_t(std::lround(p.x))), uint32_t(int32_t(std::lround(p.y)))};
+        xcb_configure_window(X->conn, m_id, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, v);
+        xcb_flush(X->conn);
+        return true;
     }
     void setToolbar(int height, bool button) override
     {
@@ -375,6 +440,10 @@ private:
     cairo_surface_t *m_back = nullptr;   // what is drawn, before it goes to the display
     bool m_grabbed = false;
     bool m_resizable = false;
+    bool m_mapped = false;
+    bool m_hasPosition = false;   // moveTo before show: where show puts it
+    Point m_position;
+    Size m_minSize;
 };
 
 void X11Window::handle(const xcb_generic_event_t *ev)
@@ -399,8 +468,8 @@ void X11Window::handle(const xcb_generic_event_t *ev)
         if (b->detail >= 4 && b->detail <= 5) {
             if (press)
                 m_window->nativeScroll(p, b->detail == 4 ? -1 : 1);
-        } else if (b->detail == 1) {
-            m_window->nativeButton(press, p, {double(b->root_x), double(b->root_y)}, modifiers(b->state), b->time);
+        } else if (b->detail == 1 || b->detail == 3) {
+            m_window->nativeButton(press, p, {double(b->root_x), double(b->root_y)}, modifiers(b->state), b->time, b->detail == 3);
         }
         break;
     }

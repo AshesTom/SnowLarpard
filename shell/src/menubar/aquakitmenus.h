@@ -3,7 +3,8 @@
 // application publishes on its abstract socket "snowleopard-menus-<pid>" (aquakit/mainmenu.h). Each
 // menu is asked for again when it opens, so its items are validated then (-validateMenuItem:); a
 // chosen item is sent back as "do <path>". The application menu's Hide, Hide Others and Show All, and
-// the Window menu, are the shell's (they act on the windows, as the menu bar's own menus do).
+// the Window menu, are the shell's (they act on the windows, as the menu bar's own menus do), unless
+// the application's Window menu has actions of its own (Stickies': Collapse Window, Arrange By).
 #pragma once
 
 #include "apps.h"

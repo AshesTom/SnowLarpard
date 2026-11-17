@@ -33,6 +33,14 @@ public:
 
     std::function<void(const Item &)> onOpen;
     std::function<void()> onChanged;   // the selection or the columns
+    std::function<void(AK::Point inWindow, bool onItem)> onContextMenu;
+    // the columns' folders listed again, each keeping its selection by name (a file operation ended)
+    void refresh();
+    bool shows(const std::string &folder) const;
+    // the item with this path selected in its folder's column (the deepest shown)
+    void selectPaths(const std::vector<std::string> &paths);
+    AK::Rect nameRectInWindow(const std::string &path) const;
+    void rightMouseDown(AK::Event &e) override;
 
     void draw(cairo_t *cr) override;
     void mouseDown(AK::Event &e) override;

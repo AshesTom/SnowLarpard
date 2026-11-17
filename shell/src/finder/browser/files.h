@@ -17,6 +17,9 @@ struct Item {
     bool application = false;   // a .desktop entry, shown by its Name (the Mac's application bundles)
 };
 
+// Go > Computer's place: not a folder, the disks (TNode's computer node)
+constexpr const char *ComputerFolder = "computer:";
+
 // A folder's visible items (no dot files: the Finder hides them), by name as the Finder sorts them
 std::vector<Item> list(const std::string &folder);
 

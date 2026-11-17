@@ -258,12 +258,13 @@ void draw(cairo_t *cr, const Element &e, const Rect &b, int vertical)
 
 Color color(int index)
 {
-    // kColorTable (CoreUI 0x3FB60): RGBA doubles, the entries used here
+    // kColorTable (CoreUI 0x3FB60): RGBA doubles, the entries used here; Generic RGB, as all of
+    // CoreUI's colours (_CUIColorSpaceGetRGB), matched to the screen
     switch (index) {
-    case FocusBlue: return {0.294, 0.537, 0.816, 1};
-    case FocusGraphite: return {0.369, 0.420, 0.475, 1};
+    case FocusBlue: return Color{0.294, 0.537, 0.816, 1}.matched();
+    case FocusGraphite: return Color{0.369, 0.420, 0.475, 1}.matched();
     case MenuFill: return {1, 1, 1, 0.95};
-    case MenuSeparator: return {0.839, 0.839, 0.839, 1};
+    case MenuSeparator: return Color{0.839, 0.839, 0.839, 1}.matched();
     case MenuFill2: return {0, 0, 0, 0.02};
     case FocusFill: return {1, 1, 1, 1};
     default: return {0, 0, 0, 1};
@@ -461,7 +462,9 @@ void texturedSegments(cairo_t *cr, const std::vector<Rect> &rects, const std::ve
     if (rects.empty())
         return;
     const double x0 = rects.front().x, x1 = rects.back().right();
-    const double y = rects.front().y, h = rects.front().h - 1;   // the emboss in the last row
+    // AppKit's 25 point textured control: the bezel 23 high from its top, the emboss under it, its
+    // last row clear (a 10.6 Finder toolbar: the border rows 2 to 24 of the toolbar, the emboss 25)
+    const double y = rects.front().y, h = rects.front().h - 2;
     const double radius = 4;
     const bool key = s.windowActive;
     cairo_save(cr);

@@ -77,6 +77,8 @@ bool Nib::load(const std::string &file, const std::string &resources)
         const std::string label = m_archive.string(c, "NSLabel");
         if (cls == "NSNibOutletConnector" && source == m_owner)
             m_ownerOutlets[label] = dest;
+        if (cls == "NSNibOutletConnector")
+            m_allOutlets.emplace(label, dest);
         else if (cls == "NSNibControlConnector")
             m_actions[source] = label;
         else if (cls == "NSNibBindingConnector")
@@ -466,8 +468,7 @@ View *Nib::buildControl(int obj, const std::string &cls, const Rect &frame)
         if (kind == Button::Push && !(u32(m_archive.integer(cell, "NSButtonFlags")) & 0x00800000))
             kind = Button::Plain;
         auto *b = new Button(title, kind);
-        if (kind == Button::Plain)
-            b->font = fontOf(cell);
+        b->font = fontOf(cell);   // the title's, as the cell has it (About This Mac's: 11, its small buttons)
         b->image = img;
         b->small = small;
         b->isDefault = m_archive.string(cell, "NSKeyEquivalent") == "\r";
@@ -525,8 +526,13 @@ View *Nib::buildControl(int obj, const std::string &cls, const Rect &frame)
     }
 
     if (cls == "NSMatrix") {
-        const std::vector<int> cells = m_archive.array(obj, "NSCells");
+        std::vector<int> cells = m_archive.array(obj, "NSCells");
         const int cols = std::max(1, int(m_archive.integer(obj, "NSNumCols", 1)));
+        // its rows and columns' cells only: the archive may keep more (Stickies' Find panel's matrix,
+        // one row of two, holds four)
+        const long long shown = m_archive.integer(obj, "NSNumRows", 0) * cols;
+        if (shown > 0 && cells.size() > size_t(shown))
+            cells.resize(size_t(shown));
         const Rect size = parseRect(m_archive.string(obj, "NSCellSize")), gap = parseRect(m_archive.string(obj, "NSIntercellSpacing"));
         bool radio = false, buttons = false;
         for (int c : cells) {
@@ -692,12 +698,28 @@ int Nib::outletObject(const std::string &name) const
     return it == m_ownerOutlets.end() ? -1 : it->second;
 }
 
+std::vector<int> Nib::outletObjects(const std::string &name) const
+{
+    std::vector<int> out;
+    auto range = m_allOutlets.equal_range(name);
+    for (auto it = range.first; it != range.second; ++it)
+        out.push_back(it->second);
+    return out;
+}
+
 View *Nib::outlet(const std::string &name) const
 {
+    // the owner's outlet, else another object's (a pane controller's, PreferencesWindow.nib's)
     auto it = m_ownerOutlets.find(name);
-    if (it == m_ownerOutlets.end())
-        return nullptr;
-    auto v = m_views.find(it->second);
+    int object = it == m_ownerOutlets.end() ? -1 : it->second;
+    if (object < 0) {
+        for (int o : outletObjects(name))
+            if (m_views.count(o)) {
+                object = o;
+                break;
+            }
+    }
+    auto v = m_views.find(object);
     return v == m_views.end() ? nullptr : v->second;
 }
 

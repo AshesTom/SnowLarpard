@@ -72,7 +72,7 @@ QImage render(const Settings &s, const QSize &size)
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     auto readAt = [&](const QSize &target) {
         reader.setScaledSize(target);
-        return reader.read();
+        return Assets::matched(reader.read());
     };
     switch (s.placement) {
     case FitToScreen: {
@@ -84,10 +84,10 @@ QImage render(const Settings &s, const QSize &size)
         p.drawImage(QPoint(0, 0), readAt(size));
         break;
     case Center:
-        p.drawImage(QPoint((size.width() - own.width()) / 2, (size.height() - own.height()) / 2), reader.read());
+        p.drawImage(QPoint((size.width() - own.width()) / 2, (size.height() - own.height()) / 2), Assets::matched(reader.read()));
         break;
     case Tile: {
-        QImage tile = reader.read();
+        QImage tile = Assets::matched(reader.read());
         if (!tile.isNull())
             p.fillRect(out.rect(), QBrush(tile));   // from the top left corner
         break;

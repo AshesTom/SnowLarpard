@@ -70,6 +70,8 @@ public:
     virtual void mouseUp(Event &) {}
     virtual void mouseMoved(Event &) {}
     virtual void mouseExited(Event &) {}
+    // the right button, or a click with Control alone (-[NSView menuForEvent:]); passes it up
+    virtual void rightMouseDown(Event &e);
     virtual void scrollWheel(Event &e);   // passes it up
     virtual void keyDown(Event &e);       // passes it up
     virtual bool acceptsFirstResponder() const { return false; }
@@ -135,16 +137,33 @@ public:
     // A floating panel (loginwindow's About This Mac: CGWindowLevelForKey(kCGModalPanelWindowLevelKey),
     // on every Space): above the windows, not in the Dock; before show()
     void setFloatingPanel();
+    // No title bar nor frame: the window draws its own (Quick Look's HUD panel); before show()
+    void setBorderless();
+    // Moving it by a drag of its own content: from a mouse down's screen point, to the dragged one
+    void dragMove(Point fromScreen, Point toScreen, bool start);
+    bool moveTo(Point screenTopLeft);   // X11 only (Wayland places its windows itself): false there
     // Rounded bottom corners, as a textured window's (the Finder's): the top ones always are
     void setRoundedBottomCorners(bool rounded);
+    // -[NSWindow setAlphaValue:] (X11: WindowServer's compositor draws it so)
+    void setAlphaValue(double alpha);
+    double alphaValue() const { return m_alpha; }
+    // -[NSWindow setLevel:] between kCGNormalWindowLevelKey and kCGFloatingWindowLevelKey
+    void setFloating(bool floating);
+    bool isFloating() const { return m_floating; }
+    // The window's top left on the screen (the title bar's, when there is one)
+    Point screenOrigin() const;
+    // Command keys the application's menus give their own meaning (Stickies' ⌘M collapses a note,
+    // ⌘Q saves and quits): WindowServer, which minimizes, closes and hides with them, passes them on
+    void setKeyEquivalents(const std::vector<uint32_t> &keysyms);
     void grabInput();   // a menu, a full screen screen saver: every click and key comes here
     std::function<void()> onClose;   // the close button, or close()
     std::function<void(bool)> onKeyChanged;
     std::function<void(Event &)> onUnhandledKey;   // a key no view took (Command-J...)
     std::function<void(Event &)> onOutsideClick;   // with grabInput: a click outside the window
+    std::function<void(Event &)> onMouseMovedOutside;   // with grabInput: the pointer outside the window
 
     // From the platform (platform.h), in the surface's coordinates (the title bar's included)
-    void nativeButton(bool press, Point p, Point screen, unsigned modifiers, uint32_t timeMs);
+    void nativeButton(bool press, Point p, Point screen, unsigned modifiers, uint32_t timeMs, bool secondary = false);
     void nativeMotion(Point p, Point screen);
     void nativeLeave();
     void nativeScroll(Point p, double lines);
@@ -178,6 +197,10 @@ private:
     Image m_proxyIcon;
     int m_titlePressed = -1;           // the title bar's button held down
     bool m_resizable = false;
+    bool m_secondaryDown = false;
+    double m_alpha = 1;
+    bool m_floating = false;
+    Point m_dragOrigin;   // dragMove's window origin when it started
     Size m_minSize;
     bool m_overTitleButtons = false;
     Point m_lastClick;
@@ -192,6 +215,7 @@ public:
     int run();
     void quit(int code = 0);
     Rect screenFrame() const;
+    size_t visibleWindowCount() const;   // the windows shown (a program with none left may quit)
     Rect visibleFrame() const;   // without the menu bar and the Dock ([NSScreen visibleFrame])
     // In front with no window: the menu bar shows its menus, the Dock its light (X11)
     void setFrontWithoutWindows(bool front);
