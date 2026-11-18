@@ -117,7 +117,11 @@ bool FrameItem::childMouseEventFilter(QQuickItem *, QEvent *e)
 
 // ---- the window
 
-Window::Window(Server *server, QWaylandSurface *surface) : QObject(server), m_server(server), m_surface(surface), m_id(server->m_nextId++) {}
+Window::Window(Server *server, QWaylandSurface *surface) : QObject(server), m_server(server), m_surface(surface), m_id(server->m_nextId++)
+{
+    // its surface gone (the application quit, or crashed): the window too
+    connect(surface, &QWaylandSurface::surfaceDestroyed, this, [this] { m_server->removeWindow(this); });
+}
 
 Window::~Window()
 {

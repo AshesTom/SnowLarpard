@@ -113,7 +113,7 @@ XdgSurface::XdgSurface(XdgShell *shell, QWaylandSurface *surface, wl_client *cli
     connect(surface, &QWaylandSurface::surfaceDestroyed, this, [this] { m_surface = nullptr; });
 }
 
-XdgSurface::~XdgSurface() { emit destroyed(this); }
+XdgSurface::~XdgSurface() { emit surfaceGone(this); }
 
 XdgSurface *XdgSurface::from(wl_resource *r)
 {

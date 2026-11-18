@@ -11,7 +11,11 @@
 #include "xdgshell.h"
 #include "xwayland.h"
 
+#include <QGuiApplication>
+#include <QGuiApplication>
 #include <QKeyEvent>
+#include <QKeySequence>
+#include <QKeySequence>
 #include <QMouseEvent>
 #include <QQuickItemGrabResult>
 #include <QSettings>
@@ -537,7 +541,7 @@ void Server::setKeyEquivalents(QWaylandClient *client, const QList<uint32_t> &ke
 
 void Server::popupCreated(XdgPopup *p)
 {
-    XdgSurface *xs = p->xdgSurface();
+    QPointer<XdgSurface> xs(p->xdgSurface());
     QPointer<XdgPopup> popup(p);
     auto reposition = [this, popup] {
         if (popup)
@@ -546,7 +550,8 @@ void Server::popupCreated(XdgPopup *p)
     connect(p, &XdgPopup::repositioned, this, reposition);
     connect(p, &XdgPopup::parentAttached, this, reposition);
     connect(xs->surface(), &QWaylandSurface::hasContentChanged, p, [this, popup, xs] {
-        if (!popup)
+        // the xdg_surface may be gone before the popup's last commit (a menu closing)
+        if (!popup || !xs || !xs->surface())
             return;
         if (xs->surface()->hasContent()) {
             if (!xs->item) {
@@ -565,21 +570,20 @@ void Server::popupCreated(XdgPopup *p)
         if (!popup)
             return;
         m_grabs.append(popup);
-        if (popup->xdgSurface()->surface()->hasContent())
+        if (popup->xdgSurface()->surface() && popup->xdgSurface()->surface()->hasContent())
             seat()->setKeyboardFocus(popup->xdgSurface()->surface());
     });
-    connect(p, &QObject::destroyed, this, [this, xs] {
+    connect(p, &QObject::destroyed, this, [this] {
         // the grab goes back to the popup under it, or the window
         m_grabs.removeAll(nullptr);
-        Q_UNUSED(xs)
-        if (!m_grabs.isEmpty() && m_grabs.last())
+        if (!m_grabs.isEmpty() && m_grabs.last() && m_grabs.last()->xdgSurface()->surface())
             seat()->setKeyboardFocus(m_grabs.last()->xdgSurface()->surface());
         else if (m_active && m_active->surface())
             seat()->setKeyboardFocus(m_active->surface());
         else
             seat()->setKeyboardFocus(nullptr);
     });
-    connect(xs, &XdgSurface::destroyed, this, [xs] { delete xs->item; });
+    connect(xs, &XdgSurface::surfaceGone, this, [](XdgSurface *gone) { delete gone->item; });
 }
 
 void Server::placePopup(XdgPopup *p)
@@ -805,6 +809,110 @@ bool Server::handleKey(QKeyEvent *e)
     }
     seat()->sendFullKeyEvent(e);
     return true;
+}
+
+void Server::testInput(const QString &line)
+{
+    const QStringList w = line.simplified().split(' ');
+    if (w.isEmpty())
+        return;
+    static QPointF at;
+    auto mouse = [this](QEvent::Type type, QPointF p, Qt::MouseButtons buttons) {
+        QMouseEvent e(type, p, p, m_window->mapToGlobal(p), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, buttons, m_modifiers);
+        QCoreApplication::sendEvent(m_window, &e);
+    };
+    if (w[0] == "key" && w.size() >= 2) {
+        Qt::KeyboardModifiers mods;
+        const QStringList m = w.value(2).split('+', Qt::SkipEmptyParts);
+        if (m.contains("meta"))
+            mods |= Qt::MetaModifier;
+        if (m.contains("shift"))
+            mods |= Qt::ShiftModifier;
+        if (m.contains("control"))
+            mods |= Qt::ControlModifier;
+        if (m.contains("alt"))
+            mods |= Qt::AltModifier;
+        const QKeySequence seq(w[1]);
+        const int key = seq.isEmpty() ? 0 : seq[0].key();
+        const QString text = w[1].size() == 1 ? w[1].toLower() : QString();
+        QKeyEvent press(QEvent::KeyPress, key, mods, 0, 0, 0, text);
+        QKeyEvent release(QEvent::KeyRelease, key, mods, 0, 0, 0, text);
+        QCoreApplication::sendEvent(m_window, &press);
+        QCoreApplication::sendEvent(m_window, &release);
+        return;
+    }
+    if (w.size() < 3)
+        return;
+    const QPointF p(w[1].toDouble(), w[2].toDouble());
+    if (w[0] == "move") {
+        mouse(QEvent::MouseMove, p, QGuiApplication::mouseButtons());
+    } else if (w[0] == "press") {
+        mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+    } else if (w[0] == "release") {
+        mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+    } else if (w[0] == "click" || w[0] == "doubleclick") {
+        mouse(QEvent::MouseMove, p, Qt::NoButton);
+        mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+        mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+        if (w[0] == "doubleclick") {
+            mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+            mouse(QEvent::MouseButtonDblClick, p, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+        }
+    }
+    at = p;
+}
+
+void Server::testInput(const QString &line)
+{
+    const QStringList w = line.simplified().split(' ');
+    if (w.isEmpty())
+        return;
+    auto mouse = [this](QEvent::Type type, QPointF p, Qt::MouseButtons buttons) {
+        QMouseEvent e(type, p, p, m_window->mapToGlobal(p), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, buttons, m_modifiers);
+        QCoreApplication::sendEvent(m_window, &e);
+    };
+    if (w[0] == "key" && w.size() >= 2) {
+        Qt::KeyboardModifiers mods;
+        const QStringList m = w.value(2).split('+', Qt::SkipEmptyParts);
+        if (m.contains("meta"))
+            mods |= Qt::MetaModifier;
+        if (m.contains("shift"))
+            mods |= Qt::ShiftModifier;
+        if (m.contains("control"))
+            mods |= Qt::ControlModifier;
+        if (m.contains("alt"))
+            mods |= Qt::AltModifier;
+        const QKeySequence seq(w[1]);
+        const int key = seq.isEmpty() ? 0 : seq[0].key();
+        const QString text = w[1].size() == 1 ? w[1].toLower() : QString();
+        QKeyEvent press(QEvent::KeyPress, key, mods, 0, 0, 0, text);
+        QKeyEvent release(QEvent::KeyRelease, key, mods, 0, 0, 0, text);
+        QCoreApplication::sendEvent(m_window, &press);
+        QCoreApplication::sendEvent(m_window, &release);
+        return;
+    }
+    if (w.size() < 3)
+        return;
+    const QPointF p(w[1].toDouble(), w[2].toDouble());
+    if (w[0] == "move") {
+        mouse(QEvent::MouseMove, p, Qt::NoButton);
+    } else if (w[0] == "drag") {
+        mouse(QEvent::MouseMove, p, Qt::LeftButton);
+    } else if (w[0] == "press") {
+        mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+    } else if (w[0] == "release") {
+        mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+    } else if (w[0] == "click" || w[0] == "doubleclick") {
+        mouse(QEvent::MouseMove, p, Qt::NoButton);
+        mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+        mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+        if (w[0] == "doubleclick") {
+            mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+            mouse(QEvent::MouseButtonDblClick, p, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+        }
+    }
 }
 
 bool Server::eventFilter(QObject *o, QEvent *e)

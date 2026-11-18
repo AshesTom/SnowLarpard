@@ -14,6 +14,7 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QWaylandQuickItem>
+#include <QWaylandSurface>
 #include <QRect>
 
 class QWaylandSurface;
@@ -150,7 +151,7 @@ signals:
 protected:
     void createItems();
     Server *m_server;
-    QWaylandSurface *m_surface;
+    QPointer<QWaylandSurface> m_surface;
     uint32_t m_id;
     QPointer<FrameItem> m_frame;
     QPointer<ImageItem> m_shadow;

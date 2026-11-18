@@ -107,6 +107,12 @@ public:
     void setKeyEquivalents(QWaylandClient *client, const QList<uint32_t> &keysyms);
 
     bool eventFilter(QObject *o, QEvent *e) override;
+    // The tests' input (SNOWLEOPARD_TEST_INPUT, a FIFO): "move X Y", "press X Y", "release X Y",
+    // "click X Y", "doubleclick X Y", "key NAME [meta+shift+control+alt]" (NAME a Qt key name: M, Tab, 3)
+    void testInput(const QString &line);
+    // The tests' input (SNOWLEOPARD_TEST_INPUT, a FIFO): "move X Y", "press X Y", "release X Y",
+    // "click X Y", "doubleclick X Y", "key NAME [meta+shift+control+alt]" (NAME a Qt key name: M, Tab, 3)
+    void testInput(const QString &line);
 
 signals:
     void windowsChanged();     // added, removed or restacked

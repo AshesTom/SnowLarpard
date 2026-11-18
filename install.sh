@@ -12,11 +12,14 @@
 #
 #   PREFIX/lib/snowleopard/apps        the programs (WindowServer, Finder.app, Dock.app...)
 #   PREFIX/lib/snowleopard/assets      the DVD's files
-#   PREFIX/lib/snowleopard/session     snowleopard-session (X), snowleopard-wayland
+#   PREFIX/lib/snowleopard/session     snowleopard-session, snowleopard-wayland, snowleopard-x11
 #   PREFIX/bin/snowleopard-session     to run it from ~/.xinitrc or another X session
-#   /usr/share/wayland-sessions/snowleopard.desktop   the login screen's entry: KWin (or cage) alone,
-#                                      a full-screen Xwayland, the session in it (no Xorg needed)
-#   /usr/share/xsessions/snowleopard.desktop          with Xorg: the session on its own X server
+#   /usr/share/wayland-sessions/snowleopard.desktop       "Snow Leopard": KWin (or cage) alone, the
+#                                      Wayland WindowServer on it, the session natively on Wayland
+#   /usr/share/xsessions/snowleopard.desktop              "Snow Leopard (X11)" with Xorg: the X11
+#                                      session (the X11 WindowServer) on its own X server
+#   /usr/share/wayland-sessions/snowleopard-x11.desktop   "Snow Leopard (X11)" without Xorg: KWin
+#                                      alone, a full-screen Xwayland, the X11 session in it
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 prefix=/usr/local
@@ -60,7 +63,8 @@ if ((uninstall)); then
         while IFS= read -r f; do rm -f -- "$destdir$f"; done <"$manifest"
     fi
     rm -rf -- "$lib"
-    rm -f -- "$bin/snowleopard-session" "$share/wayland-sessions/snowleopard.desktop" "$share/xsessions/snowleopard.desktop"
+    rm -f -- "$bin/snowleopard-session" "$share/wayland-sessions/snowleopard.desktop" "$share/wayland-sessions/snowleopard-x11.desktop" \
+        "$share/xsessions/snowleopard.desktop"
     say "Snow Leopard is uninstalled (your settings in ~/.config/snowleopard stay)"
     exit 0
 fi
@@ -90,9 +94,13 @@ command -v kwin_wayland >/dev/null && compositor=kwin_wayland
 [[ -z $compositor ]] && command -v cage >/dev/null && compositor=cage
 xorg=0
 command -v Xorg >/dev/null && xorg=1
-command -v Xwayland >/dev/null || compositor=
-if [[ -z $compositor && $xorg -eq 0 ]]; then
-    echo "install.sh: neither Xorg nor a Wayland compositor with Xwayland (kwin_wayland, cage): the login screen couldn't start it" >&2
+xwayland=0
+command -v Xwayland >/dev/null && xwayland=1
+# the native session: the Wayland WindowServer (built with Qt Wayland Compositor) on the compositor
+native=0
+[[ -n $compositor && -x $apps/WindowServer-wayland ]] && native=1
+if ((!native && !xorg)) && [[ -z $compositor || $xwayland -eq 0 ]]; then
+    echo "install.sh: neither a Wayland compositor (kwin_wayland, cage) nor Xorg: the login screen couldn't start it" >&2
     exit 1
 fi
 
@@ -101,7 +109,8 @@ rm -rf -- "$lib"
 mkdir -p -- "$lib/session" "$bin"
 cp -a -- "$apps" "$lib/apps"
 cp -a -- "$assets" "$lib/assets"
-install -m 755 -- "$root/session/snowleopard-session" "$root/session/snowleopard-wayland" "$lib/session/"
+install -m 755 -- "$root/session/snowleopard-session" "$root/session/snowleopard-wayland" "$root/session/snowleopard-x11" "$lib/session/"
+install -m 644 -- "$root/session/snowleopard-keyboard" "$lib/session/"
 # Software Update's: Apple's catalog and its packages (softwareupdate.py), laid over the files (extract.py)
 mkdir -p -- "$lib/tools"
 install -m 755 -- "$root/tools/extract.py" "$root/tools/softwareupdate.py" "$lib/tools/"
@@ -111,28 +120,34 @@ chmod -R u+rwX,go+rX,go-w -- "$lib"
 ln -sfn -- "$prefix/lib/snowleopard/session/snowleopard-session" "$bin/snowleopard-session"
 
 : >"$manifest"
-entry() {   # the login screen's .desktop entry
-    local dir=$1 exec=$2 comment=$3
+entry() {   # the login screen's .desktop entry: its folder, file, name, program, comment
+    local dir=$1 file=$2 name=$3 exec=$4 comment=$5
     mkdir -p -- "$dir"
-    cat >"$dir/snowleopard.desktop" <<EOF
+    cat >"$dir/$file" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Snow Leopard
+Name=$name
 Comment=$comment
 Exec=$exec
 TryExec=$exec
 DesktopNames=SnowLeopard
 EOF
-    chmod 644 -- "$dir/snowleopard.desktop"
-    echo "${dir#"$destdir"}/snowleopard.desktop" >>"$manifest"
-    say "Login screen entry: ${dir#"$destdir"}/snowleopard.desktop"
+    chmod 644 -- "$dir/$file"
+    echo "${dir#"$destdir"}/$file" >>"$manifest"
+    say "Login screen entry: ${dir#"$destdir"}/$file ($name)"
 }
-if [[ -n $compositor ]]; then
-    entry "$share/wayland-sessions" "$prefix/lib/snowleopard/session/snowleopard-wayland" \
-        "Mac OS X 10.6's desktop: $compositor, a full-screen Xwayland, the Snow Leopard session"
+session=$prefix/lib/snowleopard/session
+if ((native)); then
+    entry "$share/wayland-sessions" snowleopard.desktop "Snow Leopard" "$session/snowleopard-wayland" \
+        "Mac OS X 10.6's desktop on Wayland: $compositor, the Snow Leopard WindowServer, the session"
 fi
+# the X11 option: on Xorg when there is one, else a full-screen Xwayland on the compositor
 if ((xorg)); then
-    entry "$share/xsessions" "$prefix/lib/snowleopard/session/snowleopard-session" "Mac OS X 10.6's desktop on its own X server"
+    entry "$share/xsessions" snowleopard.desktop "Snow Leopard (X11)" "$session/snowleopard-session" \
+        "Mac OS X 10.6's desktop on its own X server"
+elif [[ -n $compositor ]] && ((xwayland)); then
+    entry "$share/wayland-sessions" snowleopard-x11.desktop "Snow Leopard (X11)" "$session/snowleopard-x11" \
+        "Mac OS X 10.6's desktop in X11: $compositor, a full-screen Xwayland, the Snow Leopard session"
 fi
 echo "${bin#"$destdir"}/snowleopard-session" >>"$manifest"
 say "Done: log out and pick Snow Leopard on the login screen (./install.sh --uninstall takes it away)"

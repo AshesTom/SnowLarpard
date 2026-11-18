@@ -1,12 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# The Snow Leopard session on the current X display: the Finder's desktop, the Dock and
-# SystemUIServer's menu bar, over a window manager. The session ends with SystemUIServer (Log Out).
+# The Snow Leopard session: the Finder's desktop, the Dock and SystemUIServer's menu bar. The session
+# ends with SystemUIServer (Log Out).
 #
 #   snowleopard-session [--inside]     --inside: keep the current desktop's window manager
 #
-# The windows are managed by WindowServer (10.6's title bars); without it, by whichever EWMH window
-# manager is installed.
+# On the current X display, the windows are managed by WindowServer (10.6's title bars); without it,
+# by whichever EWMH window manager is installed. On the Wayland WindowServer (WindowServer-wayland
+# runs it, SNOWLEOPARD_WINDOW_SERVER=wayland: snowleopard-wayland), every program is a Wayland one,
+# the X11 ones on its Xwayland.
 set -uo pipefail
 root=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 # from the repository (.local/build/apps, .local/assets), or as install.sh lays it out (apps, assets)
@@ -40,9 +42,26 @@ fi
 if [[ -e $apps/Linux/qt6/styles/aquastyle.so ]]; then
     export QT_PLUGIN_PATH="$apps/Linux/qt6${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}" QT_STYLE_OVERRIDE=Aqua
 fi
-export QT_QPA_PLATFORM=xcb
-# an X session: AquaKit's applications (System Preferences) on its display too, under WindowServer
-export AQUAKIT_PLATFORM=x11
+# shellcheck source=snowleopard-keyboard
+source "$(dirname -- "$(readlink -f -- "$0")")/snowleopard-keyboard"
+wayland=0
+[[ ${SNOWLEOPARD_WINDOW_SERVER:-} == wayland && -n ${WAYLAND_DISPLAY:-} ]] && wayland=1
+if ((wayland)); then
+    # the Wayland session: the programs on the window server natively (Qt, AquaKit, GTK, Firefox,
+    # Electron's ozone, SDL), X11 only for those without Wayland (DISPLAY: the window server's Xwayland)
+    export XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM="wayland;xcb" AQUAKIT_PLATFORM=wayland GDK_BACKEND=wayland,x11
+    export MOZ_ENABLE_WAYLAND=1 ELECTRON_OZONE_PLATFORM_HINT=auto SDL_VIDEODRIVER=wayland,x11 CLUTTER_BACKEND=wayland
+    unset SDL_VIDEO_X11_FORCE
+else
+    export QT_QPA_PLATFORM=xcb
+    # an X session: AquaKit's applications (System Preferences) on its display too, under WindowServer
+    export AQUAKIT_PLATFORM=x11
+    # every program on this X display, none on the compositor under it (Xwayland's): Electron (its ozone
+    # platform follows XDG_SESSION_TYPE), GTK, Firefox, SDL
+    unset WAYLAND_DISPLAY
+    export XDG_SESSION_TYPE=x11 ELECTRON_OZONE_PLATFORM_HINT=x11 GDK_BACKEND=x11 MOZ_ENABLE_WAYLAND=0 SDL_VIDEODRIVER=x11
+fi
+
 # The applications' menus go to the menu bar (SystemUIServer is com.canonical.AppMenu.Registrar):
 # Qt does it by itself when the registrar is there, GTK 2 and 3 through appmenu-gtk-module.
 for dir in /usr/lib/gtk-3.0/modules /usr/lib/x86_64-linux-gnu/gtk-3.0/modules; do
@@ -51,7 +70,7 @@ for dir in /usr/lib/gtk-3.0/modules /usr/lib/x86_64-linux-gnu/gtk-3.0/modules; d
         break
     fi
 done
-if [[ ${1:-} != --inside ]]; then
+if [[ ${1:-} != --inside ]] && ((!wayland)); then
     # WindowServer is the window manager and the compositor (the windows' shadows, the Dock's
     # translucency); without it, a compositor then a window manager.
     if [[ -x $apps/WindowServer ]]; then
@@ -70,6 +89,8 @@ if [[ ${1:-} != --inside ]]; then
         sleep 0.05
     done
 fi
+# the X display's keyboard (the Wayland window server has it from XKB_DEFAULT_*)
+((wayland)) || apply_keyboard
 # Software Update's tools (its catalog, its downloads, extract.py --update)
 if [[ -z ${SNOWLEOPARD_TOOLS:-} ]]; then
     for t in "$root/tools" "$root/../tools"; do

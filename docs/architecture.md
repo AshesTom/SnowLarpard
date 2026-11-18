@@ -142,3 +142,32 @@ stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKARE
 6. **loginwindow** as a display manager, Spaces, Exposé, Dashboard.
 
 SystemUIServer's move from Qt to AquaKit, stage by stage: [systemuiserver-port.md](systemuiserver-port.md).
+
+## The Wayland session (WindowServer-wayland)
+
+The default session ("Snow Leopard") is native Wayland: `session/snowleopard-wayland` runs KWin (or
+cage) only to hold the screen, the input devices and the seat, and `WindowServer-wayland` full screen
+on it; the shell (`snowleopard-session`) and the applications are clients of WindowServer-wayland.
+"Snow Leopard (X11)" keeps the X11 path: the X11 WindowServer on Xorg, or without Xorg
+(`session/snowleopard-x11`) a full-screen Xwayland on KWin. `install.sh` installs both entries.
+
+**Why Qt Wayland Compositor.** The shell is C++ and Qt; the X11 WindowServer already draws its title
+bars, shadows and genie with Qt (now shared in `windowserver/frame.cpp`). Qt Wayland Compositor gives
+surfaces, buffers (shared memory and dma-buf), seat, clipboard and output, and Qt Quick a scene where
+the genie is a mesh and the levels are items. wlroots would have given DRM, Xwayland and
+layer-shell for free, but in C with an API that changes each release and no Qt painting, and Smithay a
+second language. The price: Qt's xdg-shell refuses popups without a parent (a layer surface's menus),
+so the server has its own xdg-shell, xdg-decoration, wlr-layer-shell, KDE appmenu and an X window
+manager for its rootless Xwayland; and it runs as a client of KWin rather than on DRM itself.
+
+**The shell's private protocol.** `sl_window_server_v1`
+(`windowserver/wayland/protocols/snowleopard-window-server-v1.xml`) stands for the CGS calls the Mac's
+Dock and SystemUIServer make: window list and order, active window, minimize/hide/activate/close,
+the Dock tile's place (genie target), the application in front without a window and its keys, key
+equivalents, symbolic hot keys (⇧⌘3/⇧⌘4), magic mirror, window and screen captures.
+`src/linux/windowserverclient` is its client; `X11::` (Qt programs), `Windows::` (LinuxGlue) and
+AquaKit's Wayland platform use it when `SNOWLEOPARD_WINDOW_SERVER=wayland`. The Dock and the desktop
+are LayerShellQt surfaces, the menu bar an AquaKit layer surface.
+
+**Testing.** Nested in `kwin_wayland --virtual`; `SNOWLEOPARD_SCREENSHOT=file` + SIGUSR1 saves the
+scene, `SNOWLEOPARD_TEST_INPUT=fifo` takes "click X Y", "key M meta"... lines.

@@ -20,6 +20,8 @@
 #include <QSocketNotifier>
 #include <cstdio>
 #include <csignal>
+#include <fcntl.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -100,6 +102,46 @@ int main(int argc, char **argv)
             (void)!read(signalPipe[0], &c, 1);
             server.grabScreen([](const QImage &image) { image.save(qEnvironmentVariable("SNOWLEOPARD_SCREENSHOT"), "PNG"); });
         });
+    }
+
+    // the tests' input: commands read from a FIFO (Server::testInput)
+    if (const QByteArray fifo = qgetenv("SNOWLEOPARD_TEST_INPUT"); !fifo.isEmpty()) {
+        const int fd = ::open(fifo.constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd >= 0) {
+            auto *n = new QSocketNotifier(fd, QSocketNotifier::Read, &app);
+            auto *pending = new QByteArray;
+            QObject::connect(n, &QSocketNotifier::activated, &server, [&server, fd, pending] {
+                char buf[4096];
+                ssize_t r;
+                while ((r = ::read(fd, buf, sizeof buf)) > 0)
+                    pending->append(buf, int(r));
+                int nl;
+                while ((nl = pending->indexOf('\n')) >= 0) {
+                    server.testInput(QString::fromUtf8(pending->left(nl)));
+                    pending->remove(0, nl + 1);
+                }
+            });
+        }
+    }
+
+    // the tests' input: commands read from a FIFO (Server::testInput)
+    if (const QByteArray fifo = qgetenv("SNOWLEOPARD_TEST_INPUT"); !fifo.isEmpty()) {
+        const int fd = ::open(fifo.constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd >= 0) {
+            auto *n = new QSocketNotifier(fd, QSocketNotifier::Read, &app);
+            auto *pending = new QByteArray;
+            QObject::connect(n, &QSocketNotifier::activated, &server, [&server, fd, pending] {
+                char buf[4096];
+                ssize_t r;
+                while ((r = ::read(fd, buf, sizeof buf)) > 0)
+                    pending->append(buf, int(r));
+                int nl;
+                while ((nl = int(pending->indexOf('\n'))) >= 0) {
+                    server.testInput(QString::fromUtf8(pending->left(nl)));
+                    pending->remove(0, nl + 1);
+                }
+            });
+        }
     }
 
     QProcess child;

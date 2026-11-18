@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Sourced by the session's scripts: the keyboard the user has, as International's Input Sources
+# would have it: Plasma's layout (kxkbrc), else the system's (localectl's X11 layout).
+#
+#   keyboard_layout       its layout, variant, model and options, a line each (false without one)
+#   export_xkb_defaults   them as XKB_DEFAULT_*, which the compositors (KWin, WindowServer-wayland)
+#                         give their clients and Xwayland
+#   apply_keyboard        them on the X display (setxkbmap)
+
+keyboard_layout() {
+    local rc=${XDG_CONFIG_HOME:-$HOME/.config}/kxkbrc layout= variant= model= options=
+    if [[ -r $rc ]] && grep -q '^LayoutList=.' "$rc"; then
+        layout=$(sed -n 's/^LayoutList=//p' "$rc" | head -n1)
+        variant=$(sed -n 's/^VariantList=//p' "$rc" | head -n1)
+        model=$(sed -n 's/^Model=//p' "$rc" | head -n1)
+        options=$(sed -n 's/^Options=//p' "$rc" | head -n1)
+    elif command -v localectl >/dev/null; then
+        local status
+        status=$(localectl status 2>/dev/null)
+        layout=$(sed -n 's/^ *X11 Layout: *//p' <<<"$status")
+        variant=$(sed -n 's/^ *X11 Variant: *//p' <<<"$status")
+        model=$(sed -n 's/^ *X11 Model: *//p' <<<"$status")
+        options=$(sed -n 's/^ *X11 Options: *//p' <<<"$status")
+    fi
+    [[ -n $layout ]] || return 1
+    printf '%s\n%s\n%s\n%s\n' "$layout" "$variant" "$model" "$options"
+}
+
+export_xkb_defaults() {
+    [[ -n ${XKB_DEFAULT_LAYOUT:-} ]] && return 0
+    local kb
+    mapfile -t kb < <(keyboard_layout) || return 0
+    [[ -n ${kb[0]:-} ]] || return 0
+    export XKB_DEFAULT_LAYOUT=${kb[0]}
+    [[ -n ${kb[1]:-} ]] && export XKB_DEFAULT_VARIANT=${kb[1]}
+    [[ -n ${kb[2]:-} ]] && export XKB_DEFAULT_MODEL=${kb[2]}
+    [[ -n ${kb[3]:-} ]] && export XKB_DEFAULT_OPTIONS=${kb[3]}
+    return 0
+}
+
+apply_keyboard() {
+    command -v setxkbmap >/dev/null || return 0
+    local kb args=()
+    mapfile -t kb < <(keyboard_layout) || return 0
+    [[ -n ${kb[0]:-} ]] || return 0
+    args=(-layout "${kb[0]}")
+    [[ -n ${kb[1]:-} ]] && args+=(-variant "${kb[1]}")
+    [[ -n ${kb[2]:-} ]] && args+=(-model "${kb[2]}")
+    [[ -n ${kb[3]:-} ]] && args+=(-option "" -option "${kb[3]}")
+    setxkbmap "${args[@]}" 2>/dev/null
+}

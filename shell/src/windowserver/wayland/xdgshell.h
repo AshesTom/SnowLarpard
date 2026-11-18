@@ -99,7 +99,7 @@ public:
 signals:
     void committed();
     void windowGeometryChanged();
-    void destroyed(XdgSurface *self);
+    void surfaceGone(XdgSurface *self);   // its xdg_surface destroyed
 
 protected:
     void xdg_surface_destroy_resource(Resource *) override;
