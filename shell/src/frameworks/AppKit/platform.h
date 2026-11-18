@@ -28,9 +28,13 @@ public:
     virtual void setToolbar(int, bool) {}
     virtual void setProxyIcon(const Image &) {}
     virtual void setDocumentEdited(bool) {}
-    virtual void setFloatingPanel() {}
+    virtual void setFloatingPanel(bool /*utility*/) {}
+    virtual void setTitleButtons(bool) {}   // the window manager's title bar buttons (X11)
     virtual void startMove() {}
     virtual void setBorderless() {}            // no frame from the window manager (an HUD panel's own)
+    // NSStatusBar's window (the menu bar): a dock window on every desktop, above the others, keeping
+    // `top` points of the screen's top (and `bottom` of its bottom) out of the other windows' way
+    virtual void setStatusBar(int /*top*/, int /*bottom*/) {}
     virtual bool moveTo(Point) { return false; }   // the surface's top left on the screen (X11)
     virtual void minimize() {}
     virtual void resize(Size surface) = 0;
@@ -45,6 +49,8 @@ public:
     virtual void setAbove(bool) {}
     // the Command keys (keysyms) the application's menus answer, which WindowServer then leaves to it
     virtual void setKeyEquivalents(const std::vector<uint32_t> &) {}
+    // [NSCursor set]: a cursor of the theme (XCURSOR_THEME: the session's Snow Leopard theme) by its name
+    virtual void setCursor(const std::string &) {}
 };
 
 // A window's outline (CoreUI's CreateWindowPath): its top corners rounded, radius 4, and its bottom

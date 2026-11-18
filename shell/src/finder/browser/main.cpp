@@ -210,11 +210,12 @@ private:
     bool m_hover = false, m_dragging = false;
 };
 
-// The sidebar's divider (TSidebarSplitter's thin style): 1 point, dragged a few points around it
+// The sidebar's divider (TSidebarSplitter's thin style): 1 point, dragged a few points around it; grey
+// 206, the sidebar's last column darkened under it (a 10.6.8 Finder: 222/228/234 there, 206/210/214)
 class Divider : public View {
 public:
     std::function<void(double dx, bool start)> onDrag;
-    void draw(cairo_t *cr) override { fill(cr, Rect{std::floor(bounds().w / 2), 0, 1, bounds().h}, Color::gray(141)); }
+    void draw(cairo_t *cr) override { fill(cr, Rect{std::floor(bounds().w / 2), 0, 1, bounds().h}, Color::gray(206)); }
     void mouseDown(Event &e) override
     {
         m_from = e.screen.x;
@@ -299,25 +300,6 @@ std::string capture(const std::vector<std::string> &argv)
     while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
         out.pop_back();
     return out;
-}
-
-std::vector<std::string> applicationDirs()
-{
-    std::vector<std::string> dirs;
-    const char *dataHome = std::getenv("XDG_DATA_HOME");
-    dirs.push_back((dataHome && *dataHome ? std::string(dataHome) : home() + "/.local/share") + "/applications");
-    const char *dataDirs = std::getenv("XDG_DATA_DIRS");
-    std::string all = dataDirs && *dataDirs ? dataDirs : "/usr/local/share:/usr/share";
-    for (size_t start = 0; start <= all.size();) {
-        const size_t end = all.find(':', start);
-        const std::string d = all.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        if (!d.empty())
-            dirs.push_back(d + "/applications");
-        if (end == std::string::npos)
-            break;
-        start = end + 1;
-    }
-    return dirs;
 }
 
 Application application(const std::string &id)

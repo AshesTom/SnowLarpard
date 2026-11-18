@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+// loginwindow: About This Mac (below), Log Out, Restart and Shut Down (logout.cpp), Force Quit
+// (forcequit.cpp).
 // loginwindow's About This Mac, on AquaKit: its own nib (AboutThisMac.nib) filled and laid out as
 // -[AboutThisMacController updateAboutBox] does on 10.6, reversed from loginwindow's PowerPC slice
 // (the Intel ones are encrypted): the version line that turns into the build and the serial number
@@ -7,6 +9,7 @@
 // (SystemVersion.plist): 10.6.8 once Software Update has installed the Combo Update.
 //   loginwindow --about
 #include "controls.h"
+#include "logout.h"
 #include "foundation.h"
 #include "nib.h"
 
@@ -585,8 +588,14 @@ private:
 
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && (std::strcmp(argv[1], "--logout") == 0 || std::strcmp(argv[1], "--logout-now") == 0))
+        return LoginWindow::logOut(std::strcmp(argv[1], "--logout") == 0);
+    if (argc >= 2 && (std::strcmp(argv[1], "--restart") == 0 || std::strcmp(argv[1], "--shutdown") == 0))
+        return LoginWindow::restart(std::strcmp(argv[1], "--shutdown") == 0);
+    if (argc >= 2 && std::strcmp(argv[1], "--force-quit") == 0)
+        return LoginWindow::forceQuit();
     if (argc < 2 || std::strcmp(argv[1], "--about") != 0) {
-        std::fprintf(stderr, "usage: loginwindow --about\n");
+        std::fprintf(stderr, "usage: loginwindow --about | --logout | --logout-now | --restart | --shutdown | --force-quit\n");
         return 2;
     }
     App &app = App::shared();

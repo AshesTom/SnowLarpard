@@ -283,6 +283,15 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         }
         const bool isDefault = b && (b->features & QStyleOptionButton::DefaultButton) && (opt->state & State_Active);
         QString s = (opt->state & State_Sunken) ? "pressed" : windowState(opt);
+        // taller than the capsule (a Linux application's grid of keys): the square bevel button
+        // (kThemeBevelButton, NSRegularSquareBezelStyle), as Qt's own Mac style does
+        if (opt->rect.height() > 30) {
+            const ArtFile::Element bevel = art({"bevelbuttonsquare", s, "regular"});
+            if (!bevel.isNull()) {
+                drawElement(p, bevel, opt->rect);
+                return;
+            }
+        }
         drawElement(p, art({"pushbutton", isDefault && s == "active" ? "blue" : "clear", s, "regular"}), opt->rect);
         return;
     }

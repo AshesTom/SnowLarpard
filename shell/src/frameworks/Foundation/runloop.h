@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <sys/types.h>
 #include <vector>
@@ -90,6 +91,7 @@ private:
     void reap();
     pid_t m_pid = -1;
     int m_out = -1, m_in = -1;
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);   // its callbacks on the run loop check it
     std::string m_buffer, m_output;
 };
 

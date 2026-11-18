@@ -1,30 +1,30 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// The AirPort menu extra (AirPort.menu, AirPortExtraImplementation), on NetworkManager (nmcli): the
-// bars of the network joined, the networks found, Turn AirPort Off, Join Other Network…
-// What 10.6.8's AirPort.menu does is in docs/reverse-status.md ("AirPort and Bluetooth menu extras").
+// AirPort.menu's code (AirPortExtra, AirPortExtraImplementation) on AquaKit's SystemUIPlugin, loaded by
+// SystemUIServer as on the Mac; on NetworkManager (nmcli, and D-Bus for joining): the bars of the
+// network joined, the networks found, Turn AirPort Off, Join Other Network…, Create Network…. Its words
+// are the bundle's Localizable.strings. What 10.6.8's AirPort.menu does is in docs/reverse-status.md
+// (section 17).
 #pragma once
 
-#include "menuextra.h"
+#include "systemuiplugin.h"
 
-#include <QMap>
-#include <QElapsedTimer>
-#include <QVector>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
-class QAction;
-class QProcess;
-class QTimer;
+struct sd_bus_slot;
 
-class AirPortExtra : public MenuExtra {
-    Q_OBJECT
+class AirPortExtra : public SystemUI::MenuExtra {
 public:
-    explicit AirPortExtra(QObject *parent);
-    int width(const QFontMetrics &) const override { return 32; }
-    void paint(QPainter &p, const QRect &r, bool highlighted) override;
-    QMenu *menu() override;
-    bool visible() const override { return m_hardware; }
+    explicit AirPortExtra(const std::string &bundle);
+    ~AirPortExtra() override;
+    std::vector<AK::MenuItem> menu() override;
+    void menuDidClose() override;
+    void willUnload() override;
 
     struct Network {
-        QString ssid, security, bssid;
+        std::string ssid, security, bssid;
         int signal = 0;   // NetworkManager's 0-100
         int rssi = 0;     // dBm, from the driver (iw) for the network joined
         int channel = 0, frequency = 0, rate = 0;
@@ -35,48 +35,41 @@ public:
     static int barsForMappedTransmitRate(int rate);
     static int rssiForQuality(int quality);
 
+    AK::Image statusImage(bool white) const;   // -updateStatusImage
+
+    // NetworkManager's answers (the bus' callbacks)
+    void joinStateChanged(uint32_t state, uint32_t reason);
+    void joinAdded(const std::string &settings, const std::string &active);
+    void panelFailed(const std::string &error);
+
 private:
     void poll(bool rescan);
-    void parse(const QString &out);
-    void rebuild();
-    void refresh();
-    void fillNetworks();
-    QAction *networkItem(const Network &n, bool current, int bars);
+    void parse(const std::string &out);
+    std::vector<AK::MenuItem> items();
+    void networks(std::vector<AK::MenuItem> &out);
+    AK::MenuItem networkItem(const Network &n, bool current, int bars);
     void join(const Network &n);
-    void joinOther();
-    void createNetwork();
-    void runPanel(const QStringList &args);
-    void panelAccepted(const QMap<QString, QString> &fields);
-    void panelFailed(const QString &error);
-    void finishJoin(const QString &error);
+    void runPanel(const std::vector<std::string> &args);
+    void panelAccepted(const std::map<std::string, std::string> &fields);
+    void finishJoin(const std::string &error);
+    std::string tr(const char *key, const char *fallback) const { return localized(key, fallback); }
 
-private slots:
-    void joinStateChanged(uint state, uint reason);
-
-private:
-
-    QMenu *m_menu = nullptr;
-    QAction *m_status = nullptr, *m_tail = nullptr;   // the status line; the separator under the networks
-    QList<QAction *> m_list;                          // the networks' lines
-    bool m_builtPowerOn = false;
-    QProcess *m_proc = nullptr;
-    QTimer *m_animation = nullptr, *m_spinner = nullptr;
-    QElapsedTimer m_animationClock;
-    int m_spin = 0;
+    std::unique_ptr<AK::Task> m_poll, m_panel;
+    std::string m_panelOutput;
+    bool m_panelHidden = false;
+    int m_pollTimer = 0, m_animation = 0, m_spinner = 0, m_scanTimer = 0, m_joinTimeout = 0;
+    double m_animationStart = 0;
+    int m_frame = 0, m_spin = 0;
     struct Link {
         int rssi = 0, rate = 0, mcs = -1;
-        QString phy;
+        std::string phy;
     } m_link;
-    bool m_hardware = false, m_powerOn = false, m_connecting = false, m_scanning = false;
-    bool m_option = false;
-    QString m_device, m_connectivity;
-    QVector<Network> m_networks;
-    QStringList m_profiles;     // NetworkManager's Wi-Fi connections (their names)
-    // the panel (Apple80211's ClientDialogs) and the network it joins
-    QProcess *m_panel = nullptr;
-    QString m_panelOutput, m_joinSettings, m_joinActive;
-    bool m_panelHidden = false;
-    QTimer *m_joinTimeout = nullptr;
+    bool m_hardware = false, m_powerOn = false, m_connecting = false, m_scanning = false, m_showScanning = false;
+    std::string m_device, m_connectivity;
+    std::vector<Network> m_networks;
+    std::vector<std::string> m_profiles;
+    std::string m_joinSettings, m_joinActive;
+    sd_bus_slot *m_joinSlot = nullptr;
     int m_txSamples[3] = {0, 0, 0};
-    int m_bars = 0, m_frame = 0;
+    int m_bars = 0;
 };

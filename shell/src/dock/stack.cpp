@@ -19,6 +19,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
@@ -91,15 +92,35 @@ QVector<Item> items(const QString &folder, Sort sort)
         // the Mac applications that a Linux program stands for, and their Utilities folder
         const QString sub = folder.mid(13);   // "" or "/Utilities"
         const QString dir = "/Applications" + sub;
+        QSet<QString> standing;   // the Linux programs standing for a Mac application
         for (const QString &bundle : QDir(Assets::path(dir)).entryList({"*.app"}, QDir::Dirs, QDir::Name)) {
             const App a = Apps::forMacBundle(dir + '/' + bundle);
             if (!a.valid())
                 continue;
+            standing.insert(a.id);
             Item i;
             i.name = bundle.chopped(4);
             i.app = a;
             i.kind = "Application";
             out.append(i);
+        }
+        if (sub.isEmpty()) {
+            // the other Linux applications, beside the Mac ones (as the Mac's /Applications has the
+            // ones you installed), with the names and icons of their .desktop entries
+            QSet<QString> all = standing;
+            for (const QString &bundle : QDir(Assets::path("/Applications/Utilities")).entryList({"*.app"}, QDir::Dirs))
+                if (const App a = Apps::forMacBundle("/Applications/Utilities/" + bundle); a.valid())
+                    all.insert(a.id);
+            all.insert(Apps::finder().id);
+            for (const App &a : Apps::all()) {
+                if (!a.shown || all.contains(a.id) || a.name.isEmpty())
+                    continue;
+                Item i;
+                i.name = a.name;
+                i.app = a;
+                i.kind = "Application";
+                out.append(i);
+            }
         }
         if (sub.isEmpty() && !items("applications:/Utilities", Name).isEmpty()) {
             Item u;

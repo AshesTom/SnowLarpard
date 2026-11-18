@@ -1,29 +1,27 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// The Bluetooth menu extra (Bluetooth.menu, AppleBluetoothExtra and its DeviceMenuCreator), on BlueZ
-// (bluetoothctl): the controller's state, Discoverable, the devices with their submenus.
-// What 10.6.8's Bluetooth.menu does is in docs/reverse-status.md ("AirPort and Bluetooth menu extras").
+// Bluetooth.menu's code (AppleBluetoothExtra and its DeviceMenuCreator) on AquaKit's SystemUIPlugin,
+// loaded by SystemUIServer as on the Mac; on BlueZ (bluetoothctl): the controller's state,
+// Discoverable, the devices with their submenus. Its words are the bundle's Localizable.strings. What
+// 10.6.8's Bluetooth.menu does is in docs/reverse-status.md (section 17).
 #pragma once
 
-#include "menuextra.h"
+#include "systemuiplugin.h"
 
-#include <QMap>
-#include <QVector>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
-class QAction;
-class QProcess;
-
-class BluetoothExtra : public MenuExtra {
-    Q_OBJECT
+class AppleBluetoothExtra : public SystemUI::MenuExtra {
 public:
-    explicit BluetoothExtra(QObject *parent);
-    int width(const QFontMetrics &) const override { return 26; }
-    void paint(QPainter &p, const QRect &r, bool highlighted) override;
-    QMenu *menu() override;
-    bool visible() const override { return m_controller; }
+    explicit AppleBluetoothExtra(const std::string &bundle);
+    ~AppleBluetoothExtra() override;
+    std::vector<AK::MenuItem> menu() override;
+    void willUnload() override;
 
     struct Device {
-        QString address, name, icon;
-        QStringList uuids;
+        std::string address, name, icon;
+        std::vector<std::string> uuids;
         bool connected = false;
         int battery = -1;
         int rssi = 0;
@@ -32,19 +30,20 @@ public:
         bool stereo() const { return has("110b"); }
         bool headset() const { return has("1108") || has("111e"); }
     };
+    AK::Image statusImage(bool white) const;   // -checkAndSetPicture
 
 private:
     void poll();
-    void parse(const QString &out);
-    void rebuild();
-    QAction *deviceItem(const Device &d);
+    void parse(const std::string &out);
+    std::vector<AK::MenuItem> items();
+    bool deviceItem(const Device &d, AK::MenuItem &out);
     void report();
+    std::string tr(const char *key, const char *fallback) const { return localized(key, fallback); }
 
-    QMenu *m_menu = nullptr;
-    QList<QMenu *> m_submenus;
-    QProcess *m_proc = nullptr;
-    bool m_controller = false, m_powered = false, m_discoverable = false, m_option = false;
-    QString m_name, m_address, m_version;
-    QVector<Device> m_devices;
-    QMap<QString, QString> m_pan;   // NetworkManager's bt devices' states, by address
+    std::unique_ptr<AK::Task> m_poll;
+    int m_timer = 0;
+    bool m_controller = false, m_powered = false, m_discoverable = false;
+    std::string m_name, m_address, m_version;
+    std::vector<Device> m_devices;
+    std::map<std::string, std::string> m_pan;   // NetworkManager's bt devices' states, by address
 };

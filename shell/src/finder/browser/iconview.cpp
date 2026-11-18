@@ -22,6 +22,10 @@ namespace {
 // FXLabelHorizontalPad, FXLabelVerticalPad, FXMaximumLabelLines, FXTightLabelLines below a grid
 // spacing of 26)
 constexpr int GridCharCount = 17, MinCharCount = 4, LabelHPad = 1, LabelVPad = 2, LabelLines = 2, TightLabelLines = 1;
+// ImageKit's browser in the Finder's windows: 4 between cells; the first cell 5 in from the view's
+// left (measured on a 10.6.8 Finder: ImageKit's own margin for the browser's style 1 is 10, the view's
+// origin there not traced)
+constexpr double CellSpacing = 4, CellMargin = 5;
 
 double even(double v)
 {
@@ -85,7 +89,21 @@ IconView::Metrics IconView::metrics() const
     m.lines = (labelOnBottom || iconSize > 16) ? (gridSpacing < 26 ? TightLabelLines : LabelLines) : 1;
     m.labelHeight = std::floor(m.lines * m.lineHeight + (showItemInfo ? m.lineHeight : 0) + 2);
     if (labelOnBottom) {
-        m.grid = {even(m.labelWidth + LabelHPad), even(m.box + m.labelHeight + LabelVPad + 4)};
+        // A window's icon view is ImageKit's (TIconViewController currentGridSize → +[IKIconCell
+        // anchoredBoundsForSettings:]): +[IKIconCell cellSizeForIconSize:maxIconSize:gridSpacing:...]
+        // the cell max(5c, icon) + 16 + (20c − max(5c, icon)) × spacing / 100 wide (c: "0"'s width,
+        // past 128 points 20c − 128), icon + 2 × the selection radius (ceil(min(icon/128, 1) × 8)) + the
+        // label high, the label two text lines and 2, and 2 more (labelHeightForAttributes:...); the text
+        // line 17 at 12 points (sizeWithAttributes:'s height, measured on a 10.6.8 Finder); 4 between
+        // cells both ways. A 10.6.8 Finder at 64 points: 136 × 114 between icons
+        const double c = cw;
+        const double least = std::max(5 * c, double(iconSize));
+        const double room = iconSize > 128 ? 20 * c - 128 : std::max(0.0, 20 * c - least);
+        m.cellWidth = std::ceil(least + 16 + room * (gridSpacing / 100.0));
+        const double text = m.lineHeight + 2;
+        const double label = (m.lines > 1 ? 2 * text + 2 : text) + (showItemInfo ? text : 0) + 2;
+        const double radius = std::ceil(std::min(iconSize / 128.0, 1.0) * 8);
+        m.grid = {m.cellWidth + CellSpacing, std::ceil(iconSize + 2 * radius + label) + CellSpacing};
     } else {
         // the label at the icon's right: the cell as wide as both, as high as the taller and some
         double h = std::max(m.labelHeight, m.box);
@@ -98,23 +116,37 @@ IconView::Metrics IconView::metrics() const
     return m;
 }
 
-int IconView::columns() const
+int IconView::columns() const { return columnsFor(frame().w, metrics()); }
+
+int IconView::columnsFor(double width, const Metrics &m) const
 {
-    // TLayoutGrid's -calculateGridDimensions: the frame's width in whole cells
-    return std::max(1, int(frame().w / metrics().grid.w));
+    // labels at the bottom: IKImageBrowserLayoutManager computeColumnCount, (spacing + width − 2 ×
+    // margin) / (spacing + cell); at the right: TLayoutGrid's -calculateGridDimensions, whole cells
+    if (labelOnBottom)
+        return std::max(1, int((CellSpacing + width - 2 * CellMargin) / m.grid.w));
+    return std::max(1, int(width / m.grid.w));
+}
+
+Point IconView::spotFor(int cell, int cols, const Metrics &m) const
+{
+    // labels at the bottom: the cell's centre across (the margin, the cells before it), the icon box 4
+    // under the cell's top; at the right: the icon box 4 in from the cell's left, the cell's middle down
+    // (anchoredIconMaxBounds)
+    const double top = (cell / cols) * m.grid.h;
+    if (labelOnBottom)
+        return Point{std::round(CellMargin + (cell % cols) * m.grid.w + m.cellWidth / 2), std::round(top + 4 + m.box / 2)};
+    const double left = (cell % cols) * m.grid.w;
+    return Point{std::round(left + 4 + m.box / 2), std::round(top + m.grid.h / 2 + 4)};
 }
 
 std::vector<Point> IconView::gridSpots(size_t count) const
 {
     // the grid's spots in reading order (as place() lays them out)
     const Metrics m = metrics();
-    const int cols = std::max(1, int(frame().w / m.grid.w));
+    const int cols = columnsFor(frame().w, m);
     std::vector<Point> out;
-    for (size_t cell = 0; cell < count; ++cell) {
-        const double left = (int(cell) % cols) * m.grid.w, top = (int(cell) / cols) * m.grid.h;
-        out.push_back(labelOnBottom ? Point{std::round(left + m.grid.w / 2 + 4), std::round(top + 4 + m.box / 2)}
-                                    : Point{std::round(left + 4 + m.box / 2), std::round(top + m.grid.h / 2 + 4)});
-    }
+    for (size_t cell = 0; cell < count; ++cell)
+        out.push_back(spotFor(int(cell), cols, m));
     return out;
 }
 
@@ -125,15 +157,8 @@ std::vector<Point> IconView::place(double width) const
     // -anchorAtGridLocation: the cell's centre, 4 to the right; the icon box's centre 4 under the
     // cell's top
     const Metrics m = metrics();
-    const int cols = std::max(1, int(width / m.grid.w));
-    // labels at the bottom: the cell's centre across, the icon box 4 under the cell's top; at the right:
-    // the icon box 4 in from the cell's left, the cell's middle down (anchoredIconMaxBounds)
-    auto spot = [&](int cell) {
-        const double left = (cell % cols) * m.grid.w, top = (cell / cols) * m.grid.h;
-        if (labelOnBottom)
-            return Point{std::round(left + m.grid.w / 2 + 4), std::round(top + 4 + m.box / 2)};
-        return Point{std::round(left + 4 + m.box / 2), std::round(top + m.grid.h / 2 + 4)};
-    };
+    const int cols = columnsFor(width, m);
+    auto spot = [&](int cell) { return spotFor(cell, cols, m); };
     auto cellOf = [&](Point a) {
         const Point first = spot(0);
         const int col = int(std::lround((a.x - first.x) / m.grid.w)), row = int(std::lround((a.y - first.y) / m.grid.h));

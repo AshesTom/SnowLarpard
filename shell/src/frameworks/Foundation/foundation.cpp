@@ -324,10 +324,19 @@ std::map<std::string, std::string> plistStrings(const std::string &macPath)
         if (i < s.size() && s[i] == ':')
             ++i;
         ws();
-        if (i < s.size() && s[i] == '"')
+        if (i < s.size() && s[i] == '"') {
             out[key] = str();
-        else
+        } else if (i < s.size() && s[i] != '{' && s[i] != '[') {
+            // a number or a boolean, as its text (NSMenuExtraWidth's 140, "true")
+            const size_t from = i;
             skip();
+            size_t end = i;
+            while (end > from && std::isspace((unsigned char)s[end - 1]))
+                --end;
+            out[key] = s.substr(from, end - from);
+        } else {
+            skip();
+        }
     }
     return out;
 }

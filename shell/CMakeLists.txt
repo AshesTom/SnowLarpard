@@ -25,6 +25,8 @@ add_library(aquashell STATIC
     src/common/session.cpp src/common/session.h
     src/common/x11.cpp src/common/x11.h)
 target_include_directories(aquashell PUBLIC src/common)
+# PIC: it goes into the Aqua style plugin too (src/linux/qtstyle)
+set_target_properties(aquashell PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(aquashell PUBLIC Qt6::Widgets PkgConfig::XCB)
 target_compile_options(aquashell PRIVATE -Wall -Wextra)
 
@@ -38,46 +40,6 @@ endfunction()
 
 mac_app(Dock src/dock/main.cpp src/dock/dock.cpp src/dock/dock.h src/dock/dockmenu.cpp src/dock/dockmenu.h
         src/dock/stack.cpp src/dock/stack.h)
-# SystemUIPlugin.framework: NSMenuExtra and what the menu extras share, a library of its own (as the
-# private framework is) used by SystemUIServer and by the .menu bundles it loads
-add_library(SystemUIPlugin SHARED src/systemuiplugin/menuextra.cpp src/systemuiplugin/menuextra.h)
-target_include_directories(SystemUIPlugin PUBLIC src/systemuiplugin src/common)
-target_link_libraries(SystemUIPlugin PUBLIC Qt6::Widgets)
-target_compile_definitions(SystemUIPlugin PRIVATE SYSTEMUIPLUGIN_LIBRARY)
-target_compile_options(SystemUIPlugin PRIVATE -Wall -Wextra)
-set_target_properties(SystemUIPlugin PROPERTIES PREFIX "" SUFFIX "" OUTPUT_NAME SystemUIPlugin
-                      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/PrivateFrameworks/SystemUIPlugin.framework")
-
-# SystemUIServer.app: the menu bar. It hands the shell's shared code (aquashell, whole) to the bundles
-# it loads, as a bundle loader does; its libraries found beside it ($ORIGIN), wherever install.sh
-# copies the programs
-add_executable(SystemUIServer src/menubar/main.cpp src/menubar/menubar.cpp src/menubar/menubar.h
-        src/menubar/spotlight.cpp src/menubar/spotlight.h src/menubar/appmenu.cpp src/menubar/appmenu.h
-        src/menubar/menubarfilter.cpp src/menubar/menubarfilter.h src/menubar/findermenus.cpp src/menubar/findermenus.h
-        src/menubar/aquakitmenus.cpp src/menubar/aquakitmenus.h)
-target_link_libraries(SystemUIServer PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,aquashell>" SystemUIPlugin Qt6::DBus Qt6::Network
-                      PkgConfig::XCB ${CMAKE_DL_LIBS})
-target_compile_options(SystemUIServer PRIVATE -Wall -Wextra)
-set_target_properties(SystemUIServer PROPERTIES ENABLE_EXPORTS ON
-                      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/SystemUIServer.app/Contents/MacOS"
-                      BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN/../../../PrivateFrameworks/SystemUIPlugin.framework")
-
-# The menu extras, each a bundle SystemUIServer loads: Menu Extras/<Name>.menu/Contents/MacOS/<Name>
-function(menu_extra name)
-    add_library(${name}Menu MODULE ${ARGN})
-    target_link_libraries(${name}Menu PRIVATE SystemUIPlugin)
-    target_include_directories(${name}Menu PRIVATE src/menuextras/${name})
-    target_compile_options(${name}Menu PRIVATE -Wall -Wextra)
-    set_target_properties(${name}Menu PROPERTIES PREFIX "" SUFFIX "" OUTPUT_NAME ${name}
-                          LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Menu Extras/${name}.menu/Contents/MacOS"
-                          BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN/../../../../PrivateFrameworks/SystemUIPlugin.framework")
-endfunction()
-menu_extra(Clock src/menuextras/Clock/clock.cpp src/menuextras/Clock/clock.h)
-menu_extra(Battery src/menuextras/Battery/battery.cpp src/menuextras/Battery/battery.h)
-menu_extra(Volume src/menuextras/Volume/volume.cpp src/menuextras/Volume/volume.h)
-menu_extra(AirPort src/menuextras/AirPort/airport.cpp src/menuextras/AirPort/airport.h)
-target_link_libraries(AirPortMenu PRIVATE Qt6::DBus)
-menu_extra(Bluetooth src/menuextras/Bluetooth/bluetooth.cpp src/menuextras/Bluetooth/bluetooth.h)
 mac_app(Finder src/finder/main.cpp src/finder/desktop.cpp src/finder/desktop.h)
 pkg_check_modules(XCB_SAVER REQUIRED IMPORTED_TARGET xcb-screensaver)
 target_link_libraries(Finder PRIVATE PkgConfig::XCB_SAVER)
@@ -101,7 +63,7 @@ function(aquakit_framework name)
 endfunction()
 pkg_check_modules(COREGRAPHICS_DEPS REQUIRED IMPORTED_TARGET cairo libturbojpeg libtiff-4 lcms2 zlib poppler-glib)
 pkg_check_modules(CORETEXT_DEPS REQUIRED IMPORTED_TARGET pangocairo fontconfig)
-pkg_check_modules(APPKIT_DEPS REQUIRED IMPORTED_TARGET xcb xcb-keysyms cairo-xcb xkbcommon)
+pkg_check_modules(APPKIT_DEPS REQUIRED IMPORTED_TARGET xcb xcb-keysyms xcb-cursor cairo-xcb xkbcommon)
 
 aquakit_framework(Foundation
     src/frameworks/Foundation/foundation.cpp src/frameworks/Foundation/foundation.h
@@ -115,6 +77,10 @@ target_link_libraries(CoreGraphics PUBLIC Foundation PkgConfig::COREGRAPHICS_DEP
 aquakit_framework(CoreText src/frameworks/CoreText/text.cpp src/frameworks/CoreText/text.h)
 target_include_directories(CoreText PRIVATE src/common)   # quartztext.h, shared with the Qt programs
 target_link_libraries(CoreText PUBLIC CoreGraphics Foundation PkgConfig::CORETEXT_DEPS)
+
+# CoreServices: LaunchServices (the applications, opening them), on Linux's .desktop entries
+aquakit_framework(CoreServices src/frameworks/CoreServices/launchservices.cpp src/frameworks/CoreServices/launchservices.h)
+target_link_libraries(CoreServices PUBLIC CoreGraphics Foundation)
 
 aquakit_framework(CoreUI src/frameworks/CoreUI/coreui.cpp src/frameworks/CoreUI/coreui.h)
 target_link_libraries(CoreUI PUBLIC CoreGraphics Foundation)
@@ -133,7 +99,7 @@ aquakit_framework(AppKit
 target_link_libraries(AppKit PUBLIC CoreUI CoreText CoreGraphics Foundation PkgConfig::APPKIT_DEPS)
 
 add_library(aquakit INTERFACE)
-target_link_libraries(aquakit INTERFACE AppKit CoreUI CoreText CoreGraphics Foundation)
+target_link_libraries(aquakit INTERFACE AppKit CoreUI CoreText CoreServices CoreGraphics Foundation)
 
 # Wayland: xdg-shell's XML from wayland-protocols (or the copy Qt ships), turned into C by wayland-scanner
 pkg_check_modules(AQUAKIT_WAYLAND IMPORTED_TARGET wayland-client wayland-cursor)
@@ -242,6 +208,72 @@ target_compile_options(SoftwareUpdate PRIVATE -Wall -Wextra)
 set_target_properties(SoftwareUpdate PROPERTIES AUTOMOC OFF OUTPUT_NAME "Software Update"
                       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Software Update.app/Contents/MacOS")
 
+# SystemUIPlugin.framework on AquaKit: NSMenuExtra, NSMenuExtraView (src/systemuiplugin), a library of
+# its own as the private framework is; the frameworks' symbols are SystemUIServer's (which links them
+# whole and exports them), as AppKit is one copy in a process on the Mac
+add_library(SystemUIPlugin SHARED src/systemuiplugin/systemuiplugin.cpp src/systemuiplugin/systemuiplugin.h)
+target_include_directories(SystemUIPlugin PUBLIC src/systemuiplugin)
+target_include_directories(SystemUIPlugin PRIVATE $<TARGET_PROPERTY:AppKit,INTERFACE_INCLUDE_DIRECTORIES>)
+target_compile_options(SystemUIPlugin PRIVATE -Wall -Wextra)
+set_target_properties(SystemUIPlugin PROPERTIES AUTOMOC OFF PREFIX "" SUFFIX "" OUTPUT_NAME SystemUIPlugin
+                      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/PrivateFrameworks/SystemUIPlugin.framework")
+
+# The Aqua style for the session's Linux Qt 6 applications (src/linux/qtstyle): AquaStyle as a style
+# plugin, apps/Linux/qt6/styles/aquastyle.so; the session sets QT_PLUGIN_PATH and QT_STYLE_OVERRIDE=Aqua.
+# aquashell inside it, its symbols hidden (it lives in other programs)
+add_library(AquaStylePlugin MODULE src/linux/qtstyle/aquastyleplugin.cpp src/linux/qtstyle/aqua.json)
+target_link_libraries(AquaStylePlugin PRIVATE aquashell)
+target_compile_options(AquaStylePlugin PRIVATE -Wall -Wextra)
+target_link_options(AquaStylePlugin PRIVATE "LINKER:--exclude-libs,ALL")
+set_target_properties(AquaStylePlugin PROPERTIES PREFIX "" OUTPUT_NAME aquastyle CXX_VISIBILITY_PRESET hidden
+                      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Linux/qt6/styles")
+
+# Linux's glue, not a Mac framework (src/linux): the session's windows (EWMH) and D-Bus (sd-bus) on
+# Foundation's run loop, for SystemUIServer (and the Dock, later)
+pkg_check_modules(LINUXGLUE_DEPS REQUIRED IMPORTED_TARGET xcb libsystemd)
+add_library(LinuxGlue STATIC src/linux/windows.cpp src/linux/windows.h src/linux/dbus.cpp src/linux/dbus.h)
+target_include_directories(LinuxGlue PUBLIC src/linux)
+target_link_libraries(LinuxGlue PUBLIC Foundation PkgConfig::LINUXGLUE_DEPS)
+target_compile_options(LinuxGlue PRIVATE -Wall -Wextra)
+set_target_properties(LinuxGlue PROPERTIES AUTOMOC OFF)
+
+# SystemUIServer.app on AquaKit: the menu bar and its extras (src/systemuiserver); the frameworks linked
+# whole and exported, for SystemUIPlugin and the .menu bundles it loads. Desktop & Screen Saver's
+# desktop picture (prefs/desktop.cpp) for the bar's filter.
+add_executable(SystemUIServer src/systemuiserver/main.cpp src/systemuiserver/menubar.cpp src/systemuiserver/menubar.h
+               src/systemuiserver/menutoolbar.cpp src/systemuiserver/menutoolbar.h
+               src/systemuiserver/menubarfilter.cpp src/systemuiserver/menubarfilter.h
+               src/systemuiserver/startup.cpp src/systemuiserver/startup.h src/systemuiserver/session.cpp src/systemuiserver/session.h
+               src/systemuiserver/dbusmenu.cpp src/systemuiserver/dbusmenu.h
+               src/systemuiserver/aquakitmenus.cpp src/systemuiserver/aquakitmenus.h
+               src/systemuiserver/findermenus.cpp src/systemuiserver/findermenus.h
+               src/systemuiserver/spotlight.cpp src/systemuiserver/spotlight.h
+               src/systemuiserver/clock.cpp src/systemuiserver/clock.h src/systemuiserver/battery.cpp src/systemuiserver/battery.h
+               src/systemuiserver/volume.cpp src/systemuiserver/volume.h
+               src/prefs/desktop.cpp src/prefs/desktop.h)
+target_include_directories(SystemUIServer PRIVATE src/systemuiserver src/prefs)
+target_link_libraries(SystemUIServer PRIVATE SystemUIPlugin
+                      "$<LINK_LIBRARY:WHOLE_ARCHIVE,AppKit,CoreUI,CoreText,CoreServices,CoreGraphics,Foundation,LinuxGlue>" ${CMAKE_DL_LIBS})
+target_compile_options(SystemUIServer PRIVATE -Wall -Wextra)
+set_target_properties(SystemUIServer PROPERTIES AUTOMOC OFF ENABLE_EXPORTS ON
+                      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/SystemUIServer.app/Contents/MacOS"
+                      BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN/../../../PrivateFrameworks/SystemUIPlugin.framework")
+
+# The menu extras with code of their own (Clock, Battery and Volume are SystemUIServer's), each a
+# bundle SystemUIServer loads: Menu Extras/<Name>.menu/Contents/MacOS/<Name>. Built against the
+# frameworks' headers only: their code is SystemUIServer's, one copy in the process as on the Mac.
+function(menu_extra name)
+    add_library(${name}Menu MODULE ${ARGN})
+    target_include_directories(${name}Menu PRIVATE src/menuextras/${name})
+    target_link_libraries(${name}Menu PRIVATE SystemUIPlugin "$<COMPILE_ONLY:AppKit>" "$<COMPILE_ONLY:LinuxGlue>")
+    target_compile_options(${name}Menu PRIVATE -Wall -Wextra)
+    set_target_properties(${name}Menu PROPERTIES AUTOMOC OFF PREFIX "" SUFFIX "" OUTPUT_NAME ${name}
+                          LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Menu Extras/${name}.menu/Contents/MacOS"
+                          BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN/../../../../PrivateFrameworks/SystemUIPlugin.framework")
+endfunction()
+menu_extra(AirPort src/menuextras/AirPort/airport.cpp src/menuextras/AirPort/airport.h)
+menu_extra(Bluetooth src/menuextras/Bluetooth/bluetooth.cpp src/menuextras/Bluetooth/bluetooth.h)
+
 # Apple80211.framework's ClientDialogs.bundle: AirPort's panels from its nibs, on AquaKit; the AirPort
 # menu extra starts it
 add_executable(ClientDialogs src/privateframeworks/Apple80211/clientdialogs.cpp)
@@ -250,9 +282,10 @@ target_compile_options(ClientDialogs PRIVATE -Wall -Wextra)
 set_target_properties(ClientDialogs PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY
                       "${CMAKE_BINARY_DIR}/apps/PrivateFrameworks/Apple80211.framework/Resources/ClientDialogs.bundle/Contents/MacOS")
 
-# loginwindow's About This Mac, on AquaKit (its nib from the DVD)
-add_executable(loginwindow src/loginwindow/main.cpp)
-target_link_libraries(loginwindow PRIVATE aquakit)
+# loginwindow's About This Mac, Log Out, Restart, Shut Down and Force Quit, on AquaKit (their nibs from
+# the DVD)
+add_executable(loginwindow src/loginwindow/main.cpp src/loginwindow/logout.cpp src/loginwindow/logout.h src/loginwindow/forcequit.cpp)
+target_link_libraries(loginwindow PRIVATE aquakit LinuxGlue PkgConfig::XCB)
 target_compile_options(loginwindow PRIVATE -Wall -Wextra)
 set_target_properties(loginwindow PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/loginwindow.app/Contents/MacOS")
 
@@ -290,7 +323,7 @@ target_compile_options(FinderWindows PRIVATE -Wall -Wextra)
 set_target_properties(FinderWindows PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Finder.app/Contents/MacOS")
 
 # The window manager: a program of its own, as the Mac's WindowServer is
-pkg_check_modules(XCB_COMPOSITOR REQUIRED IMPORTED_TARGET xcb-composite xcb-damage xcb-render xcb-xfixes)
+pkg_check_modules(XCB_COMPOSITOR REQUIRED IMPORTED_TARGET xcb-composite xcb-damage xcb-render xcb-xfixes xcb-cursor)
 add_executable(WindowServer src/windowserver/main.cpp src/windowserver/windowserver.cpp src/windowserver/windowserver.h
                src/windowserver/compositor.cpp src/windowserver/compositor.h)
 target_link_libraries(WindowServer PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
@@ -305,7 +338,7 @@ function(component_info source destination)
 endfunction()
 component_info(dock "Dock.app/Contents")
 component_info(finder "Finder.app/Contents")
-component_info(menubar "SystemUIServer.app/Contents")
+component_info(systemuiserver "SystemUIServer.app/Contents")
 component_info(loginwindow "loginwindow.app/Contents")
 component_info(softwareupdate "Software Update.app/Contents")
 component_info(prefs "System Preferences.app/Contents")

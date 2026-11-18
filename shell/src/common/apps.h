@@ -16,6 +16,7 @@ struct App {
     QStringList exec;    // the command (field codes removed)
     QString wmClass;     // StartupWMClass, or the guess from the command
     QString iconName;    // the .desktop entry's Icon
+    bool shown = true;   // in the applications' lists (not NoDisplay=true)
     bool valid() const { return !id.isEmpty(); }
 };
 

@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <set>
@@ -113,6 +114,25 @@ bool desktopEntry(const std::string &path, std::string &name)
 
 } // namespace
 
+std::vector<std::string> applicationDirs()
+{
+    std::vector<std::string> dirs;
+    const char *dataHome = std::getenv("XDG_DATA_HOME");
+    dirs.push_back((dataHome && *dataHome ? std::string(dataHome) : home() + "/.local/share") + "/applications");
+    const char *dataDirs = std::getenv("XDG_DATA_DIRS");
+    const std::string all = dataDirs && *dataDirs ? dataDirs : "/usr/local/share:/usr/share";
+    for (size_t start = 0; start <= all.size();) {
+        const size_t end = all.find(':', start);
+        const std::string d = all.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!d.empty() && std::find(dirs.begin(), dirs.end(), d + "/applications") == dirs.end())
+            dirs.push_back(d + "/applications");
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    return dirs;
+}
+
 std::string userDir(const std::string &xdgName, const std::string &fallback)
 {
     // user-dirs.dirs: XDG_<NAME>_DIR="$HOME/..."
@@ -158,6 +178,42 @@ std::vector<Item> list(const std::string &folder)
         // Go > Computer: the disks (the Network's place left out: GIO's network:// isn't a folder)
         for (const Volume &v : volumes())
             out.push_back(Item{v.name, v.path, true});
+        return out;
+    }
+    if (folder == ApplicationsFolder) {
+        // Applications: every installed application, as the menus of a Linux desktop list them: the
+        // entries of each XDG applications folder (the user's, the Flatpaks', the system's), the first
+        // one of an id winning (a user's copy, even one that hides the application)
+        std::set<std::string> seen;
+        std::function<void(const std::string &, const std::string &)> scan = [&](const std::string &dir, const std::string &prefix) {
+            DIR *d = opendir(dir.c_str());
+            if (!d)
+                return;
+            while (dirent *e = readdir(d)) {
+                const std::string name = e->d_name;
+                if (name.empty() || name[0] == '.')
+                    continue;
+                const std::string path = dir + "/" + name;
+                if (isDir(path)) {
+                    scan(path, prefix + name + "-");
+                    continue;
+                }
+                if (extension(name) != "desktop" || !seen.insert(prefix + name).second)
+                    continue;
+                std::string shown;
+                if (!desktopEntry(path, shown))
+                    continue;
+                Item it;
+                it.name = shown;
+                it.path = path;
+                it.application = true;
+                out.push_back(it);
+            }
+            closedir(d);
+        };
+        for (const std::string &dir : applicationDirs())
+            scan(dir, "");
+        std::sort(out.begin(), out.end(), [](const Item &a, const Item &b) { return finderLess(a.name, b.name); });
         return out;
     }
     DIR *d = opendir(folder.c_str());
@@ -272,6 +328,8 @@ std::string displayName(const std::string &path)
         gethostname(host, sizeof host - 1);
         return host;
     }
+    if (path == ApplicationsFolder)
+        return "Applications";
     const char *data = std::getenv("XDG_DATA_HOME");
     if (path == (data && *data ? std::string(data) : home() + "/.local/share") + "/Trash/files")
         return "Trash";

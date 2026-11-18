@@ -56,12 +56,17 @@ shell/src/common   aquashell, shared by every program
   x11              EWMH (or the root's children without a window manager), the shell's window types
   session          hide, quit, force quit, About This Mac, power, log out
   aqua             start-up: X11 platform, fonts, the menus' style
-shell/src/menubar  SystemUIServer.app: the menu bar, Spotlight's place in it; it loads the menu extras'
-                   bundles (com.apple.systemuiserver's menuExtras: ~/.config/snowleopard/systemuiserver.conf)
-shell/src/systemuiplugin  SystemUIPlugin.framework: NSMenuExtra and what the extras share, a shared library
+shell/src/systemuiserver  SystemUIServer.app (AquaKit): the menu bar (the Apple menu, the applications'
+                   menus: the Finder's, AquaKit's, the global menu over D-Bus), NSMenuToolbar's extras as
+                   10.6.8 loads them (menuExtras and Autoload.plist), the Clock, Battery and Volume built
+                   in, Spotlight (Search.bundle). The session ends with it
+shell/src/systemuiplugin  SystemUIPlugin.framework (AquaKit): NSMenuExtra, NSMenuExtraView, a shared library
                    (apps/PrivateFrameworks/SystemUIPlugin.framework)
-shell/src/menuextras  the menu extras, each a bundle of its own (apps/Menu Extras/<Name>.menu/Contents/MacOS/
-                   <Name>, a library SystemUIServer loads): Clock, Battery, Volume, AirPort, Bluetooth
+shell/src/menuextras  each .menu's Info.plist; AirPort and Bluetooth have code (apps/Menu Extras/<Name>.menu/
+                   Contents/MacOS/<Name>, a library SystemUIServer loads)
+shell/src/linux    Linux's glue, not a Mac framework: the session's windows (EWMH) and D-Bus (sd-bus) on
+                   Foundation's run loop; qtstyle: AquaStyle as a Qt 6 style plugin for the session's Linux
+                   applications (apps/Linux/qt6/styles/aquastyle.so)
 shell/src/privateframeworks  the private frameworks' programs: Apple80211's ClientDialogs.bundle (AirPort's
                    panels, on AquaKit)
 
@@ -105,7 +110,7 @@ shell/src/textedit  TextEdit.app, on AquaKit: rich and plain text documents (RTF
                    Wrap to Page through TextView's pages (MultiplePageView's geometry)
 shell/src/windowserver  WindowServer: the window manager, 10.6's title bars; its compositor (compositor.cpp:
                    Composite, Damage and Render), which puts the windows together over their shadows
-shell/src/menubar/appmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu
+shell/src/systemuiserver/dbusmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu (sd-bus)
 session/           snowleopard-session: the X session
 ```
 

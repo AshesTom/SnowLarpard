@@ -125,6 +125,19 @@ struct MenuItem {
     // "none" one (a cross); a swatch chosen is done(Menu::submenuChoice(item, swatch))
     std::vector<Color> swatches;
     int swatchChecked = -1;
+    std::function<void(int swatch)> swatchChosen;   // besides the menu's done
+    // NSMenuItem's: its tag; its action when chosen (besides the menu's done); its indentation level
+    // (10 points each)
+    int tag = 0;
+    std::function<void()> action;
+    int indentation = 0;
+    // a picture at its right (the AirPort menu's lock and bars), a template drawn white while
+    // highlighted when trailingTemplate
+    Image trailingImage;
+    bool trailingTemplate = false;
+    // -[NSMenuItem setView:]: a view made each time the menu opens, as wide as the menu, viewHeight high
+    std::function<View *(double width)> makeView;
+    double viewHeight = 0, viewWidth = 0;
 };
 class Menu {
 public:
@@ -140,6 +153,17 @@ public:
         subitem = choice >= SubmenuBase ? choice % SubmenuBase : -1;
     }
     static double itemTop(const std::vector<MenuItem> &items, int index);   // within the menu
+    static double itemHeight(const MenuItem &item);
+    // The menu open (popUp's), changed while it is (NSMenu's items changed under it: the AirPort
+    // scan's networks): its items replaced, the highlighted one kept, the window resized; and closed
+    // (done(-1)) as -[NSMenu cancelTracking]
+    static bool isOpen();
+    // The menu bar's tracking (-[NSMenu popUpMenu...] from a title): the pointer moved, or a button went
+    // down, outside the open menus, at e.screen; true when the menu bar took it (another title opened, or
+    // this one closed), else a click closes the menus. Cleared when they close.
+    static std::function<bool(Event &)> trackOutside;
+    static void update(const std::vector<MenuItem> &items);
+    static void close();
     static constexpr double ItemHeight = 19, SeparatorHeight = 12, Padding = 4, SwatchRowHeight = 40;
 };
 
@@ -194,6 +218,7 @@ public:
     std::function<void()> onCancel;  // Escape, when set (the Finder's renaming)
     std::function<bool(Event &)> onKey;   // a key before the field's own handling: true when taken (Tab completing)
     bool acceptsFirstResponder() const override { return editable && isEnabled(); }
+    const char *cursor() const override { return editable && isEnabled() ? "text" : nullptr; }   // NSTextView's I-beam
     // the selection (NSText's selectedRange), in bytes; typing replaces it
     void selectRange(size_t from, size_t to);
     void selectAll() { selectRange(0, text.size()); }

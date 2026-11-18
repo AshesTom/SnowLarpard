@@ -121,6 +121,7 @@ void RunLoop::stop(int code)
 
 Task::~Task()
 {
+    *m_alive = false;   // a reap or an onExit still on the run loop: not for a task gone
     if (m_out >= 0) {
         RunLoop::main().unwatch(m_out);
         close(m_out);
@@ -237,7 +238,10 @@ void Task::reap()
     int status = 0;
     const pid_t r = waitpid(m_pid, &status, WNOHANG);
     if (r == 0) {
-        RunLoop::main().addTimer(0.02, false, [this] { reap(); });   // not yet: again shortly
+        RunLoop::main().addTimer(0.02, false, [this, alive = m_alive] {   // not yet: again shortly
+            if (*alive)
+                reap();
+        });
         return;
     }
     m_pid = -1;
@@ -249,7 +253,10 @@ void Task::reap()
     std::string output = std::move(m_output);
     m_output.clear();
     if (onExit)
-        RunLoop::main().later([cb = onExit, code, output = std::move(output)] { cb(code, output); });
+        RunLoop::main().later([cb = onExit, code, output = std::move(output), alive = m_alive] {
+            if (*alive)
+                cb(code, output);
+        });
 }
 
 void Task::write(const std::string &data)

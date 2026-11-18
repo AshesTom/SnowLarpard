@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <clocale>
 #include <ctime>
+#include <langinfo.h>
 #include <functional>
 #include <sstream>
 
@@ -403,10 +405,122 @@ void expose(NibPane &p)
     }
 }
 
+
+// ---- the menu extras the panes show or hide (com.apple.systemuiserver's menuExtras; dontAutoLoad
+// keeps Autoload.plist from bringing one back), which SystemUIServer follows
+
+const char *const ClockExtra = "/System/Library/CoreServices/Menu Extras/Clock.menu";
+const char *const BatteryExtra = "/System/Library/CoreServices/Menu Extras/Battery.menu";
+
+bool menuExtraShown(const std::string &bundle)
+{
+    const std::vector<std::string> list = Settings("systemuiserver").list("menuExtras");
+    const std::vector<std::string> dont = Settings("systemuiserver").list("dontAutoLoad");
+    if (std::find(list.begin(), list.end(), bundle) != list.end())
+        return true;
+    return list.empty() && std::find(dont.begin(), dont.end(), bundle) == dont.end();   // Autoload's
+}
+
+void showMenuExtra(const std::string &bundle, bool shown)
+{
+    Settings prefs("systemuiserver");
+    std::vector<std::string> list = prefs.list("menuExtras"), dont = prefs.list("dontAutoLoad");
+    list.erase(std::remove(list.begin(), list.end(), bundle), list.end());
+    dont.erase(std::remove(dont.begin(), dont.end(), bundle), dont.end());
+    if (shown) {
+        // the clock at the right end, the battery left of it (Autoload.plist's places)
+        auto clock = std::find(list.begin(), list.end(), std::string(ClockExtra));
+        list.insert(bundle == ClockExtra ? list.end() : clock, bundle);
+    } else {
+        dont.push_back(bundle);
+    }
+    prefs.set("dontAutoLoad", dont);
+    prefs.set("menuExtras", list);
+}
+
+// ---- Date & Time's Clock tab (ClockPref.nib's bindings): com.apple.menuextra.clock's DateFormat as
+// the checkboxes make it, IsAnalog, FlashDateSeparators
+
+void clockPart(Nib &nib)
+{
+    Settings prefs("menuextra.clock");
+    // the clock's own default (SystemUIServer's clock.cpp): the day and the time in the locale's clock
+    const char *previous = std::setlocale(LC_TIME, nullptr);
+    const std::string keep = previous ? previous : "C";
+    std::setlocale(LC_TIME, "");
+    const std::string tfmt = nl_langinfo(T_FMT);
+    std::setlocale(LC_TIME, keep.c_str());
+    const bool twelve = tfmt.find("%p") != std::string::npos || tfmt.find("%r") != std::string::npos || tfmt.find("%I") != std::string::npos;
+    const std::string format = prefs.string("DateFormat", twelve ? "EEE h:mm a" : "EEE H:mm");
+    auto box = [&](const char *key) { return nib.bound1<CheckBox>(key); };
+    CheckBox *visible = box("isClockMenuExtraVisible"), *date = box("showDate"), *seconds = box("showSeconds"),
+             *ampm = box("showAMPM"), *weekday = box("showDayOfTheWeek"), *flash = box("flashDateSeparators"),
+             *h24 = box("use24Hours");
+    auto *style = nib.bound1<RadioGroup>("isAnalog", "selectedIndex");
+    if (!visible)
+        return;
+    visible->setChecked(menuExtraShown(ClockExtra));
+    if (date) date->setChecked(format.find('d') != std::string::npos);
+    if (seconds) seconds->setChecked(format.find('s') != std::string::npos);
+    if (ampm) ampm->setChecked(format.find('a') != std::string::npos);
+    if (weekday) weekday->setChecked(format.find("EEE") != std::string::npos);
+    if (h24) h24->setChecked(format.find('H') != std::string::npos);
+    if (flash) flash->setChecked(prefs.boolean("FlashDateSeparators", false));
+    if (style) style->select(prefs.boolean("IsAnalog", false) ? 1 : 0);
+    auto update = [=] {
+        const bool on = visible->checked(), analog = style && style->selected() == 1;
+        for (CheckBox *c : {date, seconds, ampm, weekday, flash, h24})
+            if (c)
+                c->setEnabled(on && !analog);
+        if (ampm)
+            ampm->setEnabled(on && !analog && !(h24 && h24->checked()));
+        if (style)
+            style->setEnabled(on);
+        // the format as ClockPref builds it: the day, the date, the time, AM/PM
+        std::string f;
+        if (weekday && weekday->checked())
+            f += "EEE ";
+        if (date && date->checked())
+            f += "MMM d ";
+        const bool twentyFour = h24 && h24->checked();
+        f += twentyFour ? "H:mm" : "h:mm";
+        if (seconds && seconds->checked())
+            f += ":ss";
+        if (!twentyFour && ampm && ampm->checked())
+            f += " a";
+        Settings p("menuextra.clock");
+        p.set("DateFormat", f);
+        p.set("IsAnalog", analog);
+        p.set("FlashDateSeparators", flash && flash->checked());
+    };
+    for (CheckBox *c : {date, seconds, ampm, weekday, flash, h24})
+        if (c)
+            c->onToggle = [update](CheckBox *) { update(); };
+    visible->onToggle = [update](CheckBox *c) {
+        showMenuExtra(ClockExtra, c->checked());
+        update();
+    };
+    if (style)
+        style->onSelect = [update](int) { update(); };
+    // the enabled states, without writing the preferences yet
+    const bool on = visible->checked(), analog = style && style->selected() == 1;
+    for (CheckBox *c : {date, seconds, ampm, weekday, flash, h24})
+        if (c)
+            c->setEnabled(on && !analog);
+    if (ampm && h24)
+        ampm->setEnabled(on && !analog && !h24->checked());
+}
+
 // ---- Energy Saver: what this computer has (a battery? two graphics cards: no)
 
 void energy(NibPane &p)
 {
+    // Show battery status in the menu bar (-changedMenuExtraCheckbox:): Battery.menu in the bar
+    for (View *v : p.nib.withAction("changedMenuExtraCheckbox:"))
+        if (auto *c = dynamic_cast<CheckBox *>(v)) {
+            c->setChecked(menuExtraShown(BatteryExtra));
+            c->onToggle = [](CheckBox *b) { showMenuExtra(BatteryExtra, b->checked()); };
+        }
     for (const char *o : {"_gfxmuxMatrix", "_graphicsLabel", "_batteryHealthAlertIcon"})
         if (View *v = p.nib.outlet(o))
             v->setHidden(true);
@@ -730,6 +844,8 @@ void dateTimeParts(NibPane &p)
             }
         std::replace(label.begin(), label.end(), '\n', ' ');
         tabs->addTab(label, view);
+        if (std::string(part) == "ClockPref")
+            clockPart(*nib);
         p.parts.push_back(std::move(nib));
     }
     tabs->select(0);

@@ -99,9 +99,12 @@ private:
         double pad, box, labelWidth, labelHeight, lineHeight;
         int lines;
         AK::Size grid;
+        double cellWidth = 0;   // labels at the bottom: ImageKit's cell, without the spacing
     };
     Metrics metrics() const;
     int columns() const;
+    int columnsFor(double width, const Metrics &m) const;
+    AK::Point spotFor(int cell, int cols, const Metrics &m) const;
     std::vector<AK::Point> place(double width) const;
     AK::Point anchor(int index) const;
     AK::Rect iconRect(int index) const;

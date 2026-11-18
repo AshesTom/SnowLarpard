@@ -146,6 +146,7 @@ Catalog load()
             a.name = text("Name");
             a.exec = splitExec(text("Exec"));
             a.iconName = text("Icon");
+            a.shown = text("NoDisplay") != "true";
             a.wmClass = text("StartupWMClass");
             if (a.wmClass.isEmpty() && !a.exec.isEmpty())
                 a.wmClass = QFileInfo(a.exec.first()).fileName();

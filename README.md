@@ -45,7 +45,7 @@ It follows the same idea as Winedows' native shell (XP) and the Aqua session of 
 
 | Program | What it is | Built on |
 |---|---|---|
-| **SystemUIServer** | The menu bar: the Apple menu, the applications' menus, the menu extras | Qt 6 |
+| **SystemUIServer** | The menu bar: the Apple menu, the applications' menus, the menu extras, Spotlight | AquaKit |
 | **Dock** | The 3D glass Dock, Stacks, magnification, its dark menus | Qt 6 |
 | **WindowServer** | The window manager and compositor: 10.6's title bars and shadows | Qt 6, xcb |
 | **Finder** | The desktop picture, and the browser windows in all four views | Qt 6 / AquaKit |
@@ -332,16 +332,18 @@ sl.sh                 runs everything in a window of your desktop
 install.sh            installs the session for the login screen
 session/              snowleopard-session: the X session; snowleopard-wayland: it from a Wayland login
 tools/extract.py      takes the files out of the DVD (partition map, HFS+, xar, cpio), and an update's
+tools/cursors.py      10.6's cursors (CoreGraphics', HIServices') as the session's Xcursor theme
 tools/softwareupdate.py  Apple's update catalog: what applies, its download, its installation
 shell/src/common      aquashell, shared by every program (assets, apps, X11, session)
-shell/src/menubar     SystemUIServer.app
-shell/src/menuextras  the menu extras' bundles (Clock, Battery, Volume, AirPort, Bluetooth .menu)
+shell/src/systemuiserver  SystemUIServer.app (the menu bar, its extras, Spotlight)
 shell/src/systemuiplugin  SystemUIPlugin.framework (NSMenuExtra)
+shell/src/menuextras  the .menu bundles (AirPort and Bluetooth with code)
+shell/src/linux       Linux's glue: the windows (EWMH), D-Bus (sd-bus), the Aqua style for Qt applications
 shell/src/privateframeworks  Apple80211's ClientDialogs.bundle
 shell/src/dock        Dock.app
 shell/src/windowserver  WindowServer
 shell/src/finder      Finder.app (the desktop, and browser/ for its windows)
-shell/src/frameworks  AquaKit: Foundation, CoreGraphics, CoreText, CoreUI, AppKit (one library each)
+shell/src/frameworks  AquaKit: Foundation, CoreGraphics, CoreText, CoreServices, CoreUI, AppKit (one library each)
 shell/src/prefs       System Preferences.app
 shell/src/preview     Preview.app
 shell/src/loginwindow About This Mac

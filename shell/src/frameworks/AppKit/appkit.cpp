@@ -178,7 +178,12 @@ void View::render(cairo_t *cr)
 namespace {
 
 struct RootView : View {
-    void draw(cairo_t *cr) override { fill(cr, bounds(), Color::gray(237)); }   // the window's 237 grey
+    void draw(cairo_t *cr) override
+    {
+        // the window's 237 grey; a status window has none (its items over the menu bar)
+        if (!window() || window()->kind() != Window::Status)
+            fill(cr, bounds(), Color::gray(237));
+    }
 };
 
 // The title bar's buttons (WindowServer's): 14 x 16, 21 apart from 8 in, 3 down; the toolbar button
@@ -264,7 +269,20 @@ void Window::nativeResize(Size surface)
 
 void Window::setIcon(const Image &icon) { m_native->setIcon(icon); }
 
-void Window::setFloatingPanel() { m_native->setFloatingPanel(); }
+void Window::setFloatingPanel(bool utility) { m_native->setFloatingPanel(utility); }
+
+void Window::setStyleMask(unsigned mask)
+{
+    m_titleButtons = (mask & (2 | 4 | 8)) != 0;
+    m_native->setTitleButtons(m_titleButtons);
+    invalidate();
+}
+
+void Window::setStatusBar(int top, int bottom)
+{
+    setBorderless();
+    m_native->setStatusBar(top, bottom);
+}
 
 void Window::setBorderless()
 {
@@ -418,7 +436,7 @@ void Window::drawTitleBar(cairo_t *cr)
         fill(cr, Rect{0, TitleBar - 1, w, 1}, Color::gray(active ? 153 : 186));
     }
     static const char *const names[] = {"close", "minimize", "zoom"};
-    for (int b = 0; b < 3; ++b) {
+    for (int b = 0; b < (m_titleButtons ? 3 : 0); ++b) {
         std::vector<std::string> path{"titlebarcontrols", b == 0 && m_edited ? "closedirty" : names[b], "colorsryg", "regularwin"};
         if (!active)
             path.push_back("inactive");
@@ -478,7 +496,7 @@ void Window::drawSizeBox(cairo_t *cr)
 
 int Window::titleButtonAt(Point p) const
 {
-    for (int b = 0; b < 3; ++b)
+    for (int b = 0; b < (m_titleButtons ? 3 : 0); ++b)
         if (Rect{ButtonLeft + b * ButtonPitch, ButtonTop, ButtonWidth, ButtonHeight}.contains(p))
             return b;
     if (m_toolbarButton && Rect{m_size.w - ToolbarButtonRight - ToolbarButtonWidth, ToolbarButtonTop, ToolbarButtonWidth, ToolbarButtonHeight}.contains(p))
@@ -554,6 +572,15 @@ void Window::dispatchMouse(Event &e, Point p, bool press, bool release, bool mot
                 m_hover->mouseExited(x);
             }
             m_hover = hit;
+            // the cursor rectangles: the view's cursor, else its superviews', else the arrow
+            const char *name = nullptr;
+            for (View *v = hit; v && !name; v = v->superview())
+                name = v->cursor();
+            const std::string cursor = name ? name : "default";
+            if (cursor != m_cursor) {
+                m_cursor = cursor;
+                m_native->setCursor(cursor);
+            }
         }
         if (hit)
             local(hit)->mouseMoved(e);

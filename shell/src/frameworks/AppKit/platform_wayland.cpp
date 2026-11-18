@@ -67,6 +67,8 @@ public:
     WlWindow *pointerFocus = nullptr, *keyboardFocus = nullptr;
     Point pointerAt;
     uint32_t lastSerial = 0;
+    uint32_t enterSerial = 0;          // the pointer's enter, for wl_pointer_set_cursor
+    std::string cursorName = "default";
     int repeatRate = 25, repeatDelay = 400, repeatTimer = 0;
     bool reading = false;
 
@@ -282,6 +284,7 @@ public:
     }
 
     void setRoundedBottomCorners(bool rounded) override { m_roundedBottom = rounded; }
+    void setCursor(const std::string &name) override;
     void setActive(bool active)
     {
         if (active != m_active)
@@ -502,6 +505,15 @@ WlWindow *WlPlatform::find(wl_surface *s) const
     return nullptr;
 }
 
+void WlWindow::setCursor(const std::string &name)
+{
+    if (wl->cursorName == name)
+        return;
+    wl->cursorName = name;
+    if (wl->pointerFocus == this)
+        wl->setCursor(wl->enterSerial, kind == Window::FullScreen);
+}
+
 void WlPlatform::setCursor(uint32_t serial, bool hidden)
 {
     if (!pointer)
@@ -515,9 +527,12 @@ void WlPlatform::setCursor(uint32_t serial, bool hidden)
         cursorTheme = wl_cursor_theme_load(std::getenv("XCURSOR_THEME"), size ? std::atoi(size) : 24, shm);
         cursorSurface = wl_compositor_create_surface(compositor);
     }
-    wl_cursor *c = cursorTheme ? wl_cursor_theme_get_cursor(cursorTheme, "left_ptr") : nullptr;
+    enterSerial = serial;
+    wl_cursor *c = cursorTheme ? wl_cursor_theme_get_cursor(cursorTheme, cursorName.c_str()) : nullptr;
     if (!c && cursorTheme)
         c = wl_cursor_theme_get_cursor(cursorTheme, "default");
+    if (!c && cursorTheme)
+        c = wl_cursor_theme_get_cursor(cursorTheme, "left_ptr");
     if (!c || !c->image_count)
         return;
     wl_cursor_image *img = c->images[0];

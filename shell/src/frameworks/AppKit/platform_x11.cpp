@@ -5,6 +5,7 @@
 #include "platform.h"
 
 #include <cairo-xcb.h>
+#include <xcb/xcb_cursor.h>
 #include <xcb/xcb_keysyms.h>
 #include <xkbcommon/xkbcommon.h>
 
@@ -58,6 +59,23 @@ public:
     xcb_connection_t *conn = nullptr;
     xcb_screen_t *screen = nullptr;
     xcb_visualtype_t *visual = nullptr;
+    xcb_visualtype_t *argbVisual = nullptr;
+    // the cursor theme's cursors by name (libxcb-cursor reads XCURSOR_THEME and XCURSOR_PATH)
+    xcb_cursor_context_t *cursorContext = nullptr;
+    std::map<std::string, xcb_cursor_t> cursors;
+    xcb_cursor_t cursor(const std::string &name)
+    {
+        auto it = cursors.find(name);
+        if (it != cursors.end())
+            return it->second;
+        if (!cursorContext && xcb_cursor_context_new(conn, screen, &cursorContext) < 0)
+            cursorContext = nullptr;
+        xcb_cursor_t c = cursorContext ? xcb_cursor_load_cursor(cursorContext, name.c_str()) : XCB_CURSOR_NONE;
+        if (c == XCB_CURSOR_NONE && name != "default")
+            c = cursor("default");
+        cursors[name] = c;
+        return c;
+    }   // a 32-bit TrueColor one, for the Status windows
     xcb_key_symbols_t *keySymbols = nullptr;
     std::vector<X11Window *> windows;
 
@@ -149,10 +167,22 @@ public:
         const uint32_t events = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
                                 XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_KEY_PRESS |
                                 XCB_EVENT_MASK_FOCUS_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
-        const uint32_t values[] = {XCB_BACK_PIXMAP_NONE, XCB_GRAVITY_NORTH_WEST, uint32_t(kind != Window::Titled),
-                                   uint32_t(kind == Window::Menu), events};
-        xcb_create_window(p.conn, XCB_COPY_FROM_PARENT, m_id, p.screen->root, 0, 0, uint16_t(size.w), uint16_t(size.h), 0,
-                          XCB_WINDOW_CLASS_INPUT_OUTPUT, p.screen->root_visual, mask, values);
+        m_argb = kind == Window::Status && p.argbVisual;
+        if (m_argb) {
+            // a 32-bit window: its own colormap, a border pixel, transparent until drawn
+            const xcb_colormap_t colormap = xcb_generate_id(p.conn);
+            xcb_create_colormap(p.conn, XCB_COLORMAP_ALLOC_NONE, colormap, p.screen->root, p.argbVisual->visual_id);
+            const uint32_t argbMask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_BIT_GRAVITY | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP;
+            const uint32_t argbValues[] = {0, 0, XCB_GRAVITY_NORTH_WEST, events, colormap};
+            xcb_create_window(p.conn, 32, m_id, p.screen->root, 0, 0, uint16_t(size.w), uint16_t(size.h), 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, p.argbVisual->visual_id, argbMask, argbValues);
+            xcb_free_colormap(p.conn, colormap);
+        } else {
+            const uint32_t values[] = {XCB_BACK_PIXMAP_NONE, XCB_GRAVITY_NORTH_WEST, uint32_t(kind != Window::Titled && kind != Window::Status),
+                                       uint32_t(kind == Window::Menu), events};
+            xcb_create_window(p.conn, XCB_COPY_FROM_PARENT, m_id, p.screen->root, 0, 0, uint16_t(size.w), uint16_t(size.h), 0,
+                              XCB_WINDOW_CLASS_INPUT_OUTPUT, p.screen->root_visual, mask, values);
+        }
         const xcb_atom_t protocols[] = {p.atom("WM_DELETE_WINDOW")};
         p.property(m_id, "WM_PROTOCOLS", XCB_ATOM_ATOM, 32, 1, protocols);
         // WM_CLASS: the program's name twice (the Dock knows the shell's own applications by it)
@@ -161,8 +191,20 @@ public:
         xcb_change_property(p.conn, XCB_PROP_MODE_REPLACE, m_id, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, uint32_t(cls.size()), cls.data());
         const uint32_t pid = uint32_t(getpid());
         p.property(m_id, "_NET_WM_PID", XCB_ATOM_CARDINAL, 32, 1, &pid);
-        const xcb_atom_t type = p.atom(kind == Window::Menu ? "_NET_WM_WINDOW_TYPE_POPUP_MENU" : "_NET_WM_WINDOW_TYPE_NORMAL");
+        const xcb_atom_t type = p.atom(kind == Window::Menu ? "_NET_WM_WINDOW_TYPE_POPUP_MENU"
+                                       : kind == Window::Status ? "_NET_WM_WINDOW_TYPE_DOCK"
+                                                                : "_NET_WM_WINDOW_TYPE_NORMAL");
         p.property(m_id, "_NET_WM_WINDOW_TYPE", XCB_ATOM_ATOM, 32, 1, &type);
+        if (kind == Window::Status) {
+            // over the menu bar on every desktop, no frame, out of the task bar
+            const xcb_atom_t state[] = {p.atom("_NET_WM_STATE_ABOVE"), p.atom("_NET_WM_STATE_STICKY"),
+                                        p.atom("_NET_WM_STATE_SKIP_TASKBAR"), p.atom("_NET_WM_STATE_SKIP_PAGER")};
+            p.property(m_id, "_NET_WM_STATE", XCB_ATOM_ATOM, 32, 4, state);
+            const uint32_t all = 0xFFFFFFFF;
+            p.property(m_id, "_NET_WM_DESKTOP", XCB_ATOM_CARDINAL, 32, 1, &all);
+            const uint32_t motif[5] = {2, 0, 0, 0, 0};
+            p.property(m_id, "_MOTIF_WM_HINTS", p.atom("_MOTIF_WM_HINTS"), 32, 5, motif);
+        }
         if (kind == Window::Titled) {
             // WM_NORMAL_HINTS: a fixed size (System Preferences' window doesn't resize)
             uint32_t hints[18] = {};
@@ -180,7 +222,7 @@ public:
             xcb_change_window_attributes(p.conn, m_id, XCB_CW_CURSOR, &blank);
             xcb_free_pixmap(p.conn, empty);
         }
-        m_surface = cairo_xcb_surface_create(p.conn, m_id, p.visual, int(size.w), int(size.h));
+        m_surface = cairo_xcb_surface_create(p.conn, m_id, m_argb ? p.argbVisual : p.visual, int(size.w), int(size.h));
         p.windows.push_back(this);
     }
     ~X11Window() override
@@ -256,9 +298,16 @@ public:
         if (!m_back || cairo_image_surface_get_width(m_back) != w || cairo_image_surface_get_height(m_back) != h) {
             if (m_back)
                 cairo_surface_destroy(m_back);
-            m_back = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w, h);
+            m_back = cairo_image_surface_create(m_argb ? CAIRO_FORMAT_ARGB32 : CAIRO_FORMAT_RGB24, w, h);
         }
-        return cairo_create(m_back);
+        cairo_t *cr = cairo_create(m_back);
+        if (m_argb) {
+            // a transparent window: each frame on nothing
+            cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+            cairo_paint(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        }
+        return cr;
     }
     void endPaint(cairo_t *cr) override
     {
@@ -333,10 +382,11 @@ public:
         cairo_xcb_surface_set_size(m_surface, int(size.w), int(size.h));
         m_window->nativeResize(size);
     }
-    void setFloatingPanel() override
+    void setFloatingPanel(bool utility) override
     {
-        // a utility window above the others, on every desktop, not in the Dock's list
-        const xcb_atom_t type = X->atom("_NET_WM_WINDOW_TYPE_UTILITY");
+        // a utility window (or a dialog's regular title bar) above the others, on every desktop, not
+        // in the Dock's list
+        const xcb_atom_t type = X->atom(utility ? "_NET_WM_WINDOW_TYPE_UTILITY" : "_NET_WM_WINDOW_TYPE_DIALOG");
         X->property(m_id, "_NET_WM_WINDOW_TYPE", XCB_ATOM_ATOM, 32, 1, &type);
         const xcb_atom_t state[] = {X->atom("_NET_WM_STATE_ABOVE"), X->atom("_NET_WM_STATE_SKIP_TASKBAR"), X->atom("_NET_WM_STATE_STICKY")};
         X->property(m_id, "_NET_WM_STATE", XCB_ATOM_ATOM, 32, 3, state);
@@ -347,11 +397,45 @@ public:
         hints[6] = hints[8] = uint32_t(m_size.h);
         X->property(m_id, "WM_NORMAL_HINTS", X->atom("WM_SIZE_HINTS"), 32, 18, hints);
     }
+    void setTitleButtons(bool shown) override
+    {
+        // _MOTIF_WM_HINTS: flags MWM_HINTS_FUNCTIONS, functions MWM_FUNC_MOVE alone (no close, minimize
+        // nor maximize: WindowServer draws no buttons), the decorations left to it
+        if (shown) {
+            xcb_delete_property(X->conn, m_id, X->atom("_MOTIF_WM_HINTS"));
+            return;
+        }
+        const uint32_t motif[5] = {1, 4, 0, 0, 0};
+        X->property(m_id, "_MOTIF_WM_HINTS", X->atom("_MOTIF_WM_HINTS"), 32, 5, motif);
+    }
     void setBorderless() override
     {
         // _MOTIF_WM_HINTS: flags MWM_HINTS_DECORATIONS, decorations none (WindowServer draws no frame)
         const uint32_t motif[5] = {2, 0, 0, 0, 0};
         X->property(m_id, "_MOTIF_WM_HINTS", X->atom("_MOTIF_WM_HINTS"), 32, 5, motif);
+    }
+    void setStatusBar(int top, int bottom) override
+    {
+        // EWMH: a dock, above, sticky, out of the task bar; its strut (_NET_WM_STRUT_PARTIAL: left,
+        // right, top, bottom, then each one's start and end) across the screen's width
+        const xcb_atom_t type = X->atom("_NET_WM_WINDOW_TYPE_DOCK");
+        X->property(m_id, "_NET_WM_WINDOW_TYPE", XCB_ATOM_ATOM, 32, 1, &type);
+        const xcb_atom_t state[] = {X->atom("_NET_WM_STATE_ABOVE"), X->atom("_NET_WM_STATE_STICKY"),
+                                    X->atom("_NET_WM_STATE_SKIP_TASKBAR"), X->atom("_NET_WM_STATE_SKIP_PAGER")};
+        X->property(m_id, "_NET_WM_STATE", XCB_ATOM_ATOM, 32, 4, state);
+        const uint32_t all = 0xFFFFFFFF;
+        X->property(m_id, "_NET_WM_DESKTOP", XCB_ATOM_CARDINAL, 32, 1, &all);
+        const uint32_t width = X->screen->width_in_pixels;
+        const uint32_t strut[12] = {0, 0, uint32_t(top), uint32_t(bottom), 0, 0, 0, 0, 0, width - 1, 0, width - 1};
+        X->property(m_id, "_NET_WM_STRUT_PARTIAL", XCB_ATOM_CARDINAL, 32, 12, strut);
+        X->property(m_id, "_NET_WM_STRUT", XCB_ATOM_CARDINAL, 32, 4, strut);
+        xcb_flush(X->conn);
+    }
+    void setCursor(const std::string &name) override
+    {
+        const uint32_t c = X->cursor(name);
+        xcb_change_window_attributes(X->conn, m_id, XCB_CW_CURSOR, &c);
+        xcb_flush(X->conn);
     }
     void setOpacity(double alpha) override
     {
@@ -444,6 +528,7 @@ private:
     xcb_window_t m_id = 0;
     cairo_surface_t *m_surface = nullptr;
     cairo_surface_t *m_back = nullptr;   // what is drawn, before it goes to the display
+    bool m_argb = false;                 // a Status window's 32 bits
     bool m_grabbed = false;
     bool m_resizable = false;
     bool m_mapped = false;
@@ -585,6 +670,13 @@ std::unique_ptr<Platform> Platform::x11()
             }
     if (!p->visual)
         return nullptr;
+    for (xcb_depth_iterator_t d = xcb_screen_allowed_depths_iterator(p->screen); d.rem && !p->argbVisual; xcb_depth_next(&d))
+        if (d.data->depth == 32)
+            for (xcb_visualtype_iterator_t v = xcb_depth_visuals_iterator(d.data); v.rem; xcb_visualtype_next(&v))
+                if (v.data->_class == XCB_VISUAL_CLASS_TRUE_COLOR) {
+                    p->argbVisual = v.data;
+                    break;
+                }
     p->keySymbols = xcb_key_symbols_alloc(p->conn);
     X = p.get();
     return p;

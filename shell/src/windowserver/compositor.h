@@ -35,6 +35,9 @@ public:
     bool running() const { return m_overlay != 0; }
     // A top-level window drawn at this opacity (-[NSWindow setAlphaValue:]), 1 for opaque
     void setOpacity(xcb_window_t frame, double opacity);
+    // What shows where no window is (the root's background pixmap: the desktop picture, until the
+    // Finder's desktop covers it), instead of black; 0 for black
+    void setBackground(xcb_pixmap_t pixmap);
 
     // Minimizing, as 10.6's Dock has the window server do it (WAWindow genie:direction:genie: and
     // setSystemFrame:from:, docs/reverse-status.md): the window's picture kept when it goes, drawn
@@ -111,7 +114,7 @@ private:
     xcb_render_pictformat_t m_a8 = 0, m_rootFormat = 0;
     QHash<xcb_visualid_t, xcb_render_pictformat_t> m_visualFormats;
     QHash<xcb_render_pictformat_t, bool> m_formatAlpha;
-    xcb_render_picture_t m_overlayPicture = 0, m_buffer = 0, m_black = 0;
+    xcb_render_picture_t m_overlayPicture = 0, m_buffer = 0, m_black = 0, m_background = 0;
     uint8_t m_depth = 24;
     xcb_atom_t m_mirrorAtom = 0;
     xcb_xfixes_region_t m_damage = 0, m_scratch = 0;

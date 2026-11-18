@@ -17,7 +17,8 @@ std::string path(const std::string &macPath);
 bool exists(const std::string &macPath);
 // A .strings table of a bundle (extract.py converts them to JSON beside them)
 std::string tr(const std::string &bundle, const std::string &table, const std::string &key, const std::string &fallback);
-// A plist's top-level strings (extract.py's JSON beside it: Info.plist.json)
+// A plist's top-level strings, numbers and booleans as text (extract.py's JSON beside it:
+// Info.plist.json)
 std::map<std::string, std::string> plistStrings(const std::string &macPath);
 } // namespace Assets
 

@@ -37,7 +37,8 @@ private:
         xcb_window_t window = 0, frame = 0, grip = 0;
         QRect geometry;          // the client's, in root coordinates (the title bar is above it)
         QString title;
-        bool decorated = true;   // false: the application draws its own (Motif hints, no decorations)
+        bool decorated = true;
+        bool buttons = true;     // the close, minimize and zoom buttons (Motif hints' functions)   // false: the application draws its own (Motif hints, no decorations)
         int unifiedToolbar = 0;  // a toolbar continuing the title bar (_SNOWLEOPARD_UNIFIED_TOOLBAR): its height
         bool hasToolbar = false; // its second value: the window has a toolbar, shown or not (the toolbar button)
         QImage proxyIcon;        // the represented file's icon before the title (_SNOWLEOPARD_PROXY_ICON)
@@ -91,6 +92,7 @@ private:
     void updateWorkArea();
     void setActiveProperty(xcb_window_t w);
     void grabKeys();
+    void paintDesktopPicture();
     void handleKey(xcb_key_press_event_t *e);
 
     void buttonPress(xcb_button_press_event_t *e);

@@ -2,8 +2,12 @@
 #include "aqua.h"
 #include "windowserver.h"
 
+#include <xcb/xcb_cursor.h>
+
 #include "artfile.h"
 #include "assets.h"
+#include "session.h"
+#include "desktopsettings.h"
 #include "x11.h"
 
 #include <QCoreApplication>
@@ -60,6 +64,28 @@ bool WindowServer::start()
         return false;
     }
     QCoreApplication::instance()->installNativeEventFilter(this);
+    // the arrow over the desktop and the frames (which inherit the root's): the cursor theme's
+    // (XCURSOR_THEME, the session's Snow Leopard cursors from CoreGraphics and HIServices)
+    // the theme in the X resources (Xcursor.theme, Xcursor.size), where libxcb-cursor and the
+    // applications' toolkits look, as a session's xrdb would put it
+    if (const char *theme = std::getenv("XCURSOR_THEME")) {
+        const char *size = std::getenv("XCURSOR_SIZE");
+        QByteArray resources;
+        for (const QByteArray &line : X11::bytes(m_root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING).split('\n'))
+            if (!line.isEmpty() && !line.startsWith("Xcursor.theme:") && !line.startsWith("Xcursor.size:"))
+                resources += line + '\n';
+        resources += QByteArray("Xcursor.theme:\t") + theme + "\nXcursor.size:\t" + (size ? size : "24") + "\n";
+        xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, m_root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING, 8,
+                            uint32_t(resources.size()), resources.constData());
+        xcb_flush(m_conn);
+    }
+    xcb_cursor_context_t *cursors = nullptr;
+    if (xcb_cursor_context_new(m_conn, setup, &cursors) >= 0) {
+        const uint32_t arrow = xcb_cursor_load_cursor(cursors, "default");
+        if (arrow != XCB_CURSOR_NONE)
+            xcb_change_window_attributes(m_conn, m_root, XCB_CW_CURSOR, &arrow);
+        xcb_cursor_context_free(cursors);
+    }
 
     // The compositor: the windows' shadows. A frame's is the key window's or another window's, a
     // panel's the other style's; none in full screen. Without it (no Composite, or another
@@ -74,6 +100,10 @@ bool WindowServer::start()
             return int(Compositor::PanelShadow);
         return int(c == m_active ? Compositor::KeyShadow : Compositor::WindowShadow);
     });
+
+    // the desktop picture at once, where the session would otherwise be black until the Finder's
+    // desktop is up (as the Mac's login shows the picture before the menu bar and the Dock)
+    paintDesktopPicture();
 
     // EWMH: who we are, what we do
     m_check = xcb_generate_id(m_conn);
@@ -253,6 +283,33 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     updateClientLists();
 }
 
+void WindowServer::paintDesktopPicture()
+{
+    if (m_screen.isEmpty())
+        return;
+    QImage img = Desktop::render(Desktop::load(), m_screen.size()).convertToFormat(QImage::Format_RGB32);
+    if (img.size() != m_screen.size())
+        return;
+    const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+    xcb_create_pixmap(m_conn, m_depth, pixmap, m_root, uint16_t(img.width()), uint16_t(img.height()));
+    const xcb_gcontext_t gc = xcb_generate_id(m_conn);
+    xcb_create_gc(m_conn, gc, pixmap, 0, nullptr);
+    const uint32_t maxBytes = xcb_get_maximum_request_length(m_conn) * 4 - 64;
+    const int rowsPerRequest = qMax(1, int(maxBytes / uint32_t(img.bytesPerLine())));
+    for (int y = 0; y < img.height(); y += rowsPerRequest) {
+        const int rows = qMin(rowsPerRequest, img.height() - y);
+        xcb_put_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, gc, uint16_t(img.width()), uint16_t(rows), 0, int16_t(y), 0,
+                      m_depth, uint32_t(img.bytesPerLine() * rows), img.constScanLine(y));
+    }
+    xcb_free_gc(m_conn, gc);
+    // the root's background (without the compositor, or before it draws), and the compositor's
+    xcb_change_window_attributes(m_conn, m_root, XCB_CW_BACK_PIXMAP, &pixmap);
+    xcb_clear_area(m_conn, 0, m_root, 0, 0, 0, 0);
+    m_compositor.setBackground(pixmap);
+    xcb_free_pixmap(m_conn, pixmap);   // the root and the picture keep it
+    xcb_flush(m_conn);
+}
+
 void WindowServer::unmanage(Client *c, bool destroyed)
 {
     if (!destroyed) {
@@ -303,6 +360,9 @@ void WindowServer::readProperties(Client *c)
     // _MOTIF_WM_HINTS: flags, functions, decorations; decorations 0 means the program draws its own
     QVector<uint32_t> motif = X11::cardinals(c->window, atom("_MOTIF_WM_HINTS"), atom("_MOTIF_WM_HINTS"));
     c->decorated = !(motif.size() >= 3 && (motif[0] & 2) && motif[2] == 0);
+    // functions without MWM_FUNC_ALL (1), MWM_FUNC_MINIMIZE (8), MWM_FUNC_MAXIMIZE (16) nor
+    // MWM_FUNC_CLOSE (32): a titled window without buttons (AppKit hides the three then)
+    c->buttons = !(motif.size() >= 2 && (motif[0] & 1) && !(motif[1] & (1 | 8 | 16 | 32)));
     c->utility = hasType(c->window, {"_NET_WM_WINDOW_TYPE_UTILITY"});
     QVector<uint32_t> unified = X11::cardinals(c->window, atom("_SNOWLEOPARD_UNIFIED_TOOLBAR"), XCB_ATOM_CARDINAL);
     c->unifiedToolbar = unified.isEmpty() ? 0 : int(unified[0]);
@@ -440,7 +500,7 @@ int WindowServer::buttonAt(const Client *c, QPoint p) const
 {
     if (!c->titleHeight())
         return None;
-    for (int b = Close; b <= Zoom; ++b)
+    for (int b = Close; c->buttons && b <= Zoom; ++b)
         if (buttonRect(c, b).contains(p))
             return b;
     if (c->hasToolbar &&
@@ -483,7 +543,7 @@ void WindowServer::paintTitle(Client *c)
             p.fillRect(0, th - 1, w, 1, active ? QColor(153, 153, 153) : QColor(186, 186, 186));
         }
 
-        for (int b = Close; b <= Zoom; ++b) {
+        for (int b = Close; b <= (c->buttons ? int(Zoom) : Close - 1); ++b) {
             QImage button = buttonImage(c, b);
             if (!button.isNull())
                 p.drawImage(buttonRect(c, b).topLeft(), button);
@@ -833,7 +893,14 @@ void WindowServer::grabKeys()
         for (xcb_keycode_t *k = codes; *k; ++k)
             // with and without Caps Lock and Num Lock
             for (uint16_t extra : {uint16_t(0), uint16_t(XCB_MOD_MASK_LOCK), uint16_t(XCB_MOD_MASK_2), uint16_t(XCB_MOD_MASK_LOCK | XCB_MOD_MASK_2)})
+            {
                 xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | extra), *k, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+                // ⇧⌘Q Log Out, ⌥⇧⌘Q at once (the Apple menu's: loginwindow's hot keys on the Mac)
+                if (sym == keyQ)
+                    for (uint16_t log : {uint16_t(XCB_MOD_MASK_SHIFT), uint16_t(XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_1)})
+                        xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | log | extra), *k, XCB_GRAB_MODE_ASYNC,
+                                     XCB_GRAB_MODE_ASYNC);
+            }
         free(codes);
     }
 }
@@ -841,6 +908,10 @@ void WindowServer::grabKeys()
 void WindowServer::handleKey(xcb_key_press_event_t *e)
 {
     xcb_keysym_t sym = xcb_key_symbols_get_keysym(m_keySymbols, e->detail, 0);
+    if (sym == keyQ && (e->state & XCB_MOD_MASK_SHIFT)) {
+        Session::logOut(!(e->state & XCB_MOD_MASK_1));
+        return;
+    }
     Client *c = m_active;
     auto sameApplication = [](Client *a, Client *b) { return X11::wmClass(a->window) == X11::wmClass(b->window); };
     if (sym == keyTab) {

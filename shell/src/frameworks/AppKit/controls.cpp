@@ -228,9 +228,20 @@ void SegmentedControl::setSegments(std::vector<std::string> labels, std::vector<
 
 std::vector<Rect> SegmentedControl::rects() const
 {
+    // A control wider than its segments (the nib's frame, as 10.6's Finder toolbar: 53 for 23 + 23,
+    // 111 for 25 + 26 + 26 + 25) spreads the rest over them, the odd points to the last ones (a 10.6.8
+    // Finder: Back 26 and Forward 27 between their borders)
+    double sum = 0;
+    for (double w : m_widths)
+        sum += w;
+    const size_t n = m_widths.size();
+    const double extra = n && m_style == CoreUI::SegmentStyle::Textured && frame().w > sum ? std::floor(frame().w - sum) : 0;
+    const double each = n ? std::floor(extra / double(n)) : 0;
+    const size_t odd = n ? size_t(extra - each * double(n)) : 0;
     std::vector<Rect> out;
     double x = 0;
-    for (double w : m_widths) {
+    for (size_t i = 0; i < n; ++i) {
+        const double w = m_widths[i] + each + (i >= n - odd ? 1 : 0);
         out.push_back({x, 0, w, frame().h});
         x += w;
     }
@@ -303,6 +314,7 @@ public:
     std::vector<MenuItem> items;
     Font font;
     int highlighted = -1;
+    bool fromMenuBar = false;   // a menu bar's menu: square at the top (CoreUI's)
     std::function<void(int)> done;
     double opened = now();
     bool moved = false;
@@ -310,6 +322,7 @@ public:
     int parentItem = -1;              // the item it opened from
     MenuView *child = nullptr;        // the submenu open beside it
     double keyColumn = 0;             // where the key equivalents start
+    double minWidth = 0;
 
     int itemAt(Point p, bool disabledToo = false) const
     {
@@ -317,7 +330,7 @@ public:
             return -1;
         for (size_t i = 0; i < items.size(); ++i) {
             const double top = Menu::itemTop(items, int(i));
-            const double h = items[i].separator ? Menu::SeparatorHeight : !items[i].swatches.empty() ? Menu::SwatchRowHeight : Menu::ItemHeight;
+            const double h = Menu::itemHeight(items[i]);
             if (p.y >= top && p.y < top + h)
                 return items[i].separator || (!items[i].enabled && !disabledToo) ? -1 : int(i);
         }
@@ -325,7 +338,7 @@ public:
     }
     void draw(cairo_t *cr) override
     {
-        CoreUI::menuBackground(cr, bounds());
+        CoreUI::menuBackground(cr, bounds(), fromMenuBar && !parentMenu);
         for (size_t i = 0; i < items.size(); ++i) {
             const double top = Menu::itemTop(items, int(i));
             if (items[i].separator) {
@@ -337,6 +350,8 @@ public:
                 drawSwatches(cr, items[i], top, int(i) == highlighted ? swatch : -1);
                 continue;
             }
+            if (items[i].makeView)
+                continue;   // its view draws it
             const Rect row{0, top, frame().w, Menu::ItemHeight};
             const bool hi = int(i) == highlighted;
             if (hi)
@@ -346,12 +361,21 @@ public:
             t.color = !items[i].enabled ? Color::gray(0, 0.3) : hi ? Color::gray(255) : Color::gray(0);
             if (items[i].checked)
                 drawText(cr, "✓", Rect{6, top, 14, Menu::ItemHeight}, t);
-            double x = 21;
+            double x = 21 + 10 * items[i].indentation;
             if (!items[i].image.isNull()) {
                 items[i].image.draw(cr, Rect{x, top + 1, 16, 16});
                 x += 20;
             }
-            drawText(cr, items[i].title, Rect{x, top, frame().w - x - 18, Menu::ItemHeight}, t);
+            double right = frame().w - 18;
+            if (!items[i].trailingImage.isNull()) {
+                // at the right, 12 points from the edge, white highlighted when a template
+                const Image &img = items[i].trailingImage;
+                const Rect r{std::floor(frame().w - 12 - img.width()), top + std::floor((Menu::ItemHeight - img.height()) / 2),
+                             double(img.width()), double(img.height())};
+                (hi && items[i].trailingTemplate ? img.tinted(Color::gray(255)) : img).draw(cr, r);
+                right = r.x - 10;
+            }
+            drawText(cr, items[i].title, Rect{x, top, right - x, Menu::ItemHeight}, t);
             if (!items[i].keyEquivalent.empty())
                 drawText(cr, items[i].keyEquivalent, Rect{keyColumn, top, frame().w - keyColumn - 10, Menu::ItemHeight}, t);
             if (!items[i].submenu.empty()) {
@@ -470,8 +494,11 @@ public:
             return;   // a hierarchical item only opens its submenu
         if (i >= 0 && !items[size_t(i)].swatches.empty()) {
             const int sw = swatchAt(items[size_t(i)], e.location.x);
-            if (sw >= 0)
+            if (sw >= 0) {
+                if (auto chosen = items[size_t(i)].swatchChosen)
+                    App::shared().later([chosen, sw] { chosen(sw); });
                 finish(Menu::submenuChoice(i, sw));
+            }
             return;
         }
         choose(i);
@@ -479,6 +506,10 @@ public:
     // an item of this menu chosen (-1: none): the whole chain closes
     void choose(int i)
     {
+        if (i >= 0 && size_t(i) < items.size() && items[size_t(i)].action) {
+            auto action = items[size_t(i)].action;   // after the menu closes, as NSMenu sends it
+            App::shared().later([action] { action(); });
+        }
         if (parentMenu) {
             MenuView *p = parentMenu;
             const int item = parentItem;
@@ -512,38 +543,85 @@ public:
             setNeedsDisplay();
         }
     }
-    View *hitTest(Point p) override { return frame().contains(p) ? this : nullptr; }
+    View *hitTest(Point p) override
+    {
+        if (!frame().contains(p))
+            return nullptr;
+        // an item's view (-[NSMenuItem setView:]) takes its own events
+        const Point local{p.x - frame().x, p.y - frame().y};
+        for (View *v : subviews())
+            if (View *h = v->hitTest(local))
+                return h;
+        return this;
+    }
     void finish(int index);
+    void installViews();
 };
 
 std::unique_ptr<Window> openMenu;
+MenuView *openView = nullptr;   // popUp's menu, while it is open
 std::vector<std::unique_ptr<Window>> openSubmenus;   // the open submenus, outermost first
 
-std::unique_ptr<Window> makeMenuWindow(Window *parent, Point at, const std::vector<MenuItem> &items, double minWidth, Font font,
-                                       MenuView *&view)
+// A menu's size for its items, and where its key equivalents start
+Size menuSize(const std::vector<MenuItem> &items, double minWidth, const Font &font, double *keyColumn)
 {
-    double title = 0, keys = 0;
+    double title = 0, keys = 0, trailing = 0, views = 0;
     bool images = false, arrows = false;
     for (const MenuItem &i : items) {
-        title = std::max(title, textWidth(i.title, font));
+        title = std::max(title, textWidth(i.title, font) + 10 * i.indentation);
         if (!i.swatches.empty())
             title = std::max(title, i.swatches.size() * MenuView::SwatchPitch);
         keys = std::max(keys, i.keyEquivalent.empty() ? 0.0 : textWidth(i.keyEquivalent, font));
         images = images || !i.image.isNull();
         arrows = arrows || !i.submenu.empty();
+        if (!i.trailingImage.isNull())
+            trailing = std::max(trailing, double(i.trailingImage.width()) + 10 + 12 - 30);
+        views = std::max(views, i.viewWidth);
     }
     const double left = 21 + (images ? 20 : 0);
-    double w = std::max(minWidth, left + title + 30 + (keys > 0 ? keys + 20 : 0) + (arrows ? 10 : 0));
+    double w = std::max({minWidth, views, left + title + 30 + std::max(0.0, trailing) + (keys > 0 ? keys + 20 : 0) + (arrows ? 10 : 0)});
     const double h = Menu::itemTop(items, int(items.size())) + Menu::Padding;
+    if (keyColumn)
+        *keyColumn = std::ceil(w) - 10 - keys - (arrows ? 10 : 0);
+    return {std::ceil(w), std::ceil(h)};
+}
+
+void MenuView::installViews()
+{
+    // the items' views, made anew for the menu's width
+    removeAllSubviews();
+    for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].makeView)
+            if (View *v = items[i].makeView(frame().w)) {
+                // in the item's row, the view where it put itself
+                auto *row = add<View>();
+                row->setFrame({0, Menu::itemTop(items, int(i)), frame().w, Menu::itemHeight(items[i])});
+                row->addSubview(v);
+            }
+}
+
+std::unique_ptr<Window> makeMenuWindow(Window *parent, Point at, const std::vector<MenuItem> &items, double minWidth, Font font,
+                                       MenuView *&view)
+{
+    double keyColumn = 0;
+    const Size size = menuSize(items, minWidth, font, &keyColumn);
+    const double w = size.w, h = size.h;
     auto win = std::make_unique<Window>(Size{std::ceil(w), std::ceil(h)}, "menu", Window::Menu, parent, at);
     view = win->contentView()->add<MenuView>();
     view->setFrame({0, 0, std::ceil(w), std::ceil(h)});
     view->items = items;
     view->font = font;
-    view->keyColumn = std::ceil(w) - 10 - keys - (arrows ? 10 : 0);
+    view->keyColumn = keyColumn;
+    view->minWidth = minWidth;
+    view->installViews();
     MenuView *v = view;
     win->makeFirstResponder(v);
     win->onOutsideClick = [v](Event &e) {
+        if (e.type == Event::MouseDown && Menu::trackOutside && !v->forwardToParent(e.screen)) {
+            auto track = Menu::trackOutside;
+            if (track(e))
+                return;
+        }
         if (e.type == Event::MouseDown || e.type == Event::MouseUp) {
             // a release over the menu it came from chooses there
             if (e.type == Event::MouseUp && v->parentMenu && v->forwardToParent(e.screen)) {
@@ -566,9 +644,16 @@ std::unique_ptr<Window> makeMenuWindow(Window *parent, Point at, const std::vect
         }
     };
     win->onMouseMovedOutside = [v](Event &e) {
-        if (!v->forwardToParent(e.screen) && v->highlighted >= 0 && !v->child) {
-            v->highlighted = -1;
-            v->setNeedsDisplay();
+        if (!v->forwardToParent(e.screen)) {
+            if (Menu::trackOutside) {
+                auto track = Menu::trackOutside;
+                if (track(e))
+                    return;
+            }
+            if (v->highlighted >= 0 && !v->child) {
+                v->highlighted = -1;
+                v->setNeedsDisplay();
+            }
         }
     };
     return win;
@@ -618,6 +703,10 @@ void MenuView::finish(int index)
     auto cb = done;
     Window *w = window();
     done = nullptr;
+    if (openView == this)
+        openView = nullptr;
+    if (!parentMenu)
+        Menu::trackOutside = nullptr;
     // its window goes after this event
     App::shared().later([] { openMenu.reset(); });
     if (w)
@@ -628,12 +717,48 @@ void MenuView::finish(int index)
 
 } // namespace
 
+double Menu::itemHeight(const MenuItem &item)
+{
+    if (item.makeView)
+        return item.viewHeight;
+    return item.separator ? SeparatorHeight : !item.swatches.empty() ? SwatchRowHeight : ItemHeight;
+}
+
 double Menu::itemTop(const std::vector<MenuItem> &items, int index)
 {
     double y = Padding;
     for (int i = 0; i < index && size_t(i) < items.size(); ++i)
-        y += items[size_t(i)].separator ? SeparatorHeight : !items[size_t(i)].swatches.empty() ? SwatchRowHeight : ItemHeight;
+        y += itemHeight(items[size_t(i)]);
     return y;
+}
+
+bool Menu::isOpen() { return openView != nullptr; }
+
+std::function<bool(Event &)> Menu::trackOutside;
+
+void Menu::update(const std::vector<MenuItem> &items)
+{
+    MenuView *v = openView;
+    if (!v || !v->window())
+        return;
+    v->closeChild();
+    double keyColumn = 0;
+    const Size size = menuSize(items, std::max(v->minWidth, v->frame().w), v->font, &keyColumn);
+    v->items = items;
+    v->keyColumn = keyColumn;
+    if (v->highlighted >= int(items.size()) || (v->highlighted >= 0 && (items[size_t(v->highlighted)].separator ||
+                                                                       !items[size_t(v->highlighted)].enabled)))
+        v->highlighted = -1;
+    v->setFrame({0, 0, size.w, size.h});
+    v->window()->setContentSize(size);
+    v->installViews();
+    v->setNeedsDisplay();
+}
+
+void Menu::close()
+{
+    if (openView)
+        openView->root()->finish(-1);
 }
 
 void Menu::popUp(Window *parent, Point at, const std::vector<MenuItem> &items, double minWidth, Font font, std::function<void(int)> done)
@@ -641,7 +766,9 @@ void Menu::popUp(Window *parent, Point at, const std::vector<MenuItem> &items, d
     // the window system keeps it on the screen (X11: under the menu bar; Wayland: the compositor slides it)
     MenuView *v = nullptr;
     openMenu = makeMenuWindow(parent, at, items, minWidth, font, v);
+    v->fromMenuBar = Menu::trackOutside != nullptr;   // the menu bar tracks its menus
     v->done = std::move(done);
+    openView = v;
     openMenu->show();
     openMenu->grabInput();
 }

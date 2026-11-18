@@ -19,6 +19,10 @@ struct Item {
 
 // Go > Computer's place: not a folder, the disks (TNode's computer node)
 constexpr const char *ComputerFolder = "computer:";
+// Applications' place: the system's applications folder, listed with every other XDG applications
+// folder's entries (the user's, the Flatpaks')
+constexpr const char *ApplicationsFolder = "/usr/share/applications";
+std::vector<std::string> applicationDirs();
 
 // A folder's visible items (no dot files: the Finder hides them), by name as the Finder sorts them
 std::vector<Item> list(const std::string &folder);

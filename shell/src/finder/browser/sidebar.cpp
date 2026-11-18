@@ -155,6 +155,8 @@ void Sidebar::draw(cairo_t *cr)
     // kCUIVariantGradientSideBar: _kPairs 0x1A (active), 0x1C (inactive); CoreUI's gradients are Generic
     // RGB (ShadeRectColorFunction: _CUIColorSpaceGetRGB), matched to the screen
     fill(cr, bounds(), active ? Color::generic(214, 221, 229) : Color::genericGray(232));
+    // its last column darkened by the divider beside it (a 10.6.8 Finder: 222/228/234 → 206/210/214)
+    fill(cr, Rect{frame().w - 1, 0, 1, frame().h}, Color::gray(0, 0.072));
     for (size_t i = 0; i < rows.size(); ++i) {
         const Row &r = rows[i];
         const double y = rowTop(i);
@@ -177,9 +179,11 @@ void Sidebar::draw(cairo_t *cr)
         TextStyle t;
         if (r.header) {
             // the headers: bold 11, grey-blue, engraved, after their disclosure triangle (open: pointing
-            // down, 7 wide, in the header's colour); places measured on a 10.6 screenshot
+            // down, 7 wide, lighter than the text); places and colours measured on a 10.6.8 Finder (the
+            // text 119/134/150, the triangle 157/168/179, as the screen shows them)
             t.font = Font::boldSystem(11);
-            t.color = active ? Color::rgb(112, 126, 140) : Color::gray(130);
+            t.color = active ? Color::rgb(119, 134, 150) : Color::gray(130);
+            const Color triangle = active ? Color::rgb(157, 168, 179) : Color::gray(170);
             t.engraved = true;
             t.engravedAlpha = 0.6;
             for (int pass = 0; pass < 2; ++pass) {
@@ -191,19 +195,19 @@ void Sidebar::draw(cairo_t *cr)
                 if (pass == 0)
                     cairo_set_source_rgba(cr, 1, 1, 1, 0.6);
                 else
-                    t.color.set(cr);
+                    triangle.set(cr);
                 cairo_fill(cr);
             }
             drawText(cr, r.title, Rect{20, y + 2, frame().w - 24, RowHeight - 3}, t);
             continue;
         }
         if (!r.icon.isNull())
-            r.icon.draw(cr, Rect{23, y + 2, 16, 16});
+            r.icon.draw(cr, Rect{23, y + 1, 16, 16});   // a 10.6.8 Finder: its art's top 3 under the row's
         t.font = selected ? Font::boldSystem(11) : Font::system(11);
         t.color = selected ? Color::gray(255) : Color::gray(0);
         t.engraved = !selected;
         const double right = r.ejectable ? frame().w - 24 : frame().w - 6;
-        drawText(cr, r.title, Rect{43, y + 1, right - 43, RowHeight - 1}, t);
+        drawText(cr, r.title, Rect{43, y, right - 43, RowHeight - 1}, t);
         if (r.ejectable) {
             // the eject button: a triangle over a bar, in the text's colour
             const double ex = frame().w - 18, ey = y + 5;

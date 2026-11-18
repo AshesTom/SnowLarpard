@@ -30,6 +30,16 @@ trap cleanup EXIT
 trap 'exit 143' TERM INT HUP
 
 export XDG_CURRENT_DESKTOP=SnowLeopard XDG_SESSION_DESKTOP=SnowLeopard
+# 10.6's cursors (the window server's and HIServices', extract.py's theme), for the shell, AquaKit
+# and the Qt and GTK applications alike
+if [[ -d $SNOWLEOPARD_ASSETS/share/icons/SnowLeopard/cursors ]]; then
+    export XCURSOR_PATH="$SNOWLEOPARD_ASSETS/share/icons:${XCURSOR_PATH:-$HOME/.local/share/icons:$HOME/.icons:/usr/share/icons}"
+    export XCURSOR_THEME=SnowLeopard XCURSOR_SIZE=24
+fi
+# Linux's Qt 6 applications in Aqua: AquaStyle as a style plugin (apps/Linux/qt6/styles/aquastyle.so)
+if [[ -e $apps/Linux/qt6/styles/aquastyle.so ]]; then
+    export QT_PLUGIN_PATH="$apps/Linux/qt6${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}" QT_STYLE_OVERRIDE=Aqua
+fi
 export QT_QPA_PLATFORM=xcb
 # an X session: AquaKit's applications (System Preferences) on its display too, under WindowServer
 export AQUAKIT_PLATFORM=x11
@@ -72,7 +82,8 @@ while :; do
     # SystemUIServer first: its registrar must be there before applications start
     "$apps/SystemUIServer.app/Contents/MacOS/SystemUIServer" >"$state/SystemUIServer.log" 2>&1 &
     menubar=$!
-    "$apps/Finder.app/Contents/MacOS/Finder" >"$state/Finder.log" 2>&1 & shell=($!)
+    shell=()
+    "$apps/Finder.app/Contents/MacOS/Finder" >"$state/Finder.log" 2>&1 & shell+=($!)
     "$apps/Dock.app/Contents/MacOS/Dock" >"$state/Dock.log" 2>&1 & shell+=($!)
     wait $menubar
     kill "${shell[@]}" 2>/dev/null

@@ -28,6 +28,8 @@ import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # cursors.py beside it
+
 PACKAGES = "Mac OS X Install DVD/System/Installation/Packages"
 
 # package -> cpio patterns (fnmatch, '*' crosses '/')
@@ -50,6 +52,8 @@ WANTED = {
         # the AirPort menu extra's bars, scanning and off pictures (BaseSystem has AirPort.menu,
         # Essentials the other extras)
         "./System/Library/CoreServices/Menu Extras/AirPort.menu/Contents/Resources/*.pdf",
+        "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Info.plist",
+        "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/English.lproj/*.strings",
         # its panels (Apple80211's ClientDialogs: join a network, its password, create one) and the
         # security types' names (ClientController)
         "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle/Contents/Resources/English.lproj/*",
@@ -180,8 +184,16 @@ WANTED = {
         "./System/Library/MonitorPanels/*/Contents/Resources/*.png",
         "./System/Library/MonitorPanels/*/Contents/Resources/*.icns",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.pdf",
+        # Spotlight's item (Search.bundle): its magnifier, its menu's patterns, its strings
+        "./System/Library/CoreServices/Search.bundle/Contents/Info.plist",
+        "./System/Library/CoreServices/Search.bundle/Contents/Resources/*.pdf",
+        "./System/Library/CoreServices/Search.bundle/Contents/Resources/*.tif*",
+        "./System/Library/CoreServices/Search.bundle/Contents/Resources/English.lproj/*.strings",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.png",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.tif*",
+        # their Info.plist (NSMenuExtraWidth, NSPrincipalClass) and their strings (the Clock's menu)
+        "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Info.plist",
+        "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/English.lproj/*.strings",
         "./System/Library/CoreServices/SystemUIServer.app/Contents/Resources/*",
         "./System/Library/CoreServices/loginwindow.app/Contents/Resources/*",
         "./Applications/*.app/Contents/Info.plist",
@@ -349,6 +361,24 @@ def menu_apple(pkg, assets, tmp):
     out = assets / MENU_APPLE.lstrip("/")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data[at:at + 32 * 22 * 4])
+    shutil.rmtree(Path(tmp) / "System", ignore_errors=True)
+
+
+CURSOR_THEME = "share/icons/SnowLeopard"
+
+
+def cursor_theme(pkg, assets, tmp):
+    """10.6's cursors (the window server's in CoreGraphics, HIServices' cursordata) as an Xcursor
+    theme the session uses (tools/cursors.py)."""
+    import cursors
+    cg = "./System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
+    hi = "./System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/Resources/cursordata"
+    unpack(pkg, [cg, hi], tmp)
+    cgfile, hifile = Path(tmp) / cg, Path(tmp) / hi
+    if cgfile.exists() and hifile.exists():
+        n = cursors.write_theme(assets / CURSOR_THEME, cursors.coregraphics_cursors(cgfile.read_bytes()),
+                                cursors.hiservices_cursors(hifile.read_bytes()))
+        print(f"    {n} cursors")
     shutil.rmtree(Path(tmp) / "System", ignore_errors=True)
 
 
@@ -550,6 +580,7 @@ def main():
             unpack(pkg, patterns, assets)
             if name == "BaseSystem.pkg":
                 menu_apple(pkg, assets, tmp)
+                cursor_theme(pkg, assets, tmp)
             pkg.unlink()
     composition_images(assets)
     prune(assets)

@@ -119,6 +119,7 @@ public:
     void keyDown(AK::Event &e) override;
     void scrollWheel(AK::Event &e) override;
     bool acceptsFirstResponder() const override { return true; }
+    const char *cursor() const override { return "text"; }   // +[NSCursor IBeamCursor]
     void focusChanged() override;
     void setFrame(const AK::Rect &r) override;
 

@@ -146,6 +146,20 @@ bool Compositor::start(xcb_connection_t *conn, xcb_window_t root, ShadowFor shad
     return true;
 }
 
+void Compositor::setBackground(xcb_pixmap_t pixmap)
+{
+    if (!m_conn || !m_buffer)
+        return;
+    if (m_background)
+        xcb_render_free_picture(m_conn, m_background);
+    m_background = 0;
+    if (pixmap) {
+        m_background = xcb_generate_id(m_conn);
+        xcb_render_create_picture(m_conn, m_background, pixmap, m_rootFormat, 0, nullptr);
+    }
+    damageAll();
+}
+
 void Compositor::setOpacity(xcb_window_t frame, double opacity)
 {
     if (opacity >= 1)
@@ -576,7 +590,10 @@ void Compositor::paint()
     const uint16_t sw = uint16_t(m_screen.width()), sh = uint16_t(m_screen.height());
     xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_damage, 0, 0);
     const xcb_rectangle_t all = toXcb(m_screen);
-    xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, m_buffer, {0, 0, 0, 0xffff}, 1, &all);
+    if (m_background)
+        xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_SRC, m_background, XCB_NONE, m_buffer, 0, 0, 0, 0, 0, 0, sw, sh);
+    else
+        xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, m_buffer, {0, 0, 0, 0xffff}, 1, &all);
     for (Win *w : std::as_const(m_order)) {
         if (!w->mapped || w->inputOnly || w->destroyed)
             continue;

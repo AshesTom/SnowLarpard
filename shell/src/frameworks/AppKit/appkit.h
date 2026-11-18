@@ -77,6 +77,9 @@ public:
     virtual void keyDown(Event &e);       // passes it up
     virtual bool acceptsFirstResponder() const { return false; }
     virtual void focusChanged() { setNeedsDisplay(); }
+    // -[NSView resetCursorRects]'s cursor over the view, by its freedesktop name ("text" for
+    // NSCursor's IBeamCursor, "pointer" for pointingHandCursor); null: its superview's, the arrow at last
+    virtual const char *cursor() const { return nullptr; }
     bool isFirstResponder() const;
     bool clipsToBounds = true;
 
@@ -97,7 +100,9 @@ class Platform;
 
 class Window {
 public:
-    enum Kind { Titled, Menu, FullScreen };
+    // Status: NSStatusBar's system status window, transparent over the menu bar, its items drawn on
+    // nothing (X11: a 32-bit window the compositor blends)
+    enum Kind { Titled, Menu, FullScreen, Status };
     // A menu opens over `parent`, its top left at `at` in the parent's content
     Window(Size size, const std::string &title, Kind kind = Titled, Window *parent = nullptr, Point at = {});
     virtual ~Window();
@@ -139,10 +144,18 @@ public:
     void setDocumentEdited(bool edited);
     bool isDocumentEdited() const { return m_edited; }
     // A floating panel (loginwindow's About This Mac: CGWindowLevelForKey(kCGModalPanelWindowLevelKey),
-    // on every Space): above the windows, not in the Dock; before show()
-    void setFloatingPanel();
+    // on every Space): above the windows, not in the Dock; before show(). A utility window's small
+    // title bar (NSUtilityWindowMask), else a regular one (loginwindow's Log Out panel)
+    void setFloatingPanel(bool utility = true);
+    // -[NSWindow styleMask]'s buttons (NSClosableWindowMask 2, NSMiniaturizableWindowMask 4,
+    // NSResizableWindowMask 8): a titled window with none of them has no buttons in its title bar
+    // (NSThemeFrame hides the three; loginwindow's Log Out panel, style 129); before show()
+    void setStyleMask(unsigned mask);
     // No title bar nor frame: the window draws its own (Quick Look's HUD panel); before show()
     void setBorderless();
+    // NSStatusBar's window: borderless, a dock on every desktop above the others, keeping `top` points
+    // of the screen (`bottom` of its bottom) out of the other windows' way (X11; Wayland: not yet)
+    void setStatusBar(int top, int bottom = 0);
     // Moving it by a drag of its own content: from a mouse down's screen point, to the dragged one
     void dragMove(Point fromScreen, Point toScreen, bool start);
     bool moveTo(Point screenTopLeft);   // X11 only (Wayland places its windows itself): false there
@@ -202,6 +215,7 @@ private:
     bool m_toolbarButton = false;
     Image m_proxyIcon;
     bool m_edited = false;
+    bool m_titleButtons = true;
     int m_titlePressed = -1;           // the title bar's button held down
     bool m_resizable = false;
     bool m_secondaryDown = false;
@@ -210,6 +224,7 @@ private:
     Point m_dragOrigin;   // dragMove's window origin when it started
     Size m_minSize;
     bool m_overTitleButtons = false;
+    std::string m_cursor;   // the cursor set ([NSCursor set]): the view's under the pointer
     Point m_lastClick;
     uint32_t m_lastClickTime = 0;
     int m_clickCount = 0;
