@@ -8,6 +8,7 @@
 #pragma once
 
 #include "compositor.h"
+#include "frame.h"
 
 #include <QAbstractNativeEventFilter>
 #include <QElapsedTimer>
@@ -22,10 +23,8 @@
 class WindowServer : public QObject, public QAbstractNativeEventFilter {
     Q_OBJECT
 public:
-    static constexpr int TitleHeight = 22;
-    // a utility window's (NSUtilityWindowMask, _NET_WM_WINDOW_TYPE_UTILITY: loginwindow's About This
-    // Mac): a 10.6 screenshot's rows, 242, 237 down to 217 over 14, a 166 line, a 217 row
-    static constexpr int UtilityTitleHeight = 17;
+    static constexpr int TitleHeight = Frame::TitleHeight;
+    static constexpr int UtilityTitleHeight = Frame::UtilityTitleHeight;
 
     WindowServer();
     // false when another window manager has the display
@@ -33,7 +32,7 @@ public:
     bool nativeEventFilter(const QByteArray &type, void *message, qintptr *result) override;
 
 private:
-    enum Button { None = -1, Close, Minimize, Zoom, ToolbarButton };
+    enum Button { None = Frame::None, Close = Frame::Close, Minimize = Frame::Minimize, Zoom = Frame::Zoom, ToolbarButton = Frame::ToolbarButton };
     struct Client {
         xcb_window_t window = 0, frame = 0, grip = 0;
         QRect geometry;          // the client's, in root coordinates (the title bar is above it)
@@ -70,9 +69,9 @@ private:
     void applyGeometry(Client *c);
     void sendConfigureNotify(Client *c);
     void paintTitle(Client *c);
-    QImage buttonImage(const Client *c, int button) const;
+    Frame::TitleBar titleBar(const Client *c) const;
     int buttonAt(const Client *c, QPoint p) const;
-    static QRect buttonRect(const Client *c, int button);
+    QRect buttonRect(const Client *c, int button) const;
 
     void focus(Client *c);
     void raise(Client *c);

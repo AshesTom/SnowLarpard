@@ -360,6 +360,7 @@ endif()
 # The window manager: a program of its own, as the Mac's WindowServer is
 pkg_check_modules(XCB_COMPOSITOR REQUIRED IMPORTED_TARGET xcb-composite xcb-damage xcb-render xcb-xfixes xcb-cursor)
 add_executable(WindowServer src/windowserver/main.cpp src/windowserver/windowserver.cpp src/windowserver/windowserver.h
+               src/windowserver/frame.cpp src/windowserver/frame.h
                src/windowserver/compositor.cpp src/windowserver/compositor.h)
 target_link_libraries(WindowServer PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
 target_compile_options(WindowServer PRIVATE -Wall -Wextra)
@@ -402,3 +403,64 @@ foreach(framework IN ITEMS Foundation AppKit CoreGraphics CoreText)
     component_info(frameworks/${framework} "Frameworks/${framework}.framework/Resources")
 endforeach()
 component_info(frameworks/CoreUI "PrivateFrameworks/CoreUI.framework/Resources")
+
+# The window server of the Wayland session (src/windowserver/wayland): a Wayland compositor on Qt
+# Wayland Compositor and Qt Quick (docs/architecture.md says why), WindowServer's title bars, shadows
+# and genie (frame.cpp) on Wayland, and an Xwayland of its own for the X11 programs. Its protocols'
+# server code is generated here: xdg-shell and xdg-decoration (its own, not Qt's, which refuses the
+# layer surfaces' popups), wlr-layer-shell, KDE's appmenu, and its private one for the shell
+# (snowleopard-window-server-v1, the CGS calls). Their C symbols and Qt classes renamed (sl_,
+# SLWaylandServer) so that they never meet Qt's own copies of xdg-shell.
+find_package(Qt6 6.5 QUIET COMPONENTS WaylandCompositor Quick)
+pkg_check_modules(WAYLAND_SERVER IMPORTED_TARGET wayland-server)
+find_program(QT_WAYLAND_SCANNER qtwaylandscanner PATHS /usr/lib/qt6 /usr/lib/qt6/libexec /usr/libexec/qt6 ${QT6_INSTALL_PREFIX}/libexec)
+set(QT_WAYLAND_PROTOCOLS /usr/share/qt6/wayland/protocols)
+if(Qt6WaylandCompositor_FOUND AND Qt6Quick_FOUND AND WAYLAND_SERVER_FOUND AND WAYLAND_SCANNER AND QT_WAYLAND_SCANNER
+   AND EXISTS "${QT_WAYLAND_PROTOCOLS}/xdg-shell/xdg-shell.xml")
+    enable_language(C)
+    set(wsgen "${CMAKE_BINARY_DIR}/windowserver-wayland")
+    file(MAKE_DIRECTORY "${wsgen}")
+    set(ws_protocol_sources)
+    function(windowserver_protocol xml name)
+        set(rename -e "s/\\b\\(z\\?xdg_[a-z0-9_]*_interface\\)\\b/sl_\\1/g"
+                   -e "s/QtWaylandServer/SLWaylandServer/g")
+        add_custom_command(OUTPUT "${wsgen}/wayland-${name}-server-protocol.h" "${wsgen}/${name}-protocol.c"
+                                  "${wsgen}/qwayland-server-${name}.h" "${wsgen}/qwayland-server-${name}.cpp"
+            COMMAND "${WAYLAND_SCANNER}" server-header "${xml}" "${wsgen}/wayland-${name}-server-protocol.h"
+            COMMAND "${WAYLAND_SCANNER}" private-code "${xml}" "${wsgen}/${name}-protocol.c"
+            COMMAND "${QT_WAYLAND_SCANNER}" server-header "${xml}" > "${wsgen}/qwayland-server-${name}.h"
+            COMMAND "${QT_WAYLAND_SCANNER}" server-code "${xml}" > "${wsgen}/qwayland-server-${name}.cpp"
+            COMMAND sed -i ${rename} "${wsgen}/wayland-${name}-server-protocol.h" "${wsgen}/${name}-protocol.c"
+                    "${wsgen}/qwayland-server-${name}.h" "${wsgen}/qwayland-server-${name}.cpp"
+            DEPENDS "${xml}" VERBATIM)
+        list(APPEND ws_protocol_sources "${wsgen}/${name}-protocol.c" "${wsgen}/qwayland-server-${name}.cpp"
+                                        "${wsgen}/qwayland-server-${name}.h")
+        set(ws_protocol_sources ${ws_protocol_sources} PARENT_SCOPE)
+    endfunction()
+    windowserver_protocol("${QT_WAYLAND_PROTOCOLS}/xdg-shell/xdg-shell.xml" xdg-shell)
+    windowserver_protocol("${QT_WAYLAND_PROTOCOLS}/xdg-decoration/xdg-decoration-unstable-v1.xml" xdg-decoration-unstable-v1)
+    windowserver_protocol("${QT_WAYLAND_PROTOCOLS}/appmenu/appmenu.xml" appmenu)
+    windowserver_protocol("${CMAKE_SOURCE_DIR}/src/windowserver/wayland/protocols/wlr-layer-shell-unstable-v1.xml" wlr-layer-shell-unstable-v1)
+    windowserver_protocol("${CMAKE_SOURCE_DIR}/src/windowserver/wayland/protocols/snowleopard-window-server-v1.xml" snowleopard-window-server-v1)
+    pkg_check_modules(WINDOWSERVER_WAYLAND_DEPS REQUIRED IMPORTED_TARGET xcb xcb-composite xcb-icccm xcb-res xcb-cursor)
+    add_executable(WindowServer-wayland
+        src/windowserver/wayland/main.cpp
+        src/windowserver/wayland/server.cpp src/windowserver/wayland/server.h
+        src/windowserver/wayland/window.cpp src/windowserver/wayland/window.h
+        src/windowserver/wayland/xdgshell.cpp src/windowserver/wayland/xdgshell.h
+        src/windowserver/wayland/layershell.cpp src/windowserver/wayland/layershell.h
+        src/windowserver/wayland/shellprotocol.cpp src/windowserver/wayland/shellprotocol.h
+        src/windowserver/wayland/effects.cpp src/windowserver/wayland/effects.h
+        src/windowserver/wayland/xwayland.cpp src/windowserver/wayland/xwayland.h
+        src/windowserver/wayland/imageitem.h
+        src/windowserver/frame.cpp src/windowserver/frame.h
+        ${ws_protocol_sources})
+    target_include_directories(WindowServer-wayland PRIVATE "${wsgen}" src/windowserver src/windowserver/wayland)
+    target_link_libraries(WindowServer-wayland PRIVATE aquashell Qt6::WaylandCompositor Qt6::Quick PkgConfig::WAYLAND_SERVER
+                          PkgConfig::WINDOWSERVER_WAYLAND_DEPS)
+    target_compile_options(WindowServer-wayland PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra>)
+    set_target_properties(WindowServer-wayland PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")
+    message(STATUS "WindowServer: X11 and Wayland")
+else()
+    message(STATUS "WindowServer: X11 only (no Qt Wayland Compositor, Qt Quick, wayland-server or qtwaylandscanner)")
+endif()

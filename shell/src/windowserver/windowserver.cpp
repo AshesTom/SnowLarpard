@@ -25,18 +25,7 @@
 
 using X11::atom;
 
-// The buttons' places in the title bar: 14 x 16 pieces, 7 px apart, from 8 px in (measured by eye on 10.6)
-static constexpr int ButtonLeft = 8, ButtonPitch = 21, ButtonTop = 3, ButtonWidth = 14, ButtonHeight = 16;
-// A utility window's: titlebarcontrols' "utilwin" "variant2" pieces, 13 x 14, 18 apart from 5 in, 1 down
-// (a 10.6 screenshot of About This Mac: the rings from x 6 and y 2, 11 wide)
-static constexpr int UtilityButtonLeft = 5, UtilityButtonPitch = 18, UtilityButtonTop = 1, UtilityButtonWidth = 13,
-                     UtilityButtonHeight = 14;
-// The toolbar button (titlebarcontrols' "toolbar", 20 x 13) of a window with a toolbar: 7 px from the
-// right, centred on the other buttons (measured on a 10.6 screenshot)
-static constexpr int ToolbarButtonRight = 7, ToolbarButtonTop = 5, ToolbarButtonWidth = 20, ToolbarButtonHeight = 13;
-// The proxy icon: 16 x 16 before the title, 4 px from it, the two centred together
-static constexpr int ProxyIconSize = 16, ProxyIconGap = 4, ProxyIconTop = 3;
-static constexpr int GripSize = 15;   // the size box's corner, where dragging resizes
+using Frame::GripSize;
 static constexpr uint32_t ICCCM_WithdrawnState = 0, ICCCM_NormalState = 1, ICCCM_IconicState = 3;
 
 WindowServer::WindowServer() {}
@@ -471,42 +460,32 @@ void WindowServer::sendConfigureNotify(Client *c)
     xcb_send_event(m_conn, 0, c->window, XCB_EVENT_MASK_STRUCTURE_NOTIFY, reinterpret_cast<const char *>(&ev));
 }
 
-// ---- the title bar
+// ---- the title bar (frame.cpp's, as the Wayland server draws it)
 
-QImage WindowServer::buttonImage(const Client *c, int button) const
+Frame::TitleBar WindowServer::titleBar(const Client *c) const
 {
-    static const char *names[] = {"close", "minimize", "zoom", "toolbar"};
-    // -[NSWindow setDocumentEdited:]: the close button with its dot (closedirty)
-    const char *name = button == Close && c->documentEdited ? "closedirty" : names[button];
-    QStringList path = {"titlebarcontrols", name, button == ToolbarButton ? "colorsrgb" : "colorsryg"};
-    path << (c->utility ? QStringList{"utilwin", "variant2"} : QStringList{"regularwin"});
-    if (c != m_active)
-        path << "inactive";
-    else if (c->pressed == button)
-        path << "pressed";
-    else if (c->overButtons && button != ToolbarButton)
-        path << "rollover";   // the three show their glyphs together, as on the Mac
-    return ArtFile::element(path).single();
+    Frame::TitleBar t;
+    t.width = c->geometry.width();
+    t.title = c->title;
+    t.active = c == m_active;
+    t.utility = c->utility;
+    t.buttons = c->buttons;
+    t.hasToolbar = c->hasToolbar;
+    t.unifiedToolbar = c->unifiedToolbar;
+    t.proxyIcon = c->proxyIcon;
+    t.documentEdited = c->documentEdited;
+    t.pressed = c->pressed;
+    t.overButtons = c->overButtons;
+    return t;
 }
 
-QRect WindowServer::buttonRect(const Client *c, int b)
-{
-    if (c->utility)
-        return QRect(UtilityButtonLeft + b * UtilityButtonPitch, UtilityButtonTop, UtilityButtonWidth, UtilityButtonHeight);
-    return QRect(ButtonLeft + b * ButtonPitch, ButtonTop, ButtonWidth, ButtonHeight);
-}
+QRect WindowServer::buttonRect(const Client *c, int b) const { return Frame::buttonRect(titleBar(c), b); }
 
 int WindowServer::buttonAt(const Client *c, QPoint p) const
 {
     if (!c->titleHeight())
         return None;
-    for (int b = Close; c->buttons && b <= Zoom; ++b)
-        if (buttonRect(c, b).contains(p))
-            return b;
-    if (c->hasToolbar &&
-        QRect(c->geometry.width() - ToolbarButtonRight - ToolbarButtonWidth, ToolbarButtonTop, ToolbarButtonWidth, ToolbarButtonHeight).contains(p))
-        return ToolbarButton;
-    return None;
+    return Frame::buttonAt(titleBar(c), p);
 }
 
 void WindowServer::paintTitle(Client *c)
@@ -515,77 +494,7 @@ void WindowServer::paintTitle(Client *c)
     const int w = c->geometry.width();
     if (!th || w <= 0)
         return;
-    QImage img(w, th, QImage::Format_RGB32);
-    {
-        QPainter p(&img);
-        const bool active = c == m_active;
-        // Measured on 10.6 (Software Update's window): a white first row, then 239 down to 217, then a 153
-        // line over the content. The inactive bar: lighter, estimated.
-        if (c->unifiedToolbar > 0) {
-            // a unified window: the title bar's rows of the gradient its toolbar goes on with, no line under
-            for (int y = 0; y < th; ++y)
-                p.fillRect(0, y, w, 1, X11::unifiedToolbarColor(y, th + c->unifiedToolbar, active));
-        } else if (c->utility) {
-            // as a 10.6 screenshot shows it (About This Mac, not key)
-            p.fillRect(0, 0, w, 1, QColor(242, 242, 242));
-            for (int y = 1; y <= 14; ++y) {
-                const int g = int(std::lround(237 + (217 - 237) * (y - 1) / 13.0));
-                p.fillRect(0, y, w, 1, QColor(g, g, g));
-            }
-            p.fillRect(0, 15, w, 1, QColor(166, 166, 166));
-            p.fillRect(0, 16, w, 1, QColor(217, 217, 217));
-        } else {
-            p.fillRect(0, 0, w, 1, QColor(255, 255, 255));
-            QLinearGradient g(0, 1, 0, th - 1);
-            g.setColorAt(0, active ? QColor(239, 239, 239) : QColor(246, 246, 246));
-            g.setColorAt(1, active ? QColor(217, 217, 217) : QColor(236, 236, 236));
-            p.fillRect(0, 1, w, th - 2, g);
-            p.fillRect(0, th - 1, w, 1, active ? QColor(153, 153, 153) : QColor(186, 186, 186));
-        }
-
-        for (int b = Close; b <= (c->buttons ? int(Zoom) : Close - 1); ++b) {
-            QImage button = buttonImage(c, b);
-            if (!button.isNull())
-                p.drawImage(buttonRect(c, b).topLeft(), button);
-            else {
-                static const QColor colors[] = {QColor(0xE0, 0x44, 0x3E), QColor(0xDE, 0xA1, 0x23), QColor(0x5E, 0xB5, 0x34)};
-                p.setRenderHint(QPainter::Antialiasing);
-                p.setBrush(active ? colors[b] : QColor(190, 190, 190));
-                p.setPen(Qt::NoPen);
-                p.drawEllipse(QRectF(buttonRect(c, b)).adjusted(0.5, 1.5, -0.5, -1.5));
-            }
-        }
-
-        // a window with a toolbar: the button that shows and hides it, at the right
-        if (c->hasToolbar) {
-            QImage button = buttonImage(c, ToolbarButton);
-            if (!button.isNull())
-                p.drawImage(w - ToolbarButtonRight - ToolbarButtonWidth, ToolbarButtonTop, button);
-        }
-
-        // the title, centred on the window, in Lucida Grande 13, engraved; the proxy icon before it
-        // (a utility window's in the small system font, 11)
-        QFont font = Assets::uiFont(c->utility ? 11 : 13);
-        p.setFont(font);
-        const int left = buttonRect(c, Zoom).right() + 1 + 6;
-        const bool proxy = !c->proxyIcon.isNull();
-        const int iconRoom = proxy ? ProxyIconSize + ProxyIconGap : 0;
-        const int room = w - 2 * left - iconRoom;
-        const QFontMetrics fm(font);
-        QString text = fm.elidedText(c->title, Qt::ElideMiddle, qMax(0, room));
-        const int groupWidth = iconRoom + fm.horizontalAdvance(text);
-        const int x = (w - groupWidth) / 2;
-        if (proxy) {
-            p.setOpacity(active ? 1 : 0.5);
-            p.drawImage(QRect(x, ProxyIconTop, ProxyIconSize, ProxyIconSize), c->proxyIcon);
-            p.setOpacity(1);
-        }
-        QRect r(x + iconRoom, 0, w - x - iconRoom, c->utility ? 15 : th - 1);
-        p.setPen(QColor(255, 255, 255, 120));
-        Aqua::drawText(p, r.translated(0, 1), Qt::AlignLeft | Qt::AlignVCenter, text);
-        p.setPen(active ? QColor(0x26, 0x26, 0x26) : QColor(0x7F, 0x7F, 0x7F));
-        Aqua::drawText(p, r, Qt::AlignLeft | Qt::AlignVCenter, text);
-    }
+    const QImage img = Frame::paintTitleBar(titleBar(c));
     // to the frame, a band of rows at a time within the request's limit
     const uint32_t maxBytes = xcb_get_maximum_request_length(m_conn) * 4 - 64;
     const int rowsPerRequest = qMax(1, int(maxBytes / uint32_t(img.bytesPerLine())));
@@ -1237,7 +1146,7 @@ void WindowServer::motion(xcb_motion_notify_event_t *e)
         sendConfigureNotify(c);
         xcb_flush(m_conn);
     } else if (m_drag == Resizing) {
-        QSize minimum = c->minimum.expandedTo(QSize(3 * ButtonPitch + 40, 40));
+        QSize minimum = c->minimum.expandedTo(QSize(Frame::MinimumWidth, 40));
         c->geometry.setSize(QSize(qMax(minimum.width(), m_dragGeometry.width() + delta.x()),
                                   qMax(minimum.height(), m_dragGeometry.height() + delta.y())));
         c->zoomed = false;

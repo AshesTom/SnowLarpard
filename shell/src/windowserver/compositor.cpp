@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "compositor.h"
+#include "frame.h"
 
 #include <QRegion>
 
@@ -14,17 +15,7 @@
 
 namespace {
 
-// AppKit's __NSSetWindowShadow (CGSSetWindowShadowAndRimParametersWithStretch): the standard
-// deviation, the density, how far under the window. The key window's, another window's, and the
-// other style's (panels, menus).
-struct ShadowParams {
-    double sigma, density, dy;
-};
-const ShadowParams shadowParams[] = {{0, 0, 0}, {20, 0.49, 15}, {10, 0.44, 10}, {8, 0.5, 6}};
-
-// the room any shadow takes around its window (the key window's: a tent of 34 and 15 under): what
-// moves with it
-constexpr int ShadowReach = 52;
+using Frame::ShadowReach;
 
 xcb_atom_t internAtom(xcb_connection_t *c, const char *name)
 {
@@ -283,54 +274,19 @@ void Compositor::dropShadow(Win *w)
     w->shadowKind = NoShadow;
 }
 
-// One pass of the window server's tent blur (CGSOffsetTentBlur8): each value becomes the mean of its
-// neighbours less than `radius` away, weighted radius - distance (the weights' sum: radius squared).
-// A tent is a box blurred by a box, so two running sums do it.
-static void tentBlur(float *values, int count, int step, int radius, std::vector<float> &scratch)
-{
-    if (radius < 2)
-        return;
-    scratch.assign(size_t(count), 0.f);
-    float sum = 0;
-    for (int i = 0; i < count; ++i) {   // the `radius` values ending here
-        sum += values[size_t(i) * size_t(step)];
-        if (i >= radius)
-            sum -= values[size_t(i - radius) * size_t(step)];
-        scratch[size_t(i)] = sum;
-    }
-    sum = 0;
-    const float scale = 1.f / (float(radius) * float(radius));
-    for (int i = count - 1; i >= 0; --i) {   // the `radius` sums starting here
-        sum += scratch[size_t(i)];
-        if (i + radius < count)
-            sum -= scratch[size_t(i + radius)];
-        values[size_t(i) * size_t(step)] = sum * scale;
-    }
-}
-
-// The window's shadow as an alpha mask, made as 10.6's window server makes it (CGXWindowShadowGet,
-// CoreGraphics 0x2b74e1): the window's outline, blurred by a tent 1.7 standard deviations wide
-// across then down, times the density, moved under the window; a rim one pixel around the outline
-// (CGSMergeShadowRim: an eighth and a thirty-second of it, or an eighth less a sixty-fourth around
-// a window that isn't key); nothing under the window itself (CGSSubtractMaskWithThreshold, 0x40);
-// then the server's gamma table (the 1.23 power, to a level).
+// The window's shadow (frame.cpp's, as 10.6's window server makes it) from its outline: a
+// translucent window's alpha (a menu and its round corners, the Dock's menu and its arrow), the
+// others' shape (a frame's corners)
 void Compositor::makeShadow(Win *w, int kind)
 {
     dropShadow(w);
-    const ShadowParams &p = shadowParams[kind];
-    const int radius = int(std::lround(1.7 * p.sigma)), dy = int(p.dy);
-    const int margin = radius + 1;
     const int ww = w->geometry.width(), wh = w->geometry.height();
-    const int sw = ww + 2 * margin, sh = wh + 2 * margin + dy;
-
-    // The outline, 0 to 255, with the shadow's room around it: a translucent window's alpha (a menu
-    // and its round corners, the Dock's menu and its arrow), the others' shape (a frame's corners)
-    std::vector<uint8_t> outline(size_t(sw) * size_t(sh), 0);
+    std::vector<uint8_t> outline(size_t(ww) * size_t(wh), 0);
     auto fill = [&](int x, int y, int width, int height) {
         const int x0 = qMax(0, x), y0 = qMax(0, y), x1 = qMin(ww, x + width), y1 = qMin(wh, y + height);
         for (int row = y0; row < y1; ++row)
             if (x1 > x0)
-                memset(outline.data() + size_t(row + margin) * size_t(sw) + size_t(x0 + margin), 255, size_t(x1 - x0));
+                memset(outline.data() + size_t(row) * size_t(ww) + size_t(x0), 255, size_t(x1 - x0));
     };
     bool known = false;
     if (w->alpha && ww * wh <= 1 << 20) {
@@ -338,9 +294,8 @@ void Compositor::makeShadow(Win *w, int kind)
             m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, w->id, 0, 0, uint16_t(ww), uint16_t(wh), ~0u), nullptr);
         if (image && image->depth == 32 && xcb_get_image_data_length(image) >= ww * wh * 4) {
             const uint8_t *pixels = xcb_get_image_data(image);
-            for (int y = 0; y < wh; ++y)
-                for (int x = 0; x < ww; ++x)
-                    outline[size_t(y + margin) * size_t(sw) + size_t(x + margin)] = pixels[(size_t(y) * size_t(ww) + size_t(x)) * 4 + 3];
+            for (size_t i = 0; i < size_t(ww) * size_t(wh); ++i)
+                outline[i] = pixels[i * 4 + 3];
             known = true;
         }
         free(image);
@@ -354,38 +309,11 @@ void Compositor::makeShadow(Win *w, int kind)
     }
     if (!known)
         fill(0, 0, ww, wh);
-
-    // blurred across then down, and moved under the window
-    std::vector<float> blurred(size_t(sw) * size_t(sh), 0.f);
-    for (int y = 0; y < wh; ++y)
-        for (int x = 0; x < ww; ++x)
-            blurred[size_t(y + margin + dy) * size_t(sw) + size_t(x + margin)] = outline[size_t(y + margin) * size_t(sw) + size_t(x + margin)];
-    std::vector<float> scratch;
-    for (int y = margin + dy; y < margin + dy + wh; ++y)
-        tentBlur(blurred.data() + size_t(y) * size_t(sw), sw, 1, radius, scratch);
-    for (int x = 0; x < sw; ++x)
-        tentBlur(blurred.data() + size_t(x), sh, sw, radius, scratch);
-
-    uint8_t gamma[256];
-    for (int i = 0; i < 256; ++i)
-        gamma[i] = uint8_t(std::lround(255 * std::pow(i / 255.0, 1.23)));
-    const bool key = kind != WindowShadow;
-    // the mask's rows of bytes, padded to 32 bits
-    const int stride = (sw + 3) & ~3;
-    std::vector<uint8_t> mask(size_t(stride) * size_t(sh));
-    for (int y = 0; y < sh; ++y)
-        for (int x = 0; x < sw; ++x) {
-            const size_t at = size_t(y) * size_t(sw) + size_t(x);
-            if (outline[at] >= 0x40)
-                continue;   // under the window: none
-            int around = 0;   // the outline grown by a pixel: the rim
-            for (int ny = qMax(0, y - 1); ny <= qMin(sh - 1, y + 1); ++ny)
-                for (int nx = qMax(0, x - 1); nx <= qMin(sw - 1, x + 1); ++nx)
-                    around = qMax(around, int(outline[size_t(ny) * size_t(sw) + size_t(nx)]));
-            const int rim = (around >> 3) + (key ? around >> 5 : -(around >> 6));
-            const int value = int(std::lround(p.density * blurred[at])) + rim;
-            mask[size_t(y) * size_t(stride) + size_t(x)] = gamma[qBound(0, value, 255)];
-        }
+    QPoint origin;
+    const QImage mask = Frame::shadowMask(outline, ww, wh, kind, &origin);
+    if (mask.isNull())
+        return;
+    const int sw = mask.width(), sh = mask.height(), stride = int(mask.bytesPerLine());
 
     const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
     xcb_create_pixmap(m_conn, 8, pixmap, m_root, uint16_t(sw), uint16_t(sh));
@@ -396,14 +324,14 @@ void Compositor::makeShadow(Win *w, int kind)
     for (int y = 0; y < sh; y += rowsAtOnce) {
         const int n = qMin(rowsAtOnce, sh - y);
         xcb_put_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, gc, uint16_t(sw), uint16_t(n), 0, int16_t(y), 0, 8,
-                      uint32_t(stride * n), mask.data() + size_t(y) * size_t(stride));
+                      uint32_t(stride * n), mask.constScanLine(y));
     }
     xcb_free_gc(m_conn, gc);
     w->shadow = xcb_generate_id(m_conn);
     xcb_render_create_picture(m_conn, w->shadow, pixmap, m_a8, 0, nullptr);
     xcb_free_pixmap(m_conn, pixmap);   // the picture keeps it
     w->shadowKind = kind;
-    w->shadowRect = QRect(-margin, -margin, sw, sh);
+    w->shadowRect = QRect(origin, mask.size());
 }
 
 void Compositor::damageRect(QRect r)
@@ -667,82 +595,7 @@ void Compositor::paint()
 
 namespace {
 
-// A row of the genie's mesh: where it is on the screen, how far its left and right edges have come
-// in, and which of the window's rows is there
-struct GenieRow {
-    double y, left, right, local;
-};
-
-// The rows' curve (the Dock's 0x1000ef17a): the edges come in as a half cosine, from none at the
-// window's top to the whole way over `count` pixels, the distance to the tile
-struct GenieCurve {
-    double y0, count, left, right;
-    GenieRow row(double y) const
-    {
-        const double k = 0.5 - 0.5 * std::cos((y - y0) * M_PI / count);
-        return {y, left * k, right * k, 0};
-    }
-};
-
-// The rows between a and b (the Dock's 0x1000ef20a): halved while the middle one strays 0.6 px
-// from the straight line, or the gap is a tile high; 8 px at least, 32 levels at most
-void genieSubdivide(const GenieCurve &c, double a, double b, double tile, int depth, QVector<GenieRow> &out)
-{
-    if (depth + 1 >= 0x41 || std::abs(b - a) < 8)
-        return;
-    const double mid = (a + b) * 0.5;
-    const GenieRow ra = c.row(a), rm = c.row(mid), rb = c.row(b);
-    if (std::abs(b - a) >= tile || std::abs((ra.left + rb.left) * 0.5 - rm.left) >= 0.6 ||
-        std::abs((ra.right + rb.right) * 0.5 - rm.right) >= 0.6) {
-        genieSubdivide(c, a, mid, tile, depth + 2, out);
-        out.append(rm);
-        genieSubdivide(c, mid, b, tile, depth + 2, out);
-    }
-}
-
-// The genie at p (0: the window, 1: in its tile), the tile under the window's top (the Dock's step
-// at 0x1000ef474, direction 2). Two phases on one clock: the bottom edges come in to the tile's
-// width, the window slides down the curve; each takes 50 a step of the logarithm of half its
-// distance, and the slide starts once the edges have come in as far as the window's height
-// leaves them. The window isn't stretched: row y of the screen shows its row y - top, its
-// bottom edges straight in the tile, cut at the tile's bottom.
-QVector<GenieRow> genieRows(const QRectF &win, const QRectF &tile, double p)
-{
-    const double x = win.x(), y = win.y(), w = win.width(), h = win.height();
-    double left = tile.x() - x, right = tile.right() - (x + w);
-    const double gap = tile.y() - (y + h);
-    double dist = tile.y() - y, up = 0;
-    if (gap < 0) {   // over the tile: first up so that its bottom meets the tile's top
-        up = gap;
-        dist = h;
-    }
-    const double d = std::max(std::abs(2 * up), (std::abs(left) + std::abs(right)) * 0.125);
-    double inTime = int(std::log(d * 0.5 + 1)) * 50.0;
-    const double downTime = int(std::log(std::abs(dist) * 0.5 + 1)) * 50.0;
-    const double rest = std::abs(dist - h);
-    const double meet = dist != 0 ? std::acos(std::clamp(1 - 2 * rest / std::abs(dist), -1.0, 1.0)) / M_PI * downTime : 0;
-    double lead = 0;
-    if (meet < inTime)
-        lead = inTime - meet;
-    else
-        inTime = meet;
-    const double t = (lead + downTime) * p;
-    const double s1 = inTime > 0 ? 0.5 - 0.5 * std::cos(std::clamp(t, 0.0, inTime) / inTime * M_PI) : p;
-    const double s2 = downTime > 0 ? 0.5 - 0.5 * std::cos(std::clamp(t - lead, 0.0, downTime) / downTime * M_PI) : p;
-    left *= s1;
-    right *= s1;
-    const double moved = dist * s2, y0 = y + s1 * up, top = y0 + moved, bottom = top + h;
-    const double end = s2 > 0 && bottom > tile.y() ? tile.y() : bottom;
-    const GenieCurve curve{y0, std::max(1.0, double(int(dist + 0.5))), left, right};
-    QVector<GenieRow> rows{curve.row(top)};
-    genieSubdivide(curve, top, end, tile.height(), 0, rows);
-    rows.append(curve.row(end));
-    if (std::abs(moved) > rest)
-        rows.append({std::min(bottom, tile.bottom()), left, right, 0});
-    for (GenieRow &r : rows)
-        r.local = r.y - top;
-    return rows;
-}
+using Frame::GenieRow;
 
 xcb_render_fixed_t fixed(double v) { return xcb_render_fixed_t(std::lround(v * 65536)); }
 
@@ -938,17 +791,7 @@ QRect Compositor::drawAnimation(const Animation &a, const Snapshot &s)
             put(r.x(), r.right(), Y0, H, h / r.height(), (Y0 - r.y()) * h / r.height());
         }
     } else {
-        // the tile above the window's top: the same, upside down
-        const bool flip = tile.center().y() < win.y();
-        auto mirror = [](const QRectF &r) { return QRectF(r.x(), -r.bottom(), r.width(), r.height()); };
-        QVector<GenieRow> rows = flip ? genieRows(mirror(win), mirror(tile), p) : genieRows(win, tile, p);
-        if (flip) {
-            std::reverse(rows.begin(), rows.end());
-            for (GenieRow &r : rows) {
-                r.y = -r.y;
-                r.local = h - r.local;
-            }
-        }
+        const QVector<GenieRow> rows = Frame::genieRows(win, tile, p);
         // the mesh's bands, two screen rows at a time, each scaled across only
         for (int i = 0; i + 1 < rows.size(); ++i) {
             const GenieRow &r0 = rows[i], &r1 = rows[i + 1];
