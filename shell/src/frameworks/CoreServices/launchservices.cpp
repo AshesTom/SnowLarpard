@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <strings.h>
@@ -26,9 +28,6 @@ struct MacApp {
 const std::vector<MacApp> &macApps()
 {
     static const std::vector<MacApp> table = {
-        {"/Applications/Safari.app", "Safari",
-         {"firefox", "org.mozilla.firefox", "chromium", "google-chrome", "brave-browser", "org.gnome.Epiphany", "librewolf",
-          "vivaldi-stable", "zen", "zen-browser"}},
         {"/Applications/Mail.app", "Mail",
          {"org.mozilla.Thunderbird", "thunderbird", "net.thunderbird.Thunderbird", "org.kde.kmail2", "org.gnome.Evolution",
           "org.gnome.Geary", "betterbird"}},
@@ -67,7 +66,9 @@ const std::vector<std::string> fileManagers = {"org.kde.dolphin", "org.gnome.Nau
 const std::vector<std::string> ownBundles = {"/Applications/System Preferences.app", "/Applications/Preview.app",
                                              "/Applications/Mail.app", "/Applications/Photo Booth.app",
                                              "/Applications/Calculator.app", "/Applications/Stickies.app",
-                                             "/Applications/TextEdit.app", "/System/Library/CoreServices/Software Update.app"};
+                                             "/Applications/TextEdit.app", "/Applications/Utilities/Grab.app",
+                                             "/Applications/Utilities/Activity Monitor.app",
+                                             "/System/Library/CoreServices/Software Update.app"};
 
 bool same(const std::string &a, const std::string &b) { return !a.empty() && a.size() == b.size() && strcasecmp(a.c_str(), b.c_str()) == 0; }
 
@@ -271,6 +272,31 @@ std::string themeIcon(const std::string &name, int size)
 }
 
 } // namespace
+
+bool isUIElement(uint32_t pid)
+{
+    char buf[4096];
+    const ssize_t n = readlink(("/proc/" + std::to_string(pid) + "/exe").c_str(), buf, sizeof buf - 1);
+    if (n <= 0)
+        return false;
+    buf[n] = 0;
+    // X.app/Contents/MacOS/X → X.app/Contents/Info.plist
+    const std::string macos = AK::dirName(buf);
+    if (AK::fileName(macos) != "MacOS")
+        return false;
+    std::ifstream in(AK::dirName(macos) + "/Info.plist");
+    const std::string plist((std::istreambuf_iterator<char>(in)), {});
+    for (const char *key : {"<key>LSUIElement</key>", "<key>LSBackgroundOnly</key>"}) {
+        size_t at = plist.find(key);
+        if (at == std::string::npos)
+            continue;
+        at += std::strlen(key);
+        const size_t value = plist.find('<', at);
+        if (value != std::string::npos && (plist.compare(value, 7, "<true/>") == 0 || plist.compare(value, 9, "<string>1") == 0))
+            return true;
+    }
+    return false;
+}
 
 std::string appsDir()
 {

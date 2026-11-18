@@ -74,6 +74,7 @@ public:
     // A picture's own size without decoding it (a PDF's: its page in points)
     static Size sizeOf(const std::string &path);
     bool savePng(const std::string &path) const;
+    bool saveTiff(const std::string &path) const;   // RGBA, LZW (NSBitmapImageRep's TIFFRepresentation)
 
 private:
     std::shared_ptr<cairo_surface_t> m_surface;

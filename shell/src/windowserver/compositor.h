@@ -46,6 +46,10 @@ public:
     // the frame as it is now, kept under `key` (the client window) until dropped; its pixels
     // (premultiplied ARGB), for the Dock's tile
     QImage snapshot(xcb_window_t key, xcb_window_t frame);
+    // A window's picture as CGSHWCaptureWindowList gives screencapture: its frame inside its
+    // outline, over its shadow when `shadow` (the shadow's room around it, transparent); *offset: where
+    // the frame's top left is in the picture
+    QImage capture(xcb_window_t frame, bool shadow, QPoint *offset = nullptr);
     void dropSnapshot(xcb_window_t key);
     // `window` is the frame's place, `target` the tile's. Minimizing with waitForTarget, the clock
     // starts when the Dock gives the new tile's place (retarget), or after 150 ms

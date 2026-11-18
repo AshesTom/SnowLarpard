@@ -23,9 +23,10 @@ the DVD, it extracts again without it. The result is about 150 MiB, half of it t
 | package | what the shell takes |
 |---|---|
 | BaseSystem | CoreUI's `ArtFile.bin`/`SArtFile.bin` (the controls' art), HIToolbox's pictures, CoreTypes' and the disks' icons and the types' names, LaunchServices' strings, Lucida Grande, Helvetica Neue, the .dfont fonts and Menlo, DefaultDesktop.jpg, SystemVersion.plist, AirPort.menu's pictures, Apple80211's ClientDialogs panels and security types' names, Utilities' icons, Parental Controls' pane; QuartzCore's menu bar Apple (32 x 22 RGBA, out of the library) |
-| Essentials | Dock.app's, Finder.app's (nibs, canned searches), SystemUIServer's and the Menu Extras' resources; loginwindow's About This Mac; System Preferences' and its panes' and monitor panels' nibs, pictures and search terms; Preview's, Photo Booth's, Stickies' and TextEdit's resources; the fonts of /Library/Fonts (Stickies' notes); three compositions' embedded pictures; the User Template's PDFs; the applications' icons and Info.plist |
+| Essentials | Help Viewer's resources, the ported applications' help books; the shutter's Grab.aif, screencapture's selection cross (out of its __TEXT); Dock.app's, Finder.app's (nibs, canned searches), SystemUIServer's and the Menu Extras' resources; loginwindow's About This Mac; System Preferences' and its panes' and monitor panels' nibs, pictures and search terms; Preview's, Photo Booth's, Stickies' and TextEdit's resources; the fonts of /Library/Fonts (Stickies' notes); three compositions' embedded pictures; the User Template's PDFs; the applications' icons and Info.plist |
 | MediaFiles | the desktop pictures |
-| Mail | Mail.app's pictures, toolbars, English nibs and strings, its icon |
+| AdditionalEssentials | Mac Help (MacHelp.help), Activity Monitor's help; Grab's and Activity Monitor's resources (nibs, pictures, sounds, strings), the other Utilities' icons and Info.plist |
+| Mail | Mail.app's help book, its pictures, toolbars, English nibs and strings, its icon |
 | Safari, iTunes, iCal, AddressBook, iChat, DVDPlayer | their icons and Info.plist |
 
 Only English resources are kept. HIToolbox's `.rsrc`, CoreUI's `UI.bundle` recipes, the frameworks'

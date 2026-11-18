@@ -14,6 +14,8 @@
 	<string>1.6</string>
 	<key>CFBundleVersion</key>
 	<string>298.17</string>
+	<key>LSUIElement</key>
+	<string>1</string>
 	<key>SLReproducesBundle</key>
 	<string>/System/Library/CoreServices/SystemUIServer.app</string>
 	<key>SLReproducesSystem</key>

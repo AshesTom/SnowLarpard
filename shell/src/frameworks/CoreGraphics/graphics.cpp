@@ -106,6 +106,47 @@ bool Image::savePng(const std::string &path) const
     return !isNull() && cairo_surface_write_to_png(surface(), path.c_str()) == CAIRO_STATUS_SUCCESS;
 }
 
+// NSBitmapImageRep's TIFFRepresentation: 8 bits a sample, RGBA with its alpha unassociated (as
+// NSBitmapImageRep writes one), LZW
+bool Image::saveTiff(const std::string &path) const
+{
+    if (isNull())
+        return false;
+    cairo_surface_flush(surface());
+    const int w = width(), h = height(), stride = cairo_image_surface_get_stride(surface());
+    const unsigned char *data = cairo_image_surface_get_data(surface());
+    TIFF *t = TIFFOpen(path.c_str(), "w");
+    if (!t)
+        return false;
+    TIFFSetField(t, TIFFTAG_IMAGEWIDTH, uint32_t(w));
+    TIFFSetField(t, TIFFTAG_IMAGELENGTH, uint32_t(h));
+    TIFFSetField(t, TIFFTAG_BITSPERSAMPLE, 8);
+    TIFFSetField(t, TIFFTAG_SAMPLESPERPIXEL, 4);
+    const uint16_t extra = EXTRASAMPLE_UNASSALPHA;
+    TIFFSetField(t, TIFFTAG_EXTRASAMPLES, 1, &extra);
+    TIFFSetField(t, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
+    TIFFSetField(t, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+    TIFFSetField(t, TIFFTAG_COMPRESSION, COMPRESSION_LZW);
+    TIFFSetField(t, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(t, 0));
+    std::vector<unsigned char> row(size_t(w) * 4);
+    bool ok = true;
+    for (int y = 0; y < h && ok; ++y) {
+        const uint32_t *px = reinterpret_cast<const uint32_t *>(data + size_t(y) * size_t(stride));
+        for (int x = 0; x < w; ++x) {   // cairo's premultiplied ARGB to straight RGBA
+            const uint32_t p = px[x];
+            const unsigned a = p >> 24;
+            auto un = [a](unsigned c) { return a ? (unsigned char)std::min(255u, (c * 255 + a / 2) / a) : (unsigned char)0; };
+            row[size_t(x) * 4] = un((p >> 16) & 255);
+            row[size_t(x) * 4 + 1] = un((p >> 8) & 255);
+            row[size_t(x) * 4 + 2] = un(p & 255);
+            row[size_t(x) * 4 + 3] = (unsigned char)a;
+        }
+        ok = TIFFWriteScanline(t, row.data(), uint32_t(y), 0) >= 0;
+    }
+    TIFFClose(t);
+    return ok;
+}
+
 namespace {
 
 std::vector<unsigned char> readFile(const std::string &path)
@@ -413,6 +454,7 @@ Image icns(const std::vector<unsigned char> &b, Size atLeast)
 Image tiff(const std::string &path)
 {
     TIFFSetWarningHandler(nullptr);
+    TIFFSetErrorHandler(nullptr);   // a TIFF the RGBA reader refuses is read below
     TIFF *t = TIFFOpen(path.c_str(), "r");
     if (!t)
         return {};
@@ -434,6 +476,49 @@ Image tiff(const std::string &path)
                     a << 24 | (TIFFGetR(v) * a / 255) << 16 | (TIFFGetG(v) * a / 255) << 8 | (TIFFGetB(v) * a / 255);
             }
         cairo_surface_mark_dirty(out.surface());
+    } else if (w && h && w < 16384 && h < 16384) {
+        // NeXT's own TIFFs (Grab's camera, 1995): 1, 2 or 4 bits a sample, RGB or grey, with an
+        // associated alpha, in one plane, which libtiff's RGBA reader refuses: unpacked here
+        uint16_t bps = 0, spp = 0, photometric = 0, planar = PLANARCONFIG_CONTIG;
+        TIFFGetField(t, TIFFTAG_BITSPERSAMPLE, &bps);
+        TIFFGetField(t, TIFFTAG_SAMPLESPERPIXEL, &spp);
+        TIFFGetField(t, TIFFTAG_PHOTOMETRIC, &photometric);
+        TIFFGetFieldDefaulted(t, TIFFTAG_PLANARCONFIG, &planar);
+        const bool rgb = photometric == PHOTOMETRIC_RGB, grey = photometric == PHOTOMETRIC_MINISBLACK || photometric == PHOTOMETRIC_MINISWHITE;
+        const int colours = rgb ? 3 : 1;
+        if ((bps == 1 || bps == 2 || bps == 4) && planar == PLANARCONFIG_CONTIG && (rgb || grey) && spp >= colours && spp <= colours + 1) {
+            const bool alpha = spp == colours + 1;
+            const unsigned max = (1u << bps) - 1;
+            std::vector<unsigned char> line(size_t(TIFFScanlineSize(t)));
+            out = Image(int(w), int(h));
+            cairo_surface_flush(out.surface());
+            unsigned char *dst = cairo_image_surface_get_data(out.surface());
+            const int stride = cairo_image_surface_get_stride(out.surface());
+            for (uint32_t y = 0; y < h; ++y) {
+                if (TIFFReadScanline(t, line.data(), y, 0) < 0)
+                    break;
+                size_t bit = 0;
+                auto sample = [&] {
+                    const unsigned v = (line[bit / 8] >> (8 - bps - bit % 8)) & max;
+                    bit += bps;
+                    return v * 255 / max;
+                };
+                for (uint32_t x = 0; x < w; ++x) {
+                    unsigned c[3];
+                    for (int i = 0; i < colours; ++i)
+                        c[i] = sample();
+                    if (grey) {
+                        if (photometric == PHOTOMETRIC_MINISWHITE)
+                            c[0] = 255 - c[0];
+                        c[1] = c[2] = c[0];
+                    }
+                    const unsigned a = alpha ? sample() : 255;   // associated: the colours already by it
+                    reinterpret_cast<uint32_t *>(dst + y * uint32_t(stride))[x] =
+                        a << 24 | std::min(c[0], a) << 16 | std::min(c[1], a) << 8 | std::min(c[2], a);
+                }
+            }
+            cairo_surface_mark_dirty(out.surface());
+        }
     }
     uint32_t iccLength = 0;
     void *icc = nullptr;

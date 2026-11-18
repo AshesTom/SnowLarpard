@@ -3,6 +3,7 @@
 
 #include "runloop.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -15,6 +16,8 @@ xcb_connection_t *c = nullptr;
 xcb_window_t r = 0;
 std::function<void()> changed;
 std::vector<xcb_atom_t> watched;
+xcb_window_t hotKeyWindow = 0;
+std::function<void(int)> hotKeyPressed;
 int coalesce = 0;
 
 void notify()
@@ -52,6 +55,17 @@ void readEvents()
             if (!hasWindowManager())
                 notify();
             break;
+        case XCB_CLIENT_MESSAGE: {
+            auto *m = reinterpret_cast<xcb_client_message_event_t *>(ev);
+            if (m->window == hotKeyWindow && m->type == atom("_SNOWLEOPARD_HOTKEY") && hotKeyPressed) {
+                const int hotKey = int(m->data.data32[0]);
+                AK::RunLoop::main().later([hotKey] {
+                    if (hotKeyPressed)
+                        hotKeyPressed(hotKey);
+                });
+            }
+            break;
+        }
         default:
             break;
         }
@@ -334,6 +348,32 @@ void watchDestroy(xcb_window_t w)
         return;
     const uint32_t mask = XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_PROPERTY_CHANGE;
     xcb_change_window_attributes(c, w, XCB_CW_EVENT_MASK, &mask);
+    xcb_flush(c);
+}
+
+void registerSymbolicHotKeys(const std::vector<int> &hotKeys, std::function<void(int)> pressed)
+{
+    if (!c)
+        return;
+    hotKeyPressed = std::move(pressed);
+    if (!hotKeyWindow) {
+        hotKeyWindow = xcb_generate_id(c);
+        xcb_create_window(c, XCB_COPY_FROM_PARENT, hotKeyWindow, r, -1, -1, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_ONLY, XCB_COPY_FROM_PARENT, 0,
+                          nullptr);
+    }
+    // the root's list (pairs: hot key, window): the others' kept, ours over theirs for the same keys
+    std::vector<uint32_t> list, old = cardinals(r, atom("_SNOWLEOPARD_SYMBOLIC_HOTKEYS"), XCB_ATOM_CARDINAL);
+    for (size_t i = 0; i + 1 < old.size(); i += 2)
+        if (std::find(hotKeys.begin(), hotKeys.end(), int(old[i])) == hotKeys.end()) {
+            list.push_back(old[i]);
+            list.push_back(old[i + 1]);
+        }
+    for (int k : hotKeys) {
+        list.push_back(uint32_t(k));
+        list.push_back(hotKeyWindow);
+    }
+    xcb_change_property(c, XCB_PROP_MODE_REPLACE, r, atom("_SNOWLEOPARD_SYMBOLIC_HOTKEYS"), XCB_ATOM_CARDINAL, 32, uint32_t(list.size()),
+                        list.data());
     xcb_flush(c);
 }
 

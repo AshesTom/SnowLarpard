@@ -47,6 +47,7 @@ private:
 std::string configDir();
 std::string home();
 std::string picturesDir();   // XDG_PICTURES_DIR
+std::string desktopDir();    // XDG_DESKTOP_DIR (the Mac's ~/Desktop)
 std::string cacheDir();
 bool isDir(const std::string &path);
 bool isFile(const std::string &path);

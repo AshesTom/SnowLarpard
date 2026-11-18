@@ -92,28 +92,33 @@ QVector<Item> items(const QString &folder, Sort sort)
         // the Mac applications that a Linux program stands for, and their Utilities folder
         const QString sub = folder.mid(13);   // "" or "/Utilities"
         const QString dir = "/Applications" + sub;
-        QSet<QString> standing;   // the Linux programs standing for a Mac application
         for (const QString &bundle : QDir(Assets::path(dir)).entryList({"*.app"}, QDir::Dirs, QDir::Name)) {
             const App a = Apps::forMacBundle(dir + '/' + bundle);
             if (!a.valid())
                 continue;
-            standing.insert(a.id);
             Item i;
             i.name = bundle.chopped(4);
             i.app = a;
             i.kind = "Application";
             out.append(i);
         }
-        if (sub.isEmpty()) {
+        {
             // the other Linux applications, beside the Mac ones (as the Mac's /Applications has the
-            // ones you installed), with the names and icons of their .desktop entries
-            QSet<QString> all = standing;
-            for (const QString &bundle : QDir(Assets::path("/Applications/Utilities")).entryList({"*.app"}, QDir::Dirs))
-                if (const App a = Apps::forMacBundle("/Applications/Utilities/" + bundle); a.valid())
-                    all.insert(a.id);
-            all.insert(Apps::finder().id);
+            // ones you installed), with the names and icons of their .desktop entries; the system's
+            // tools and settings in Utilities, where the Mac keeps its own. Only what would be an
+            // application bundle: no commands (Terminal=true), nothing meant for another desktop.
+            QSet<QString> all;
+            for (const QString &d : {QStringLiteral("/Applications"), QStringLiteral("/Applications/Utilities")})
+                for (const QString &bundle : QDir(Assets::path(d)).entryList({"*.app"}, QDir::Dirs))
+                    if (const App a = Apps::forMacBundle(d + '/' + bundle); a.valid())
+                        all.insert(a.id);
+            const App finder = Apps::finder();
+            all.insert(finder.id);
             for (const App &a : Apps::all()) {
-                if (!a.shown || all.contains(a.id) || a.name.isEmpty())
+                if (!a.shown || all.contains(a.id) || a.name.isEmpty() || Apps::doesMacJob(a) ||
+                    Apps::isUtility(a) != !sub.isEmpty())
+                    continue;
+                if (!finder.exec.isEmpty() && a.exec == finder.exec)   // the file manager standing for the Finder
                     continue;
                 Item i;
                 i.name = a.name;

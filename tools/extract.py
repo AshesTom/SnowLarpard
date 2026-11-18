@@ -198,8 +198,35 @@ WANTED = {
         "./System/Library/CoreServices/loginwindow.app/Contents/Resources/*",
         "./Applications/*.app/Contents/Info.plist",
         "./Applications/*.app/Contents/Resources/*.icns",
+        # the ported applications' help books and Help Viewer's pictures, styles and templates
+        # (shell/src/helpviewer): English and Shared only, prune() leaves the other languages
+        "./Applications/Calculator.app/Contents/Resources/Calculator.help/*",
+        "./Applications/Preview.app/Contents/Resources/Preview.help/*",
+        "./Applications/Stickies.app/Contents/Resources/Stickies.help/*",
+        "./Applications/TextEdit.app/Contents/Resources/TextEdit.help/*",
+        "./Applications/Photo Booth.app/Contents/Resources/PhotoBooth.help/*",
+        "./System/Library/CoreServices/HelpViewer.app/Contents/Info.plist",
+        "./System/Library/CoreServices/HelpViewer.app/Contents/Resources/*",
+        # the screen shots' shutter (screencapture plays it, Grab too)
+        "./System/Library/Components/CoreAudio.component/Contents/Resources/SystemSounds/system/Grab.aif",
     ],
     "MediaFiles.pkg": ["./Library/Desktop Pictures/*"],
+    # Grab and Activity Monitor (shell/src/grab, shell/src/activitymonitor): their nibs, strings,
+    # pictures and sounds; the other Utilities' icons and Info.plist
+    "AdditionalEssentials.pkg": [
+        "./Applications/Utilities/Grab.app/Contents/Resources/*",
+        "./Applications/Utilities/Activity Monitor.app/Contents/Resources/*.tif",
+        "./Applications/Utilities/Activity Monitor.app/Contents/Resources/*.tiff",
+        "./Applications/Utilities/Activity Monitor.app/Contents/Resources/*.plist",
+        "./Applications/Utilities/Activity Monitor.app/Contents/Resources/*.icns",
+        "./Applications/Utilities/Activity Monitor.app/Contents/Resources/English.lproj/*",
+        "./Applications/Utilities/*.app/Contents/Info.plist",
+        "./Applications/Utilities/*.app/Contents/Resources/*.icns",
+        # Activity Monitor's help, and Mac Help (the Finder's, System Preferences', Grab's, Software
+        # Update's: their Info.plist's CFAppleHelpAnchor in it)
+        "./Applications/Utilities/Activity Monitor.app/Contents/Resources/ActivityMonitor.help/*",
+        "./Library/Documentation/Help/MacHelp.help/*",
+    ],
 }
 for app in ("Safari", "Mail", "iTunes", "iCal", "AddressBook", "iChat", "DVDPlayer"):
     WANTED[app + ".pkg"] = ["./Applications/*.app/Contents/Info.plist", "./Applications/*.app/Contents/Resources/*.icns"]
@@ -210,6 +237,7 @@ WANTED["Mail.pkg"] += [
     "./Applications/Mail.app/Contents/Resources/*.png",
     "./Applications/Mail.app/Contents/Resources/*.toolbar",
     "./Applications/Mail.app/Contents/Resources/English.lproj/*",
+    "./Applications/Mail.app/Contents/Resources/Mail.help/*",
 ]
 
 
@@ -362,6 +390,29 @@ def menu_apple(pkg, assets, tmp):
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data[at:at + 32 * 22 * 4])
     shutil.rmtree(Path(tmp) / "System", ignore_errors=True)
+
+
+SCREENCAPTURE_CROSSHAIR = "/usr/sbin/screencapture-crosshair.png"
+
+
+def screencapture_crosshair(pkg, assets, tmp):
+    """screencapture's selection cross (a 32 x 32 PNG in its __TEXT, the only one there): the cursor it
+    draws the selection's size beside."""
+    tool = "./usr/sbin/screencapture"
+    unpack(pkg, [tool], tmp)
+    binary = Path(tmp) / tool
+    if not binary.exists():
+        return
+    data = macho_slice(binary.read_bytes())
+    at = data.find(b"\x89PNG\r\n\x1a\n")
+    end = data.find(b"IEND", at) if at >= 0 else -1
+    if end < 0:
+        print("    screencapture: no cross, the shell draws its own")
+    else:
+        out = assets / SCREENCAPTURE_CROSSHAIR.lstrip("/")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data[at:end + 8])
+    shutil.rmtree(Path(tmp) / "usr", ignore_errors=True)
 
 
 CURSOR_THEME = "share/icons/SnowLeopard"
@@ -581,6 +632,8 @@ def main():
             if name == "BaseSystem.pkg":
                 menu_apple(pkg, assets, tmp)
                 cursor_theme(pkg, assets, tmp)
+            if name == "Essentials.pkg":
+                screencapture_crosshair(pkg, assets, tmp)
             pkg.unlink()
     composition_images(assets)
     prune(assets)

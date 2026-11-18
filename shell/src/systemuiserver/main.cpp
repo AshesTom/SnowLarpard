@@ -6,6 +6,7 @@
 // would); NSMenuToolbar lays them at the bar's right. On Linux it draws the whole menu bar
 // (menubar.h). The session ends with it (Log Out).
 #include "menubar.h"
+#include "screencapture.h"
 #include "spotlight.h"
 #include "startup.h"
 
@@ -110,5 +111,6 @@ int main()
         }
     });
     bar.show();
+    ScreenCapture::install();   // ⇧⌘3, ⇧⌘4 (and with ⌃): screencapture
     return App::shared().run();
 }

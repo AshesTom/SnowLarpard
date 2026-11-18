@@ -80,6 +80,7 @@ Dependencies (Arch / CachyOS):
 
 ```sh
 sudo pacman -S --needed cmake qt6-base qt6-imageformats libxcb xcb-util-keysyms cairo pango libjpeg-turbo libtiff lcms2 zlib libxkbcommon wayland wayland-protocols poppler-glib 7zip cpio python-xlib
+sudo pacman -S --needed qt6-webengine   # Help Viewer (the applications' help)
 ```
 
 Then, in a window of your current desktop (Xephyr, or Xwayland's window under Wayland):
@@ -305,10 +306,52 @@ IMAP and SMTP server).
 
 ### Mac applications, Linux programs
 
-Mac applications stand for the Linux programs that do their job: **Safari** is your browser,
-**Mail** your mail client, **iTunes** your music player, and so on
-([shell/src/common/apps.cpp](shell/src/common/apps.cpp)). Linux applications appear in the Dock
-with their own icons.
+Mac applications stand for the Linux programs that do their job: **iTunes** is your music player,
+**iCal** your calendar, and so on ([shell/src/common/apps.cpp](shell/src/common/apps.cpp)); the ones
+the shell ports (Mail, Preview, TextEdit...) are its own. Your web browser stays itself (Firefox's
+name and icon in Safari's place): Safari isn't ported. Linux applications appear in the Dock with
+their own icons, as 10.6's Dock shows them: a tile only for an application with a window of its own,
+not for a panel or a tray program. The Applications stack lists what would be an application bundle
+(no terminal commands, nothing meant for another desktop, one program a job), the system's tools and
+settings in Utilities.
+
+### Keyboard shortcuts
+
+⌘ is the Super (Windows) key. In the shell's applications' own windows Control works as ⌘ too, for
+those used to Linux's shortcuts.
+
+| Keys | What | Who answers |
+|---|---|---|
+| ⌘W | Close the window | WindowServer |
+| ⌘M | Minimize it into the Dock | WindowServer |
+| ⌘H | Hide the application | WindowServer |
+| ⌘Q | Quit the application | WindowServer |
+| ⌘Tab | The next window to the front | WindowServer |
+| ⇧⌘Q / ⌥⇧⌘Q | Log Out (asking first / at once) | WindowServer, for loginwindow |
+| ⇧⌘3 | The screen, to a file on the Desktop | SystemUIServer → screencapture |
+| ⌃⇧⌘3 | The screen, to the clipboard | SystemUIServer → screencapture |
+| ⇧⌘4 | A selection (drag), to a file | SystemUIServer → screencapture |
+| ⌃⇧⌘4 | A selection, to the clipboard | SystemUIServer → screencapture |
+| ⌘? | The application's help, in Help Viewer | the application's Help menu |
+| the rest of each menu | as its nib says (⌘S, ⌘C, ⌘Z…), shown in the menu bar | the application |
+
+While ⇧⌘4 runs: Space switches between the selection and a window (the camera; a click takes the
+window with its shadow), Space held while dragging moves the selection, Control sends the picture to the
+clipboard, Escape gives up.
+
+### Screen shots
+
+⇧⌘3 and ⇧⌘4 make a "Screen shot … at …" file on the Desktop, as on the Mac (screencapture.conf in
+`~/.config/snowleopard/` takes com.apple.screencapture's keys: type, location, name, include-date,
+disable-shadow, capture_cursor). Grab (Utilities) does the same with its panel and timer, and Activity
+Monitor (Utilities) shows the processes, the CPU, the memory, the disks and the network.
+
+### Help
+
+Each application's Help menu opens its help book in Help Viewer, as on the Mac: Calculator, Preview,
+Stickies, TextEdit, Photo Booth, Mail and Activity Monitor have their own; the Finder, System
+Preferences, Grab and Software Update open Mac Help at their page. Help Viewer searches the books ("Ask a
+Question"), follows their topic lists, and its Home button lists the books. It needs Qt WebEngine.
 
 ## Settings
 
@@ -320,7 +363,7 @@ tilesize=48
 largesize=80
 magnification=false
 autohide=false
-persistent-apps=mac:/Applications/Safari.app, app:org.kde.konsole
+persistent-apps=mac:/Applications/Mail.app, app:firefox, app:org.kde.konsole
 ```
 
 The programs watch these files: change one and the Dock or the menu bar follows.

@@ -44,4 +44,8 @@ void hide(xcb_window_t w);
 void onChange(std::function<void()> changed, const std::vector<std::string> &rootAtoms = {});
 void watchDestroy(xcb_window_t w);
 
+// CGSSetSymbolicHotKey: the window server's symbolic hot keys (28 ⇧⌘3, 29 ⌃⇧⌘3, 30 ⇧⌘4, 31 ⌃⇧⌘4)
+// for this program; `pressed` gets the hot key's number when one is (WindowServer's _SNOWLEOPARD_HOTKEY)
+void registerSymbolicHotKeys(const std::vector<int> &hotKeys, std::function<void(int hotKey)> pressed);
+
 } // namespace Windows

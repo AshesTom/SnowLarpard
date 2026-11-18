@@ -61,8 +61,15 @@ public:
     // The key equivalent as the menus draw it ("⌥⌘H")
     static std::string keyLabel(const MainMenuItem &item);
 
+    // -[NSApplication showHelp:]: the bundle's help book (Info.plist's CFBundleHelpBookName), else its
+    // anchor in Mac Help (CFAppleHelpAnchor), in Help Viewer. The menus' "showHelp:" item does it by
+    // itself; false when the bundle has no help
+    bool showHelp() const;
+    bool hasHelp() const;
+
 private:
     void answer(int fd);
+    std::string m_bundle;   // the .app the nib is in (its Info.plist names its help)
     void describe(const std::vector<MainMenuItem> &items, int depth, const std::string &path, std::string &out);
     const MainMenuItem *at(const std::string &path) const;
     const MainMenuItem *forKey(const std::vector<MainMenuItem> &items, const Event &e) const;

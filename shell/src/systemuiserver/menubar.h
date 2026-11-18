@@ -27,6 +27,8 @@ public:
     static constexpr double Height = 22;
 
 private:
+    // Help Viewer's command line for a bundle's help (its Info.plist), empty when it has none
+    static std::vector<std::string> helpArguments(const std::string &bundle);
     struct Title {
         std::string text;
         bool bold = false, apple = false;

@@ -36,24 +36,27 @@ std::string cacheDir()
     return (x.empty() ? home() + "/.cache" : x) + "/snowleopard";
 }
 
-std::string picturesDir()
+// user-dirs.dirs: XDG_PICTURES_DIR="$HOME/Pictures"
+static std::string userDir(const std::string &key, const std::string &fallback)
 {
-    // user-dirs.dirs: XDG_PICTURES_DIR="$HOME/Pictures"
     std::string x = env("XDG_CONFIG_HOME");
     std::ifstream in((x.empty() ? home() + "/.config" : x) + "/user-dirs.dirs");
     std::string line;
     while (std::getline(in, line)) {
-        if (line.rfind("XDG_PICTURES_DIR=", 0) != 0)
+        if (line.rfind(key + "=", 0) != 0)
             continue;
-        std::string v = line.substr(17);
+        std::string v = line.substr(key.size() + 1);
         if (v.size() >= 2 && v.front() == '"')
             v = v.substr(1, v.size() - 2);
         if (v.rfind("$HOME", 0) == 0)
             v = home() + v.substr(5);
         return v;
     }
-    return home() + "/Pictures";
+    return home() + "/" + fallback;
 }
+
+std::string picturesDir() { return userDir("XDG_PICTURES_DIR", "Pictures"); }
+std::string desktopDir() { return userDir("XDG_DESKTOP_DIR", "Desktop"); }
 
 bool isDir(const std::string &path)
 {

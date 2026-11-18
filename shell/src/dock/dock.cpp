@@ -219,6 +219,18 @@ void Dock::loadSettings()
         m_kept.removeAll("mac:/Applications/Dashboard.app");   // Dashboard is for later
         saveApps();
     }
+    // Safari isn't ported: its place goes to the web browser, as itself (Firefox's name and icon),
+    // once; Safari's tile comes back by itself the day it stands for something
+    const QString safari = QStringLiteral("mac:/Applications/Safari.app");
+    if (const int at = int(m_kept.indexOf(safari)); at >= 0 && !Apps::forMacBundle(safari.mid(4)).valid()) {
+        const App browser = Apps::webBrowser();
+        const QString entry = "app:" + browser.id;
+        if (browser.valid() && !m_kept.contains(entry))
+            m_kept[at] = entry;
+        else
+            m_kept.removeAt(at);
+        saveApps();
+    }
     m_iconCache.clear();
 }
 
@@ -239,15 +251,37 @@ static App appForEntry(const QString &entry)
     return {};
 }
 
+// A window of a Foreground application, as LaunchServices would type its process: not a panel or a
+// toolbox alone (utility and toolbar windows, the Linux side's LSUIElement), not a shell component's
+static bool foreground(xcb_window_t w, const App &a)
+{
+    if (a.uiElement)
+        return false;
+    static const xcb_atom_t panels[] = {X11::atom("_NET_WM_WINDOW_TYPE_UTILITY"), X11::atom("_NET_WM_WINDOW_TYPE_TOOLBAR")};
+    const QVector<uint32_t> types = X11::cardinals(w, X11::atom("_NET_WM_WINDOW_TYPE"), XCB_ATOM_ATOM);
+    return types.isEmpty() || (types.first() != panels[0] && types.first() != panels[1]);
+}
+
 void Dock::refreshWindows()
 {
-    // Who runs: the windows, by application
+    // Who runs: the windows, by application. 10.6's Dock (FUN_1000117f1) makes a tile only for a
+    // process whose LaunchServices type is Foreground: LSUIElement and LSBackgroundOnly ones have none.
+    // An application with a panel among its windows still has its tile, by its other windows.
     QHash<QString, QVector<xcb_window_t>> windows;
     QHash<QString, App> running;
     QHash<xcb_window_t, App> minimized;   // those with a tile of their own
     QStringList order;
+    QSet<QString> foregroundApps;
+    QVector<QPair<xcb_window_t, App>> clients;
     for (xcb_window_t w : X11::clientWindows()) {
-        App a = Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w));
+        const App a = Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w));
+        clients.append({w, a});
+        if (foreground(w, a))
+            foregroundApps.insert(a.id);
+    }
+    for (const auto &[w, a] : std::as_const(clients)) {
+        if (!foregroundApps.contains(a.id))
+            continue;
         if (!running.contains(a.id))
             order << a.id;
         running.insert(a.id, a);
@@ -272,7 +306,7 @@ void Dock::refreshWindows()
     QSet<QString> windowless;
     for (const auto &[pid, a] : Apps::aquaKitApps()) {
         Q_UNUSED(pid);
-        if (running.contains(a.id))
+        if (running.contains(a.id) || a.uiElement)
             continue;
         order << a.id;
         running.insert(a.id, a);

@@ -743,6 +743,28 @@ void WindowServer::publishPreview(Client *c, QImage image)
                         uint32_t(data.size()), data.constData());
 }
 
+void WindowServer::publishCapture(Client *c, bool shadow, xcb_window_t requestor)
+{
+    if (!requestor)
+        return;
+    QPoint offset;
+    const QImage image = m_compositor.capture(c->frame, shadow, &offset).convertToFormat(QImage::Format_ARGB32);
+    // width, height, the frame's place in it, then the pixels; appended in pieces (a request's longest)
+    const uint32_t head[4] = {uint32_t(image.width()), uint32_t(image.height()), uint32_t(offset.x()), uint32_t(offset.y())};
+    const xcb_atom_t prop = atom("_SNOWLEOPARD_WINDOW_CAPTURE");
+    xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, requestor, prop, XCB_ATOM_CARDINAL, 32, 4, head);
+    const int rowsAtOnce = qMax(1, 65536 / qMax(1, image.width()));
+    for (int y = 0; y < image.height(); y += rowsAtOnce) {
+        const int n = qMin(rowsAtOnce, image.height() - y);
+        xcb_change_property(m_conn, XCB_PROP_MODE_APPEND, requestor, prop, XCB_ATOM_CARDINAL, 32, uint32_t(image.width() * n),
+                            image.constScanLine(y));
+    }
+    // the end: a last empty append the requestor waits for (_SNOWLEOPARD_WINDOW_CAPTURE_DONE)
+    const uint32_t done = 1;
+    xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, requestor, atom("_SNOWLEOPARD_WINDOW_CAPTURE_DONE"), XCB_ATOM_CARDINAL, 32, 1,
+                        &done);
+}
+
 void WindowServer::minimize(Client *c, bool hide)
 {
     if (c->minimized)
@@ -880,13 +902,25 @@ void WindowServer::updateWorkArea()
 
 // ---- Command (Super) keys, as on the Mac: W closes, M minimizes, H hides, Q quits, Tab goes round
 
-static const xcb_keysym_t keyW = 0x77, keyM = 0x6d, keyH = 0x68, keyQ = 0x71, keyTab = 0xff09;
+static const xcb_keysym_t keyW = 0x77, keyM = 0x6d, keyH = 0x68, keyQ = 0x71, keyTab = 0xff09, key3 = 0x33, key4 = 0x34;
+
+// The symbolic hot keys (CGSSetSymbolicHotKey) the window server keeps for whoever registered them:
+// 28 ⇧⌘3, 29 ⌃⇧⌘3, 30 ⇧⌘4, 31 ⌃⇧⌘4, the screen shots' (SystemUIServer's ScreenCapture). A program
+// registers by the root's _SNOWLEOPARD_SYMBOLIC_HOTKEYS (pairs: hot key, window); the key pressed, its
+// window gets a _SNOWLEOPARD_HOTKEY message with the hot key's number, as the Mac's server sends the
+// registering connection its hot key event
+static int symbolicHotKey(xcb_keysym_t sym, uint16_t state)
+{
+    if (!(state & XCB_MOD_MASK_SHIFT) || (sym != key3 && sym != key4))
+        return -1;
+    return (sym == key3 ? 28 : 30) + ((state & XCB_MOD_MASK_CONTROL) ? 1 : 0);
+}
 
 void WindowServer::grabKeys()
 {
     if (!m_keySymbols)
         return;
-    for (xcb_keysym_t sym : {keyW, keyM, keyH, keyQ, keyTab}) {
+    for (xcb_keysym_t sym : {keyW, keyM, keyH, keyQ, keyTab, key3, key4}) {
         xcb_keycode_t *codes = xcb_key_symbols_get_keycode(m_keySymbols, sym);
         if (!codes)
             continue;
@@ -894,6 +928,12 @@ void WindowServer::grabKeys()
             // with and without Caps Lock and Num Lock
             for (uint16_t extra : {uint16_t(0), uint16_t(XCB_MOD_MASK_LOCK), uint16_t(XCB_MOD_MASK_2), uint16_t(XCB_MOD_MASK_LOCK | XCB_MOD_MASK_2)})
             {
+                if (sym == key3 || sym == key4) {   // the screen shots' hot keys only
+                    for (uint16_t shot : {uint16_t(XCB_MOD_MASK_SHIFT), uint16_t(XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL)})
+                        xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | shot | extra), *k, XCB_GRAB_MODE_ASYNC,
+                                     XCB_GRAB_MODE_ASYNC);
+                    continue;
+                }
                 xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | extra), *k, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
                 // ⇧⌘Q Log Out, ⌥⇧⌘Q at once (the Apple menu's: loginwindow's hot keys on the Mac)
                 if (sym == keyQ)
@@ -908,6 +948,23 @@ void WindowServer::grabKeys()
 void WindowServer::handleKey(xcb_key_press_event_t *e)
 {
     xcb_keysym_t sym = xcb_key_symbols_get_keysym(m_keySymbols, e->detail, 0);
+    if (const int hotKey = symbolicHotKey(sym, e->state); hotKey >= 0) {
+        const QVector<uint32_t> owners = X11::cardinals(m_root, atom("_SNOWLEOPARD_SYMBOLIC_HOTKEYS"), XCB_ATOM_CARDINAL);
+        for (int i = 0; i + 1 < owners.size(); i += 2)
+            if (int(owners[i]) == hotKey) {
+                xcb_client_message_event_t ev = {};
+                ev.response_type = XCB_CLIENT_MESSAGE;
+                ev.format = 32;
+                ev.window = owners[i + 1];
+                ev.type = atom("_SNOWLEOPARD_HOTKEY");
+                ev.data.data32[0] = uint32_t(hotKey);
+                ev.data.data32[1] = e->time;
+                xcb_send_event(m_conn, 0, owners[i + 1], XCB_EVENT_MASK_NO_EVENT, reinterpret_cast<const char *>(&ev));
+                xcb_flush(m_conn);
+                break;
+            }
+        return;
+    }
     if (sym == keyQ && (e->state & XCB_MOD_MASK_SHIFT)) {
         Session::logOut(!(e->state & XCB_MOD_MASK_1));
         return;
@@ -1250,6 +1307,10 @@ void WindowServer::clientMessage(xcb_client_message_event_t *e)
         return;
     } else if (e->type == atom("_NET_CLOSE_WINDOW")) {
         close(c);
+    } else if (e->type == atom("_SNOWLEOPARD_CAPTURE_WINDOW")) {
+        // screencapture's window mode (CGSHWCaptureWindowList): data 0, 1 its shadow too; data 1, the
+        // window that wants the picture, in its _SNOWLEOPARD_WINDOW_CAPTURE
+        publishCapture(c, e->data.data32[0] & 1, e->data.data32[1]);
     } else if (e->type == atom("WM_CHANGE_STATE") && e->data.data32[0] == ICCCM_IconicState) {
         minimize(c);
     } else if (e->type == atom("_SNOWLEOPARD_HIDE")) {

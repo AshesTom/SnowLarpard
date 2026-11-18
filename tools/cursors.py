@@ -201,6 +201,12 @@ NAMES = {
     "resizeup": ["n-resize", "top_side"],
     "resizedown": ["s-resize", "bottom_side"],
     "poof": ["poof"],
+    # screencapture's (CoreCursorSet 7 to 10: HIServices' entries 5 to 8): the selection's, and the
+    # camera of the window mode, to a file or to the clipboard
+    "screenshot": ["snowleopard-screenshot"],
+    "screenshot-selection": ["snowleopard-screenshot-selection"],
+    "camera": ["snowleopard-camera"],
+    "camera-window": ["snowleopard-camera-window"],
     "Empty": ["none"],
 }
 

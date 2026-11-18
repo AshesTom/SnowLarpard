@@ -788,6 +788,54 @@ QImage Compositor::snapshot(xcb_window_t key, xcb_window_t frame)
     return image;
 }
 
+QImage Compositor::capture(xcb_window_t frame, bool shadow, QPoint *offset)
+{
+    Win *w = m_windows.value(frame);
+    if (!running() || !w || !w->mapped || w->inputOnly || !m_argb32 || w->geometry.isEmpty())
+        return {};
+    if (shadow) {
+        const int kind = shadowKind(w);
+        if (kind != w->shadowKind && kind != NoShadow)
+            makeShadow(w, kind);
+    }
+    const QSize size = w->geometry.size();
+    QRect bounds(QPoint(0, 0), size);
+    if (shadow && w->shadow)
+        bounds |= w->shadowRect;
+    const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+    xcb_create_pixmap(m_conn, 32, pixmap, m_root, uint16_t(bounds.width()), uint16_t(bounds.height()));
+    const xcb_render_picture_t picture = xcb_generate_id(m_conn);
+    xcb_render_create_picture(m_conn, picture, pixmap, m_argb32, 0, nullptr);
+    const xcb_rectangle_t all = {0, 0, uint16_t(bounds.width()), uint16_t(bounds.height())};
+    xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, picture, {0, 0, 0, 0}, 1, &all);
+    const int16_t x = int16_t(-bounds.x()), y = int16_t(-bounds.y());
+    if (shadow && w->shadow)   // as the screen has it: black through the shadow's mask
+        xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_OVER, m_black, w->shadow, picture, 0, 0, 0, 0,
+                             int16_t(x + w->shadowRect.x()), int16_t(y + w->shadowRect.y()), uint16_t(w->shadowRect.width()),
+                             uint16_t(w->shadowRect.height()));
+    // the window inside its outline (the frame's round corners), over its shadow
+    const xcb_xfixes_region_t outline = xcb_generate_id(m_conn);
+    xcb_xfixes_create_region_from_window(m_conn, outline, frame, XCB_SHAPE_SK_BOUNDING);
+    xcb_xfixes_translate_region(m_conn, outline, x, y);
+    xcb_xfixes_set_picture_clip_region(m_conn, picture, outline, 0, 0);
+    xcb_render_composite(m_conn, w->alpha ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, w->picture, XCB_NONE, picture, 0, 0, 0, 0,
+                         x, y, uint16_t(size.width()), uint16_t(size.height()));
+    xcb_xfixes_destroy_region(m_conn, outline);
+    QImage image;
+    if (auto *r = xcb_get_image_reply(m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, 0, 0, all.width, all.height, ~0u),
+                                      nullptr)) {
+        if (xcb_get_image_data_length(r) >= bounds.width() * bounds.height() * 4)
+            image = QImage(xcb_get_image_data(r), bounds.width(), bounds.height(), bounds.width() * 4, QImage::Format_ARGB32_Premultiplied)
+                        .copy();
+        free(r);
+    }
+    xcb_render_free_picture(m_conn, picture);
+    xcb_free_pixmap(m_conn, pixmap);
+    if (offset)
+        *offset = QPoint(x, y);
+    return image;
+}
+
 void Compositor::dropSnapshot(xcb_window_t key)
 {
     for (int i = m_animations.size() - 1; i >= 0; --i)

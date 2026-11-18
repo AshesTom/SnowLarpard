@@ -3,7 +3,8 @@
 // gradient measured on 10.6, CoreUI's close, minimize and zoom buttons from ArtFile.bin); the Dock,
 // the menu bar and the Finder's desktop stay as they are, in their layers. EWMH for the shell's
 // programs: the client list, the active window, the struts' work area, minimizing, zooming, full
-// screen. Command (Super) + W, M, H, Q and Tab as on the Mac.
+// screen. Command (Super) + W, M, H, Q and Tab as on the Mac; ⇧⌘3 and ⇧⌘4 (with or without ⌃), the
+// screen shots' symbolic hot keys, for SystemUIServer.
 #pragma once
 
 #include "compositor.h"
@@ -86,6 +87,7 @@ private:
     QRect iconGeometry(const Client *c) const;
     Compositor::Effect minimizeEffect(double *seconds) const;
     void publishPreview(Client *c, QImage image);
+    void publishCapture(Client *c, bool shadow, xcb_window_t requestor);
     void setNetState(Client *c);
 
     void updateClientLists();

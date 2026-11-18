@@ -197,6 +197,9 @@ void MenuBar::activeChanged()
                        (Windows::hasType(active, "_NET_WM_WINDOW_TYPE_UTILITY") || Windows::hasType(active, "_NET_WM_WINDOW_TYPE_DIALOG"));
     if (active && panel && m_app.valid())
         return;
+    // a UI element's window (Help Viewer's) leaves it too: such a program has no menus of its own
+    if (active && m_app.valid() && LaunchServices::isUIElement(Windows::pid(active)))
+        return;
     // the desktop is the Finder's
     bool desktop = Windows::hasType(active, "_NET_WM_WINDOW_TYPE_DESKTOP");
     LSApp app = active && !desktop ? Session::appForWindow(active) : LaunchServices::finder();
@@ -317,8 +320,34 @@ void MenuBar::rebuild()
         add("View", [] { return std::vector<MenuItem>{disabled("Enter Full Screen")}; });
     }
     add("Window", [this] { return windowMenu(); });
-    add("Help", [finder, name] { return std::vector<MenuItem>{disabled((finder ? std::string("Mac") : name) + " Help")}; });
+    // -[NSApplication showHelp:]: the Mac bundle's help book, else its anchor in Mac Help (the Finder's
+    // mchlp001: Mac Help's home), in Help Viewer; none for a Linux program
+    const std::string bundle = finder ? std::string("/System/Library/CoreServices/Finder.app") : m_app.macBundle;
+    add("Help", [finder, name, bundle] {
+        const std::string title = (finder ? std::string("Mac") : name) + " Help";
+        const std::vector<std::string> args = helpArguments(bundle);
+        if (args.empty())
+            return std::vector<MenuItem>{disabled(title)};
+        return std::vector<MenuItem>{item(title, [args] { Task::launchDetached(args); }, true, "⌘?")};
+    });
     layout();
+}
+
+std::vector<std::string> MenuBar::helpArguments(const std::string &bundle)
+{
+    const std::string viewer = LaunchServices::appsDir() + "/HelpViewer.app/Contents/MacOS/HelpViewer";
+    if (bundle.empty() || !isFile(viewer))
+        return {};
+    const auto info = Assets::plistStrings(bundle + "/Contents/Info.plist");
+    auto get = [&info](const char *k) {
+        auto it = info.find(k);
+        return it == info.end() ? std::string() : it->second;
+    };
+    if (const std::string book = get("CFBundleHelpBookName"); !book.empty())
+        return {viewer, "--book", book};
+    if (const std::string anchor = get("CFAppleHelpAnchor"); !anchor.empty())
+        return {viewer, "--anchor", anchor};
+    return {};
 }
 
 void MenuBar::layout()

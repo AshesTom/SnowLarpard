@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
+#include <iterator>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -89,10 +91,58 @@ std::string clean(std::string s)
 
 } // namespace
 
+namespace {
+
+// a string of the Info.plist (extract.py's JSON beside it): "key": "value"
+std::string infoString(const std::string &bundle, const std::string &key)
+{
+    std::ifstream in(bundle + "/Contents/Info.plist.json");
+    const std::string json((std::istreambuf_iterator<char>(in)), {});
+    const std::string k = "\"" + key + "\"";
+    size_t at = json.find(k);
+    if (at == std::string::npos || (at = json.find('"', json.find(':', at + k.size()))) == std::string::npos)
+        return {};
+    const size_t end = json.find('"', at + 1);
+    return end == std::string::npos ? std::string() : json.substr(at + 1, end - at - 1);
+}
+
+// Help Viewer, beside the program (apps/HelpViewer.app/Contents/MacOS/HelpViewer)
+std::string helpViewer()
+{
+    std::string dir = dirName(executablePath());
+    for (int i = 0; i < 5; ++i) {
+        const std::string exe = dir + "/HelpViewer.app/Contents/MacOS/HelpViewer";
+        if (isFile(exe))
+            return exe;
+        dir = dirName(dir);
+    }
+    return {};
+}
+
+} // namespace
+
+bool MainMenu::hasHelp() const
+{
+    return !m_bundle.empty() && !helpViewer().empty() &&
+           (!infoString(m_bundle, "CFBundleHelpBookName").empty() || !infoString(m_bundle, "CFAppleHelpAnchor").empty());
+}
+
+bool MainMenu::showHelp() const
+{
+    if (!hasHelp())
+        return false;
+    const std::string book = infoString(m_bundle, "CFBundleHelpBookName"), anchor = infoString(m_bundle, "CFAppleHelpAnchor");
+    return Task::launchDetached(book.empty() ? std::vector<std::string>{helpViewer(), "--anchor", anchor}
+                                             : std::vector<std::string>{helpViewer(), "--book", book});
+}
+
 bool MainMenu::load(const std::string &nib)
 {
     Archive a;
     std::string path = nib;
+    // the .app it is in: its Info.plist says where its help is
+    if (const size_t app = nib.find(".app/"); app != std::string::npos)
+        m_bundle = nib.substr(0, app + 4);
     if (isDir(path))
         path += "/keyedobjects.nib";
     if (!a.load(path))
@@ -191,7 +241,7 @@ void MainMenu::describe(const std::vector<MainMenuItem> &items, int depth, const
             // a submenu's item is enabled (its items are validated), unless it is empty (Services)
             enabled = std::any_of(it.items.begin(), it.items.end(), [](const MainMenuItem &s) { return !s.separator && !s.hidden; });
         } else {
-            enabled = !it.action.empty() && validate && validate(it, v);
+            enabled = it.action == "showHelp:" ? hasHelp() : !it.action.empty() && validate && validate(it, v);
         }
         out += std::to_string(depth) + "\t" + (it.hasSubmenu ? "M" : "I") + "\t" + (enabled ? "1" : "0") + "\t" + (v.checked ? "1" : "0") +
                "\t" + keyLabel(it) + "\t" + it.action + "\t" + p + "\t" + clean(v.title.empty() ? it.title : v.title) + "\n";
@@ -276,7 +326,9 @@ void MainMenu::answer(int fd)
         App::shared().later([this, path] {
             const MainMenuItem *it = at(path);
             MenuValidation v;
-            if (it && !it->action.empty() && perform && (!validate || validate(*it, v)))
+            if (it && it->action == "showHelp:")
+                showHelp();
+            else if (it && !it->action.empty() && perform && (!validate || validate(*it, v)))
                 perform(*it);
         });
     }
@@ -325,6 +377,10 @@ bool MainMenu::performKeyEquivalent(const Event &e)
     const MainMenuItem *it = forKey(m_menus, e);
     if (!it)
         return false;
+    if (it->action == "showHelp:") {   // ⌘? (-[NSApplication showHelp:])
+        showHelp();
+        return true;
+    }
     MenuValidation v;
     if (validate && !validate(*it, v))
         return true;   // the item is there but disabled: the key does nothing (and isn't typed)

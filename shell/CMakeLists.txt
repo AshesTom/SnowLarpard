@@ -170,6 +170,21 @@ target_link_libraries(TextEdit PRIVATE aquakit)
 target_compile_options(TextEdit PRIVATE -Wall -Wextra)
 set_target_properties(TextEdit PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/TextEdit.app/Contents/MacOS")
 
+# Grab.app (Utilities), on AquaKit: Grab 1.5's panel, timer, documents, Inspector and Preferences; its
+# grabs are screencapture's (docs/reverse-status.md, section 21)
+add_executable(Grab src/grab/main.cpp)
+target_link_libraries(Grab PRIVATE aquakit)
+target_compile_options(Grab PRIVATE -Wall -Wextra)
+set_target_properties(Grab PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Grab.app/Contents/MacOS")
+
+# Activity Monitor.app (Utilities), on AquaKit: its window, tabs and charts, the processes and the system
+# from /proc (docs/reverse-status.md, section 22)
+add_executable(ActivityMonitor src/activitymonitor/main.cpp)
+target_link_libraries(ActivityMonitor PRIVATE aquakit LinuxGlue)
+target_compile_options(ActivityMonitor PRIVATE -Wall -Wextra)
+set_target_properties(ActivityMonitor PROPERTIES AUTOMOC OFF OUTPUT_NAME "Activity Monitor"
+                      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Activity Monitor.app/Contents/MacOS")
+
 # Mail.app, on AquaKit: IMAP and SMTP by libcurl, the passwords in the keyring by libsecret
 # (docs/mail-reverse.md); Preview's reader of NeXT plists for its *.toolbar files
 pkg_check_modules(MAIL IMPORTED_TARGET libcurl libsecret-1)
@@ -250,6 +265,7 @@ add_executable(SystemUIServer src/systemuiserver/main.cpp src/systemuiserver/men
                src/systemuiserver/spotlight.cpp src/systemuiserver/spotlight.h
                src/systemuiserver/clock.cpp src/systemuiserver/clock.h src/systemuiserver/battery.cpp src/systemuiserver/battery.h
                src/systemuiserver/volume.cpp src/systemuiserver/volume.h
+               src/systemuiserver/screencapture.cpp src/systemuiserver/screencapture.h
                src/prefs/desktop.cpp src/prefs/desktop.h)
 target_include_directories(SystemUIServer PRIVATE src/systemuiserver src/prefs)
 target_link_libraries(SystemUIServer PRIVATE SystemUIPlugin
@@ -322,6 +338,25 @@ endif()
 target_compile_options(FinderWindows PRIVATE -Wall -Wextra)
 set_target_properties(FinderWindows PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Finder.app/Contents/MacOS")
 
+# Each component's Info.plist (its source folder's): Apple's identifier and version, and what it
+# reproduces (SLReproducesSystem, SLReproducesBundle), so that each can be brought to a later release
+# on its own; copied where the Mac has it
+function(component_info source destination)
+    configure_file("${CMAKE_SOURCE_DIR}/src/${source}/Info.plist" "${CMAKE_BINARY_DIR}/apps/${destination}/Info.plist" COPYONLY)
+endfunction()
+
+# Help Viewer.app: the help books' pages through Qt's web engine (WebKit's on the Mac); built when Qt
+# WebEngine is installed
+find_package(Qt6 6.4 QUIET COMPONENTS WebEngineWidgets PrintSupport)
+if(Qt6WebEngineWidgets_FOUND AND Qt6PrintSupport_FOUND)
+    mac_app(HelpViewer src/helpviewer/main.cpp)
+    target_link_libraries(HelpViewer PRIVATE Qt6::WebEngineWidgets Qt6::PrintSupport)
+    component_info(helpviewer "HelpViewer.app/Contents")
+    message(STATUS "Help Viewer: Qt WebEngine")
+else()
+    message(STATUS "Help Viewer: not built (no Qt WebEngine)")
+endif()
+
 # The window manager: a program of its own, as the Mac's WindowServer is
 pkg_check_modules(XCB_COMPOSITOR REQUIRED IMPORTED_TARGET xcb-composite xcb-damage xcb-render xcb-xfixes xcb-cursor)
 add_executable(WindowServer src/windowserver/main.cpp src/windowserver/windowserver.cpp src/windowserver/windowserver.h
@@ -330,12 +365,13 @@ target_link_libraries(WindowServer PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
 target_compile_options(WindowServer PRIVATE -Wall -Wextra)
 set_target_properties(WindowServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")
 
-# Each component's Info.plist (its source folder's): Apple's identifier and version, and what it
-# reproduces (SLReproducesSystem, SLReproducesBundle), so that each can be brought to a later release
-# on its own; copied where the Mac has it
-function(component_info source destination)
-    configure_file("${CMAKE_SOURCE_DIR}/src/${source}/Info.plist" "${CMAKE_BINARY_DIR}/apps/${destination}/Info.plist" COPYONLY)
-endfunction()
+# /usr/sbin/screencapture: the screen shots, of the screen, a selection or a window (SystemUIServer's
+# hot keys, Grab), to a file or the clipboard; a program of its own as the Mac's
+add_executable(screencapture src/screencapture/main.cpp)
+target_link_libraries(screencapture PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
+target_compile_options(screencapture PRIVATE -Wall -Wextra)
+set_target_properties(screencapture PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")
+
 component_info(dock "Dock.app/Contents")
 component_info(finder "Finder.app/Contents")
 component_info(systemuiserver "SystemUIServer.app/Contents")
@@ -345,6 +381,8 @@ component_info(prefs "System Preferences.app/Contents")
 component_info(calculator "Calculator.app/Contents")
 component_info(stickies "Stickies.app/Contents")
 component_info(textedit "TextEdit.app/Contents")
+component_info(grab "Grab.app/Contents")
+component_info(activitymonitor "Activity Monitor.app/Contents")
 foreach(app IN ITEMS Preview Mail PhotoBooth)
     if(TARGET ${app})
         string(TOLOWER ${app} dir)
