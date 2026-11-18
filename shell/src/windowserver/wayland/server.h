@@ -129,6 +129,7 @@ private:
     QQuickWindow *m_window = nullptr;
     QWaylandQuickCompositor *m_compositor = nullptr;
     QWaylandOutput *m_output = nullptr;
+    class QWaylandXdgOutputV1 *m_xdgOutput = nullptr;
     QQuickItem *m_root = nullptr;
     QQuickItem *m_levels[Levels] = {};
     XdgShell *m_xdgShell = nullptr;

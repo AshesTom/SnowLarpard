@@ -10,6 +10,8 @@
 #include <QWaylandQuickItem>
 #include <QWaylandSurface>
 #include <cstring>
+#include <cerrno>
+#include <csignal>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -264,9 +266,19 @@ bool Xwayland::listen()
     mkdir("/tmp/.X11-unix", 01777);
     for (int n = 1; n < 64; ++n) {
         const QByteArray lock = QStringLiteral("/tmp/.X%1-lock").arg(n).toLocal8Bit();
-        const int fd = open(lock.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);
-        if (fd < 0)
-            continue;   // taken (an X server, another session's)
+        int fd = open(lock.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);
+        if (fd < 0) {
+            // taken (an X server, another session's), unless its server is gone: then it is free
+            QFile f(QString::fromLocal8Bit(lock));
+            const qint64 owner = f.open(QIODevice::ReadOnly) ? f.readAll().trimmed().toLongLong() : 0;
+            if (owner <= 0 || kill(pid_t(owner), 0) == 0 || errno != ESRCH)
+                continue;
+            unlink(lock.constData());
+            unlink(QStringLiteral("/tmp/.X11-unix/X%1").arg(n).toLocal8Bit().constData());
+            fd = open(lock.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);
+            if (fd < 0)
+                continue;
+        }
         const QByteArray pid = QByteArray::number(qint64(getpid())).rightJustified(10) + '\n';
         if (write(fd, pid.constData(), size_t(pid.size())) != pid.size()) {
             close(fd);

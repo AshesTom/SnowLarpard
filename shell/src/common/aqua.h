@@ -12,7 +12,8 @@ class QPainter;
 
 namespace Aqua {
 
-// Before QApplication: X11 (XWayland under a Wayland desktop), no Qt scaling of our own.
+// Before QApplication: the session's window server, Wayland (SNOWLEOPARD_WINDOW_SERVER=wayland) or
+// X11 (XWayland under another Wayland desktop), no Qt scaling of our own.
 void preinit();
 // After it: fonts, the menus' style.
 void init(QApplication &app);

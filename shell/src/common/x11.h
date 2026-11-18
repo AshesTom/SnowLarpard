@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// The X11 side of the shell: the clients' windows (EWMH when a window manager runs, the root's
-// children when none does), the active one, and the Dock's and the menu bar's own window types.
+// The window server's side of the shell: the clients' windows (EWMH when a window manager runs, the
+// root's children when none does), the active one, and the Dock's and the menu bar's own window
+// types. On Wayland the same calls go to the Wayland WindowServer (sl_window_server_v1, through
+// WindowServerClient: its window numbers stand for the X windows) and the shell's own windows are
+// layer shell surfaces (LayerShellQt).
 #pragma once
 
 #include <QPolygon>
@@ -29,9 +32,21 @@ QByteArray bytes(xcb_window_t w, xcb_atom_t prop, xcb_atom_t type);
 
 bool hasWindowManager();
 bool compositing();
+// the Wayland session's WindowServer is there (the calls below go to it)
+bool wayland();
 
 // The application windows, bottom to top when known.
 QVector<xcb_window_t> clientWindows();
+// all of them, those out of the Dock too (_NET_CLIENT_LIST: loginwindow's panels)
+QVector<xcb_window_t> allClientWindows();
+// a panel or a toolbox (a utility or toolbar window): not a Foreground application's window alone
+bool isPanel(xcb_window_t w);
+// The application in front without a window (_SNOWLEOPARD_FRONT_APP, set_front_app): its pid, 0 for
+// none; *serial changes with each request
+uint32_t frontApp(uint32_t *serial = nullptr);
+// this application in front without a window (the Finder's desktop clicked)
+void setFrontApp(bool front);
+void flush();
 xcb_window_t activeWindow();
 
 QString wmClass(xcb_window_t w);      // the class part ("firefox")

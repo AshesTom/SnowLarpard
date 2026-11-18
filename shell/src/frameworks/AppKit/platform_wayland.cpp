@@ -2,17 +2,24 @@
 // AquaKit on Wayland: xdg-shell windows drawn in shared memory, menus as xdg_popups with their grab,
 // the keyboard through xkbcommon (with its repeat), the pointer's cursor from the cursor theme. No
 // WindowServer draws the title bars here: AquaKit draws 10.6's itself (appkit.cpp), and moving the
-// window by it asks the compositor (xdg_toplevel.move).
+// window by it asks the compositor (xdg_toplevel.move). The status bar (the menu bar) is a layer
+// shell surface; on the Wayland WindowServer, the application in front without a window, its key
+// equivalents and its keys then go through its private protocol (WindowServerClient).
 #include "foundation.h"
 #include "platform.h"
 
 #include "xdg-shell-client-protocol.h"
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#ifdef SNOWLEOPARD_WAYLAND
+#include "windowserverclient.h"
+#endif
 
 #include <wayland-client.h>
 #include <wayland-cursor.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -53,6 +60,7 @@ public:
     wl_compositor *compositor = nullptr;
     wl_shm *shm = nullptr;
     xdg_wm_base *wm = nullptr;
+    zwlr_layer_shell_v1 *layerShell = nullptr;
     wl_seat *seat = nullptr;
     wl_pointer *pointer = nullptr;
     wl_keyboard *keyboard = nullptr;
@@ -82,6 +90,49 @@ public:
     {
         return {0, 0, double(outputWidth > 0 ? outputWidth : 1280), double(outputHeight > 0 ? outputHeight : 800)};
     }
+    Rect visibleFrame() const override
+    {
+#ifdef SNOWLEOPARD_WAYLAND
+        // the window server's work area: the screen less the menu bar's and the Dock's zones
+        const WindowServerClient::Rect a = WindowServerClient::workArea();
+        if (WindowServerClient::connected() && a.width > 0 && a.height > 0)
+            return {double(a.x), double(a.y), double(a.width), double(a.height)};
+#endif
+        return screenFrame();
+    }
+    void setFrontWithoutWindows(bool front) override
+    {
+#ifdef SNOWLEOPARD_WAYLAND
+        if (windowServer())
+            WindowServerClient::setFrontApp(front ? uint32_t(getpid()) : 0);
+#else
+        (void)front;
+#endif
+    }
+    // The Wayland WindowServer's private protocol, on this display (none under another compositor)
+    bool windowServer()
+    {
+#ifdef SNOWLEOPARD_WAYLAND
+        if (!windowServerAsked) {
+            windowServerAsked = true;
+            if (WindowServerClient::attach(display))
+                WindowServerClient::onKey([this](uint32_t keysym, const std::string &text, uint32_t mods) {
+                    // its modifiers (1 shift, 4 control, 8 alt, 64 command) as AquaKit's
+                    unsigned m = 0;
+                    if (mods & 1) m |= Shift;
+                    if (mods & 4) m |= Control;
+                    if (mods & 8) m |= Option;
+                    if (mods & 64) m |= Command;
+                    if (keyWithoutWindows)
+                        keyWithoutWindows(keysym, text, m);
+                });
+        }
+        return WindowServerClient::connected();
+#else
+        return false;
+#endif
+    }
+    bool windowServerAsked = false;
     void beforePoll() override
     {
         while (wl_display_prepare_read(display) != 0)
@@ -166,6 +217,9 @@ public:
     void show() override;
     void hide() override
     {
+        if (m_layer)
+            zwlr_layer_surface_v1_destroy(m_layer);
+        m_layer = nullptr;
         if (m_popup)
             xdg_popup_destroy(m_popup);
         if (m_toplevel)
@@ -284,6 +338,32 @@ public:
     }
 
     void setRoundedBottomCorners(bool rounded) override { m_roundedBottom = rounded; }
+    // NSStatusBar's window: a layer over the windows along the screen's top (or bottom), keeping its
+    // zone out of their way
+    void setStatusBar(int top, int bottom) override
+    {
+        m_statusTop = top;
+        m_statusBottom = bottom;
+        if (!wl->layerShell)
+            return;
+        if (m_layer) {
+            zwlr_layer_surface_v1_set_exclusive_zone(m_layer, top > 0 ? top : bottom);
+            wl_surface_commit(surface);
+        } else if (m_xdg) {
+            hide();
+            show();
+        }
+    }
+    void setKeyEquivalents(const std::vector<uint32_t> &keysyms) override
+    {
+#ifdef SNOWLEOPARD_WAYLAND
+        if (wl->windowServer())
+            WindowServerClient::setKeyEquivalents(keysyms);
+#else
+        (void)keysyms;
+#endif
+    }
+    zwlr_layer_surface_v1 *layer() const { return m_layer; }
     void setCursor(const std::string &name) override;
     void setActive(bool active)
     {
@@ -393,6 +473,8 @@ private:
     xdg_surface *m_xdg = nullptr;
     xdg_toplevel *m_toplevel = nullptr;
     xdg_popup *m_popup = nullptr;
+    zwlr_layer_surface_v1 *m_layer = nullptr;
+    int m_statusTop = -1, m_statusBottom = -1;   // a status bar's zones (setStatusBar), -1 for a window
     wl_callback *m_frame = nullptr;
     bool m_configured = false;
     bool m_resizable = false;
@@ -405,8 +487,41 @@ private:
 
 void WlWindow::show()
 {
-    if (m_xdg)
+    if (m_xdg || m_layer)
         return;
+    if (m_statusTop >= 0 && wl->layerShell) {
+        // the status bar: a layer surface, the program's name its namespace ("com.apple.systemuiserver")
+        std::string scope = "com.apple." + programName();
+        std::transform(scope.begin(), scope.end(), scope.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        m_layer = zwlr_layer_shell_v1_get_layer_surface(wl->layerShell, surface, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_TOP, scope.c_str());
+        static const zwlr_layer_surface_v1_listener layerListener = {
+            [](void *data, zwlr_layer_surface_v1 *l, uint32_t serial, uint32_t width, uint32_t height) {
+                auto *w = static_cast<WlWindow *>(data);
+                zwlr_layer_surface_v1_ack_configure(l, serial);
+                w->m_configured = true;
+                // the screen's width
+                if (width > 0 && height > 0 && (double(width) != w->m_size.w || double(height) != w->m_size.h)) {
+                    const Size s{double(width), double(height)};
+                    w->resize(s);
+                    w->window->nativeResize(s);
+                }
+                w->window->nativeExpose();
+            },
+            [](void *data, zwlr_layer_surface_v1 *) {
+                auto *w = static_cast<WlWindow *>(data);
+                App::shared().later([win = w->window] { win->nativeClose(); });
+            },
+        };
+        zwlr_layer_surface_v1_add_listener(m_layer, &layerListener, this);
+        const bool top = m_statusTop > 0 || m_statusBottom <= 0;
+        zwlr_layer_surface_v1_set_anchor(m_layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT |
+                                                      (top ? ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP : ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM));
+        zwlr_layer_surface_v1_set_size(m_layer, 0, uint32_t(m_size.h));
+        zwlr_layer_surface_v1_set_exclusive_zone(m_layer, top ? m_statusTop : m_statusBottom);
+        zwlr_layer_surface_v1_set_keyboard_interactivity(m_layer, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+        wl_surface_commit(surface);
+        return;
+    }
     m_xdg = xdg_wm_base_get_xdg_surface(wl->wm, surface);
     static const xdg_surface_listener surfaceListener = {[](void *data, xdg_surface *s, uint32_t serial) {
         auto *w = static_cast<WlWindow *>(data);
@@ -421,7 +536,7 @@ void WlWindow::show()
         w->window->nativeExpose();
     }};
     xdg_surface_add_listener(m_xdg, &surfaceListener, this);
-    if (kind == Window::Menu && m_parent && m_parent->xdg()) {
+    if (kind == Window::Menu && m_parent && (m_parent->xdg() || m_parent->layer())) {
         xdg_positioner *pos = xdg_wm_base_create_positioner(wl->wm);
         xdg_positioner_set_size(pos, int(m_size.w), int(m_size.h));
         xdg_positioner_set_anchor_rect(pos, int(m_at.x), int(m_at.y), 1, 1);
@@ -429,7 +544,10 @@ void WlWindow::show()
         xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
         xdg_positioner_set_constraint_adjustment(pos, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X | XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
                                                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+        // a layer's menu (the menu bar's): its parent given by the layer surface
         m_popup = xdg_surface_get_popup(m_xdg, m_parent->xdg(), pos);
+        if (!m_parent->xdg())
+            zwlr_layer_surface_v1_get_popup(m_parent->layer(), m_popup);
         xdg_positioner_destroy(pos);
         static const xdg_popup_listener popupListener = {
             [](void *, xdg_popup *, int32_t, int32_t, int32_t, int32_t) {},
@@ -686,6 +804,8 @@ const wl_registry_listener registryListener = {
         else if (i == xdg_wm_base_interface.name) {
             wl->wm = static_cast<xdg_wm_base *>(wl_registry_bind(r, name, &xdg_wm_base_interface, std::min(version, 2u)));
             xdg_wm_base_add_listener(wl->wm, &wmListener, nullptr);
+        } else if (i == zwlr_layer_shell_v1_interface.name && !wl->layerShell) {
+            wl->layerShell = static_cast<zwlr_layer_shell_v1 *>(wl_registry_bind(r, name, &zwlr_layer_shell_v1_interface, std::min(version, 3u)));
         } else if (i == wl_seat_interface.name && !wl->seat) {
             wl->seat = static_cast<wl_seat *>(wl_registry_bind(r, name, &wl_seat_interface, std::min(version, 5u)));
             wl_seat_add_listener(wl->seat, &seatListener, nullptr);
@@ -725,6 +845,7 @@ std::unique_ptr<Platform> Platform::wayland()
     wl_display_roundtrip(p->display);   // the seat's capabilities, the output's mode
     if (!p->compositor || !p->shm || !p->wm)
         return nullptr;
+    p->windowServer();
     return p;
 }
 

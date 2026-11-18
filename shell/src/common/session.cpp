@@ -105,7 +105,7 @@ void aboutThisMac()
     // loginwindow's panel (shell/src/loginwindow, its nib from the DVD): brought forward when it is
     // open, else started (apps/loginwindow.app/Contents/MacOS/loginwindow beside the shell's programs)
     // (the window manager's whole list: the panel is out of clientWindows(), being out of the Dock)
-    for (xcb_window_t w : X11::cardinals(X11::root(), X11::atom("_NET_CLIENT_LIST"), XCB_ATOM_WINDOW))
+    for (xcb_window_t w : X11::allClientWindows())
         if (X11::wmClass(w) == QLatin1String("loginwindow")) {
             X11::activate(w);
             return;

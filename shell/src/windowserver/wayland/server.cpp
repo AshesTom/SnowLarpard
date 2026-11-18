@@ -76,6 +76,7 @@ bool Server::start(const QString &socketName, bool fullScreen, const QSize &size
     auto *xdgOutput = new QWaylandXdgOutputV1(m_output, xdgOutputs);
     xdgOutput->setName(QStringLiteral("SL-1"));
     xdgOutput->setDescription(QStringLiteral("WindowServer"));
+    m_xdgOutput = xdgOutput;
     new QWaylandViewporter(m_compositor);
     m_compositor->create();
     if (!m_compositor->isCreated())
@@ -96,6 +97,8 @@ bool Server::start(const QString &socketName, bool fullScreen, const QSize &size
         m_levels[l]->setZ(l);
     }
     auto resize = [this] {
+        m_xdgOutput->setLogicalPosition(QPoint(0, 0));
+        m_xdgOutput->setLogicalSize(m_window->size());
         for (QQuickItem *l : m_levels)
             l->setSize(m_window->size());
         paintDesktopPicture();

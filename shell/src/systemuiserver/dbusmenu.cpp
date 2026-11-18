@@ -126,8 +126,8 @@ std::pair<std::string, std::string> AppMenuRegistrar::menuFor(xcb_window_t windo
     if (it != menus.end())
         return it->second;
     // KDE's way: X properties on the window
-    const std::string service = Windows::bytes(window, Windows::atom("_KDE_NET_WM_APPMENU_SERVICE_NAME"), XCB_ATOM_STRING);
-    const std::string path = Windows::bytes(window, Windows::atom("_KDE_NET_WM_APPMENU_OBJECT_PATH"), XCB_ATOM_STRING);
+    std::string service, path;
+    Windows::appMenu(window, &service, &path);
     if (!service.empty() && !path.empty())
         return {service, path};
     return {};

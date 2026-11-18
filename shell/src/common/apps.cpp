@@ -500,14 +500,6 @@ App forPid(uint32_t pid)
     return exe.isEmpty() ? App{} : forWindow(exe, exe, pid);
 }
 
-uint32_t frontWithoutWindows(uint32_t *serial)
-{
-    const QVector<uint32_t> v = X11::cardinals(X11::root(), X11::atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
-    if (v.size() < 2 || kill(pid_t(v[0]), 0) != 0)
-        return 0;
-    if (serial)
-        *serial = v[1];
-    return v[0];
-}
+uint32_t frontWithoutWindows(uint32_t *serial) { return X11::frontApp(serial); }
 
 } // namespace Apps

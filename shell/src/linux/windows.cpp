@@ -3,7 +3,19 @@
 
 #include "runloop.h"
 
+#ifdef SNOWLEOPARD_WAYLAND
+#include "windowserverclient.h"
+namespace WS = WindowServerClient;
+#define ON_WAYLAND(...)                                                                                                                   \
+    if (wl) {                                                                                                                             \
+        __VA_ARGS__;                                                                                                                      \
+    }
+#else
+#define ON_WAYLAND(...)
+#endif
+
 #include <algorithm>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -14,6 +26,7 @@ namespace {
 
 xcb_connection_t *c = nullptr;
 xcb_window_t r = 0;
+bool wl = false;   // the Wayland window server's
 std::function<void()> changed;
 std::vector<xcb_atom_t> watched;
 xcb_window_t hotKeyWindow = 0;
@@ -106,10 +119,28 @@ void clientMessage(xcb_window_t w, xcb_atom_t type, std::initializer_list<uint32
 
 } // namespace
 
+#ifdef SNOWLEOPARD_WAYLAND
+const WS::WindowInfo *info(xcb_window_t w) { return wl ? WS::window(w) : nullptr; }
+uint32_t flags(xcb_window_t w)
+{
+    const WS::WindowInfo *i = info(w);
+    return i ? i->flags : 0;
+}
+#endif
+
 bool open()
 {
-    if (c)
+    if (c || wl)
         return true;
+#ifdef SNOWLEOPARD_WAYLAND
+    const char *server = getenv("SNOWLEOPARD_WINDOW_SERVER");
+    if (server && !strcmp(server, "wayland") && WS::connect()) {
+        wl = true;
+        AK::RunLoop::main().watch(WS::fd(), [] { WS::dispatch(); });
+        WS::onChange([] { notify(); });
+        return true;
+    }
+#endif
     int screen = 0;
     c = xcb_connect(nullptr, &screen);
     if (!c || xcb_connection_has_error(c)) {
@@ -130,6 +161,7 @@ bool open()
 }
 
 xcb_connection_t *conn() { return c; }
+bool wayland() { return wl; }
 xcb_window_t root() { return r; }
 
 xcb_atom_t atom(const char *name)
@@ -173,6 +205,16 @@ std::string bytes(xcb_window_t w, xcb_atom_t prop, xcb_atom_t type)
 
 bool hasType(xcb_window_t w, const char *type)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        const std::string t = type;
+        if (t == "_NET_WM_WINDOW_TYPE_UTILITY")
+            return flags(w) & WS::Utility;
+        if (t == "_NET_WM_WINDOW_TYPE_DIALOG")
+            return flags(w) & WS::Dialog;
+        return false;   // a desktop, a dock: layers, not windows
+    }
+#endif
     const xcb_atom_t a = atom(type);
     for (uint32_t t : cardinals(w, atom("_NET_WM_WINDOW_TYPE"), XCB_ATOM_ATOM))
         if (t == a)
@@ -182,6 +224,20 @@ bool hasType(xcb_window_t w, const char *type)
 
 bool hasState(xcb_window_t w, const char *state)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        const std::string st = state;
+        if (st == "_NET_WM_STATE_SKIP_TASKBAR")
+            return flags(w) & WS::SkipTaskbar;
+        if (st == "_NET_WM_STATE_HIDDEN")
+            return flags(w) & (WS::Minimized | WS::Hidden);
+        if (st == "_NET_WM_STATE_FULLSCREEN")
+            return flags(w) & WS::Fullscreen;
+        if (st == "_NET_WM_STATE_ABOVE")
+            return flags(w) & WS::Above;
+        return false;
+    }
+#endif
     const xcb_atom_t a = atom(state);
     for (uint32_t s : cardinals(w, atom("_NET_WM_STATE"), XCB_ATOM_ATOM))
         if (s == a)
@@ -189,8 +245,61 @@ bool hasState(xcb_window_t w, const char *state)
     return false;
 }
 
+std::vector<xcb_window_t> allClientWindows()
+{
+    std::vector<xcb_window_t> out;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        for (const WS::WindowInfo &i : WS::windows())
+            out.push_back(i.id);
+        return out;
+    }
+#endif
+    for (uint32_t w : cardinals(r, atom("_NET_CLIENT_LIST"), XCB_ATOM_WINDOW))
+        out.push_back(w);
+    return out;
+}
+
+uint32_t frontApp(uint32_t *serial)
+{
+    uint32_t pid = 0, s = 0;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        pid = WS::frontPid();
+        s = WS::frontSerial();
+    } else
+#endif
+    {
+        const auto v = cardinals(r, atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
+        if (v.size() >= 2)
+            pid = v[0], s = v[1];
+    }
+    if (!pid || kill(pid_t(pid), 0) != 0)
+        return 0;
+    if (serial)
+        *serial = s;
+    return pid;
+}
+
+bool appMenu(xcb_window_t w, std::string *service, std::string *path)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        const WS::WindowInfo *i = info(w);
+        *service = i ? i->menuService : std::string();
+        *path = i ? i->menuPath : std::string();
+        return !service->empty() && !path->empty();
+    }
+#endif
+    *service = bytes(w, atom("_KDE_NET_WM_APPMENU_SERVICE_NAME"), XCB_ATOM_STRING);
+    *path = bytes(w, atom("_KDE_NET_WM_APPMENU_OBJECT_PATH"), XCB_ATOM_STRING);
+    return !service->empty() && !path->empty();
+}
+
 bool hasWindowManager()
 {
+    if (wl)
+        return true;
     const auto check = cardinals(r, atom("_NET_SUPPORTING_WM_CHECK"), XCB_ATOM_WINDOW);
     return !check.empty() && check[0];
 }
@@ -198,6 +307,14 @@ bool hasWindowManager()
 std::vector<xcb_window_t> clientWindows()
 {
     std::vector<xcb_window_t> out;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        for (const WS::WindowInfo &i : WS::windows())
+            if (!(i.flags & WS::SkipTaskbar))
+                out.push_back(i.id);
+        return out;
+    }
+#endif
     if (!c)
         return out;
     if (hasWindowManager()) {
@@ -227,6 +344,7 @@ std::vector<xcb_window_t> clientWindows()
 
 xcb_window_t activeWindow()
 {
+    ON_WAYLAND(return WS::active())
     if (hasWindowManager()) {
         const auto active = cardinals(r, atom("_NET_ACTIVE_WINDOW"), XCB_ATOM_WINDOW);
         return active.empty() ? 0 : active[0];
@@ -247,23 +365,35 @@ static std::pair<std::string, std::string> classHint(xcb_window_t w)
     return {raw.substr(0, nul), second};
 }
 
-std::string wmClass(xcb_window_t w) { return classHint(w).second; }
-std::string wmInstance(xcb_window_t w) { return classHint(w).first; }
+std::string wmClass(xcb_window_t w)
+{
+    ON_WAYLAND(const WS::WindowInfo *i = info(w); return i ? i->appId : std::string())
+    return classHint(w).second;
+}
+
+std::string wmInstance(xcb_window_t w)
+{
+    ON_WAYLAND(const WS::WindowInfo *i = info(w); return i ? i->appId : std::string())
+    return classHint(w).first;
+}
 
 std::string title(xcb_window_t w)
 {
+    ON_WAYLAND(const WS::WindowInfo *i = info(w); return i ? i->title : std::string())
     const std::string name = bytes(w, atom("_NET_WM_NAME"), atom("UTF8_STRING"));
     return name.empty() ? bytes(w, XCB_ATOM_WM_NAME, XCB_ATOM_STRING) : name;
 }
 
 uint32_t pid(xcb_window_t w)
 {
+    ON_WAYLAND(const WS::WindowInfo *i = info(w); return i ? i->pid : 0)
     const auto p = cardinals(w, atom("_NET_WM_PID"), XCB_ATOM_CARDINAL);
     return p.empty() ? 0 : p[0];
 }
 
 bool minimized(xcb_window_t w)
 {
+    ON_WAYLAND(return flags(w) & (WS::Minimized | WS::Hidden))
     if (hasState(w, "_NET_WM_STATE_HIDDEN"))
         return true;
     const auto s = cardinals(w, atom("WM_STATE"), atom("WM_STATE"));
@@ -272,12 +402,14 @@ bool minimized(xcb_window_t w)
 
 bool hidden(xcb_window_t w)
 {
+    ON_WAYLAND(return flags(w) & WS::Hidden)
     const auto h = cardinals(w, atom("_SNOWLEOPARD_HIDDEN"), XCB_ATOM_CARDINAL);
     return !h.empty() && h[0];
 }
 
 void activate(xcb_window_t w)
 {
+    ON_WAYLAND(WS::activate(w); return)
     if (!c || !w)
         return;
     if (hasWindowManager()) {
@@ -293,6 +425,7 @@ void activate(xcb_window_t w)
 
 void close(xcb_window_t w)
 {
+    ON_WAYLAND(WS::close(w); return)
     if (!c || !w)
         return;
     if (hasWindowManager()) {
@@ -312,6 +445,7 @@ void close(xcb_window_t w)
 
 void minimize(xcb_window_t w)
 {
+    ON_WAYLAND(WS::minimize(w); return)
     if (!c || !w)
         return;
     if (hasWindowManager())
@@ -323,6 +457,7 @@ void minimize(xcb_window_t w)
 
 void hide(xcb_window_t w)
 {
+    ON_WAYLAND(WS::hide(w); return)
     if (!c || !w)
         return;
     if (hasWindowManager())
@@ -353,6 +488,18 @@ void watchDestroy(xcb_window_t w)
 
 void registerSymbolicHotKeys(const std::vector<int> &hotKeys, std::function<void(int)> pressed)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wl) {
+        hotKeyPressed = std::move(pressed);
+        WS::registerHotKeys(hotKeys, [](int hotKey) {
+            AK::RunLoop::main().later([hotKey] {
+                if (hotKeyPressed)
+                    hotKeyPressed(hotKey);
+            });
+        });
+        return;
+    }
+#endif
     if (!c)
         return;
     hotKeyPressed = std::move(pressed);

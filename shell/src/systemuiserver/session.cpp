@@ -82,7 +82,7 @@ void loginwindow(const std::string &arg)
 void aboutThisMac()
 {
     // brought forward when open (out of the client list's applications: a panel), else started
-    for (uint32_t w : Windows::cardinals(Windows::root(), Windows::atom("_NET_CLIENT_LIST"), XCB_ATOM_WINDOW))
+    for (uint32_t w : Windows::allClientWindows())
         if (Windows::wmClass(w) == "loginwindow") {
             Windows::activate(w);
             return;

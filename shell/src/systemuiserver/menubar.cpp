@@ -43,15 +43,8 @@ MenuItem disabled(const std::string &title, const std::string &keys = {})
     return i;
 }
 
-// _SNOWLEOPARD_FRONT_APP: the application in front without a window, and its serial
-uint32_t frontWithoutWindows(uint32_t *serial)
-{
-    const auto v = Windows::cardinals(Windows::root(), Windows::atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
-    if (v.size() < 2 || kill(pid_t(v[0]), 0) != 0)
-        return 0;
-    *serial = v[1];
-    return v[0];
-}
+// _SNOWLEOPARD_FRONT_APP (set_front_app): the application in front without a window, and its serial
+uint32_t frontWithoutWindows(uint32_t *serial) { return Windows::frontApp(serial); }
 
 long long prefsStamp()
 {

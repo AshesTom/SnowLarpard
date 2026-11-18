@@ -111,12 +111,18 @@ find_file(XDG_SHELL_XML NAMES xdg-shell.xml
 if(AQUAKIT_WAYLAND_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
     set(gen "${CMAKE_BINARY_DIR}/wayland")
     file(MAKE_DIRECTORY "${gen}")
+    # the status bar (the menu bar) as a layer: wlr-layer-shell (the window server's copy)
+    set(LAYER_SHELL_XML "${CMAKE_SOURCE_DIR}/src/windowserver/wayland/protocols/wlr-layer-shell-unstable-v1.xml")
     add_custom_command(OUTPUT "${gen}/xdg-shell-client-protocol.h" "${gen}/xdg-shell-protocol.c"
+                              "${gen}/wlr-layer-shell-unstable-v1-client-protocol.h" "${gen}/wlr-layer-shell-unstable-v1-protocol.c"
         COMMAND "${WAYLAND_SCANNER}" client-header "${XDG_SHELL_XML}" "${gen}/xdg-shell-client-protocol.h"
         COMMAND "${WAYLAND_SCANNER}" private-code "${XDG_SHELL_XML}" "${gen}/xdg-shell-protocol.c"
-        DEPENDS "${XDG_SHELL_XML}")
+        COMMAND "${WAYLAND_SCANNER}" client-header "${LAYER_SHELL_XML}" "${gen}/wlr-layer-shell-unstable-v1-client-protocol.h"
+        COMMAND "${WAYLAND_SCANNER}" private-code "${LAYER_SHELL_XML}" "${gen}/wlr-layer-shell-unstable-v1-protocol.c"
+        DEPENDS "${XDG_SHELL_XML}" "${LAYER_SHELL_XML}")
     enable_language(C)
-    target_sources(AppKit PRIVATE src/frameworks/AppKit/platform_wayland.cpp "${gen}/xdg-shell-protocol.c" "${gen}/xdg-shell-client-protocol.h")
+    target_sources(AppKit PRIVATE src/frameworks/AppKit/platform_wayland.cpp "${gen}/xdg-shell-protocol.c" "${gen}/xdg-shell-client-protocol.h"
+                   "${gen}/wlr-layer-shell-unstable-v1-protocol.c" "${gen}/wlr-layer-shell-unstable-v1-client-protocol.h")
     target_include_directories(AppKit PRIVATE "${gen}")
     target_link_libraries(AppKit PUBLIC PkgConfig::AQUAKIT_WAYLAND)
     target_compile_definitions(AppKit PRIVATE AQUAKIT_WAYLAND)
@@ -243,12 +249,46 @@ target_link_options(AquaStylePlugin PRIVATE "LINKER:--exclude-libs,ALL")
 set_target_properties(AquaStylePlugin PROPERTIES PREFIX "" OUTPUT_NAME aquastyle CXX_VISIBILITY_PRESET hidden
                       LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Linux/qt6/styles")
 
+# The Wayland window server's private calls (src/linux/windowserverclient, sl_window_server_v1: the
+# shell's CGS), for the Qt programs (X11:: on Wayland), LinuxGlue and AquaKit: wayland-client alone
+set(WS_CLIENT_XML "${CMAKE_SOURCE_DIR}/src/windowserver/wayland/protocols/snowleopard-window-server-v1.xml")
+if(AQUAKIT_WAYLAND_FOUND AND WAYLAND_SCANNER)
+    set(wscgen "${CMAKE_BINARY_DIR}/windowserver-client")
+    file(MAKE_DIRECTORY "${wscgen}")
+    add_custom_command(OUTPUT "${wscgen}/snowleopard-window-server-v1-client-protocol.h" "${wscgen}/snowleopard-window-server-v1-protocol.c"
+        COMMAND "${WAYLAND_SCANNER}" client-header "${WS_CLIENT_XML}" "${wscgen}/snowleopard-window-server-v1-client-protocol.h"
+        COMMAND "${WAYLAND_SCANNER}" private-code "${WS_CLIENT_XML}" "${wscgen}/snowleopard-window-server-v1-protocol.c"
+        DEPENDS "${WS_CLIENT_XML}")
+    enable_language(C)
+    add_library(WindowServerClient STATIC src/linux/windowserverclient.cpp src/linux/windowserverclient.h
+                "${wscgen}/snowleopard-window-server-v1-protocol.c" "${wscgen}/snowleopard-window-server-v1-client-protocol.h")
+    target_include_directories(WindowServerClient PUBLIC src/linux PRIVATE "${wscgen}")
+    target_link_libraries(WindowServerClient PUBLIC PkgConfig::AQUAKIT_WAYLAND)
+    target_compile_definitions(WindowServerClient PUBLIC SNOWLEOPARD_WAYLAND)
+    set_target_properties(WindowServerClient PROPERTIES AUTOMOC OFF POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(WindowServerClient PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra>)
+    # the Qt programs: X11:: on the Wayland window server, their shell windows as layer surfaces
+    find_package(LayerShellQt QUIET)
+    if(LayerShellQt_FOUND)
+        target_link_libraries(aquashell PUBLIC WindowServerClient LayerShellQt::Interface)
+        message(STATUS "The shell's Qt programs: X11 and Wayland (LayerShellQt)")
+    else()
+        message(STATUS "The shell's Qt programs: X11 only (no LayerShellQt)")
+    endif()
+endif()
+
 # Linux's glue, not a Mac framework (src/linux): the session's windows (EWMH) and D-Bus (sd-bus) on
 # Foundation's run loop, for SystemUIServer (and the Dock, later)
 pkg_check_modules(LINUXGLUE_DEPS REQUIRED IMPORTED_TARGET xcb libsystemd)
 add_library(LinuxGlue STATIC src/linux/windows.cpp src/linux/windows.h src/linux/dbus.cpp src/linux/dbus.h)
 target_include_directories(LinuxGlue PUBLIC src/linux)
 target_link_libraries(LinuxGlue PUBLIC Foundation PkgConfig::LINUXGLUE_DEPS)
+if(TARGET WindowServerClient)
+    target_link_libraries(LinuxGlue PUBLIC WindowServerClient)
+    if(AQUAKIT_WAYLAND_FOUND)
+        target_link_libraries(AppKit PUBLIC WindowServerClient)
+    endif()
+endif()
 target_compile_options(LinuxGlue PRIVATE -Wall -Wextra)
 set_target_properties(LinuxGlue PROPERTIES AUTOMOC OFF)
 

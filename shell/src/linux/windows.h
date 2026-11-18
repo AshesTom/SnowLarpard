@@ -2,7 +2,9 @@
 // Linux's glue, not a Mac framework: the session's windows as the window manager lists them (EWMH,
 // WindowServer's or another's), without Qt, for what on the Mac asks the window server
 // (CGWindowList, the Process Manager's hide and show): SystemUIServer's menu bar, later the Dock.
-// A connection of its own to the X display, watched on Foundation's run loop.
+// A connection of its own to the X display, watched on Foundation's run loop; in the Wayland session
+// (SNOWLEOPARD_WINDOW_SERVER=wayland) the Wayland WindowServer's (WindowServerClient: its window
+// numbers stand for the X windows, the properties below for what its window events say).
 #pragma once
 
 #include <cstdint>
@@ -13,7 +15,8 @@
 
 namespace Windows {
 
-bool open();   // the display ($DISPLAY); false without one
+bool open();   // the display ($DISPLAY), or the Wayland window server; false without one
+bool wayland();   // the Wayland window server's
 xcb_connection_t *conn();
 xcb_window_t root();
 xcb_atom_t atom(const char *name);
@@ -24,6 +27,12 @@ bool hasType(xcb_window_t w, const char *type);   // "_NET_WM_WINDOW_TYPE_DESKTO
 bool hasState(xcb_window_t w, const char *state);  // "_NET_WM_STATE_SKIP_TASKBAR"
 
 bool hasWindowManager();
+// all the applications' windows, those out of the Dock too (_NET_CLIENT_LIST)
+std::vector<xcb_window_t> allClientWindows();
+// The application in front without a window (_SNOWLEOPARD_FRONT_APP): its pid, 0 for none
+uint32_t frontApp(uint32_t *serial = nullptr);
+// The application's D-Bus menu for the menu bar (_KDE_NET_WM_APPMENU_*, org_kde_kwin_appmenu)
+bool appMenu(xcb_window_t w, std::string *service, std::string *path);
 // The applications' windows, bottom to top (not the shell's docks, desktops and menus)
 std::vector<xcb_window_t> clientWindows();
 xcb_window_t activeWindow();

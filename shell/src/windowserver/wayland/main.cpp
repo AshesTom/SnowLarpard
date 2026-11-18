@@ -23,7 +23,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-static int signalPipe[2] = {-1, -1};
+static int signalPipe[2] = {-1, -1}, quitPipe[2] = {-1, -1};
 
 int main(int argc, char **argv)
 {
@@ -84,6 +84,13 @@ int main(int argc, char **argv)
     if (xwayland)
         server.xwayland()->listen();
 
+    // SIGTERM, SIGINT, SIGHUP: quit properly (Xwayland's display given back)
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, quitPipe) == 0) {
+        for (int sig : {SIGTERM, SIGINT, SIGHUP})
+            std::signal(sig, [](int) { (void)!write(quitPipe[1], "q", 1); });
+        auto *n = new QSocketNotifier(quitPipe[0], QSocketNotifier::Read, &app);
+        QObject::connect(n, &QSocketNotifier::activated, &app, [&app] { app.exit(0); });
+    }
     // SIGUSR1: the screen as it is drawn, to $SNOWLEOPARD_SCREENSHOT (the tests' way to look at it)
     if (!qEnvironmentVariableIsEmpty("SNOWLEOPARD_SCREENSHOT") && socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, signalPipe) == 0) {
         std::signal(SIGUSR1, [](int) { (void)!write(signalPipe[1], "s", 1); });
@@ -100,6 +107,7 @@ int main(int argc, char **argv)
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("WAYLAND_DISPLAY", server.socketName());
         env.insert("XDG_SESSION_TYPE", "wayland");
+        env.insert("SNOWLEOPARD_WINDOW_SERVER", "wayland");
         env.remove("QT_QPA_PLATFORM");
         env.remove("QT_WAYLAND_HARDWARE_INTEGRATION");
         env.remove("QT_WAYLAND_CLIENT_BUFFER_INTEGRATION");

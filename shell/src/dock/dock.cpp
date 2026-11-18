@@ -257,9 +257,7 @@ static bool foreground(xcb_window_t w, const App &a)
 {
     if (a.uiElement)
         return false;
-    static const xcb_atom_t panels[] = {X11::atom("_NET_WM_WINDOW_TYPE_UTILITY"), X11::atom("_NET_WM_WINDOW_TYPE_TOOLBAR")};
-    const QVector<uint32_t> types = X11::cardinals(w, X11::atom("_NET_WM_WINDOW_TYPE"), XCB_ATOM_ATOM);
-    return types.isEmpty() || (types.first() != panels[0] && types.first() != panels[1]);
+    return !X11::isPanel(w);
 }
 
 void Dock::refreshWindows()
@@ -411,7 +409,7 @@ void Dock::publishIconGeometry()
             where.insert(t.window, tileRect(t));
     for (auto it = where.cbegin(); it != where.cend(); ++it)
         X11::setIconGeometry(it.key(), it.value());
-    xcb_flush(X11::conn());
+    X11::flush();
 }
 
 bool Dock::trashFull() const
