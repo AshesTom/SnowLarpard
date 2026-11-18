@@ -193,6 +193,7 @@ const QStringList &ownBundles()
     static const QStringList list = {"/Applications/System Preferences.app", "/Applications/Preview.app",
                                      "/Applications/Mail.app", "/Applications/Photo Booth.app",
                                      "/Applications/Calculator.app", "/Applications/Stickies.app",
+                                     "/Applications/TextEdit.app",
                                      "/System/Library/CoreServices/Software Update.app"};
     return list;
 }

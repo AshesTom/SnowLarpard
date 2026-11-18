@@ -317,6 +317,8 @@ void WindowServer::readProperties(Client *c)
                 icon.setPixel(x, y, proxy[2 + y * icon.width() + x]);
         c->proxyIcon = icon;
     }
+    QVector<uint32_t> edited = X11::cardinals(c->window, atom("_SNOWLEOPARD_DOCUMENT_EDITED"), XCB_ATOM_CARDINAL);
+    c->documentEdited = !edited.isEmpty() && edited[0];
     QVector<uint32_t> rounded = X11::cardinals(c->window, atom("_SNOWLEOPARD_ROUNDED_BOTTOM"), XCB_ATOM_CARDINAL);
     c->roundedBottom = !rounded.isEmpty() && rounded[0];
     QVector<uint32_t> opacity = X11::cardinals(c->window, atom("_NET_WM_WINDOW_OPACITY"), XCB_ATOM_CARDINAL);
@@ -414,7 +416,9 @@ void WindowServer::sendConfigureNotify(Client *c)
 QImage WindowServer::buttonImage(const Client *c, int button) const
 {
     static const char *names[] = {"close", "minimize", "zoom", "toolbar"};
-    QStringList path = {"titlebarcontrols", names[button], button == ToolbarButton ? "colorsrgb" : "colorsryg"};
+    // -[NSWindow setDocumentEdited:]: the close button with its dot (closedirty)
+    const char *name = button == Close && c->documentEdited ? "closedirty" : names[button];
+    QStringList path = {"titlebarcontrols", name, button == ToolbarButton ? "colorsrgb" : "colorsryg"};
     path << (c->utility ? QStringList{"utilwin", "variant2"} : QStringList{"regularwin"});
     if (c != m_active)
         path << "inactive";
@@ -930,7 +934,8 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
             if (e->atom == XCB_ATOM_WM_NAME || e->atom == atom("_NET_WM_NAME")) {
                 readProperties(c);
                 paintTitle(c);
-            } else if (e->atom == atom("_SNOWLEOPARD_UNIFIED_TOOLBAR") || e->atom == atom("_SNOWLEOPARD_PROXY_ICON")) {
+            } else if (e->atom == atom("_SNOWLEOPARD_UNIFIED_TOOLBAR") || e->atom == atom("_SNOWLEOPARD_PROXY_ICON") ||
+                       e->atom == atom("_SNOWLEOPARD_DOCUMENT_EDITED")) {
                 readProperties(c);
                 paintTitle(c);
             } else if (e->atom == atom("_SNOWLEOPARD_ROUNDED_BOTTOM")) {

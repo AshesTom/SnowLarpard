@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // The menus of the shell's AquaKit applications (Preview...): their MainMenu.nib's, which the
-// application publishes on its abstract socket "snowleopard-menus-<pid>" (aquakit/mainmenu.h). Each
+// application publishes on its abstract socket "snowleopard-menus-<pid>" (frameworks/AppKit/mainmenu.h). Each
 // menu is asked for again when it opens, so its items are validated then (-validateMenuItem:); a
 // chosen item is sent back as "do <path>". The application menu's Hide, Hide Others and Show All, and
 // the Window menu, are the shell's (they act on the windows, as the menu bar's own menus do), unless

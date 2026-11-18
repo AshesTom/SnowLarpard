@@ -6,19 +6,19 @@
 #include "aqua.h"
 #include "art.h"
 #include "assets.h"
-#include "airport.h"
-#include "bluetooth.h"
-#include "extras.h"
 #include "findermenus.h"
 #include "menubarfilter.h"
+#include "menuextra.h"
 #include "session.h"
+#include "spotlight.h"
 #include "x11.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFileSystemWatcher>
-#include <QTimer>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
@@ -26,10 +26,50 @@
 #include <QScreen>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 #include <QXmlStreamReader>
 
+#include <dlfcn.h>
+
 static const QString dockBundle = QStringLiteral("/System/Library/CoreServices/Dock.app");
+
+// com.apple.systemuiserver's menuExtras: the bundles' Mac paths, right to left; ~/.config/snowleopard/
+// systemuiserver.conf's menuExtras when set
+static QStringList menuExtraBundles()
+{
+    static const QStringList standard = {
+        "/System/Library/CoreServices/Menu Extras/Clock.menu",   "/System/Library/CoreServices/Menu Extras/Battery.menu",
+        "/System/Library/CoreServices/Menu Extras/Volume.menu",  "/System/Library/CoreServices/Menu Extras/AirPort.menu",
+        "/System/Library/CoreServices/Menu Extras/Bluetooth.menu"};
+    QSettings s(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/systemuiserver.conf",
+                QSettings::IniFormat);
+    return s.value("menuExtras", standard).toStringList();
+}
+
+// A .menu bundle (SystemUIPlugin's NSMenuExtra): its library, Contents/MacOS/<Name>, among the shell's
+// CoreServices (beside SystemUIServer.app), and its principal class from SystemUIMenuExtraCreate
+static MenuExtra *loadMenuExtra(const QString &macPath, QObject *parent)
+{
+    static const QString coreServices = QStringLiteral("/System/Library/CoreServices/");
+    QString bundle = macPath;
+    if (bundle.startsWith(coreServices))
+        bundle = QCoreApplication::applicationDirPath() + "/../../../" + bundle.mid(coreServices.size());
+    const QString name = QFileInfo(bundle).completeBaseName();
+    const QString library = QFileInfo(bundle + "/Contents/MacOS/" + name).absoluteFilePath();
+    void *handle = dlopen(QFile::encodeName(library).constData(), RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        qWarning("SystemUIServer: %s: %s", qPrintable(macPath), dlerror());
+        return nullptr;
+    }
+    using Create = MenuExtra *(*)(QObject *);
+    auto create = reinterpret_cast<Create>(dlsym(handle, "SystemUIMenuExtraCreate"));
+    if (!create) {
+        qWarning("SystemUIServer: %s: no SystemUIMenuExtraCreate", qPrintable(macPath));
+        return nullptr;
+    }
+    return create(parent);
+}
 
 MenuBar::MenuBar(QWidget *parent) : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowDoesNotAcceptFocus)
 {
@@ -48,10 +88,12 @@ MenuBar::MenuBar(QWidget *parent) : QWidget(parent, Qt::FramelessWindowHint | Qt
     connect(prefsWatch, &QFileSystemWatcher::directoryChanged, coalesce, qOverload<>(&QTimer::start));
     connect(coalesce, &QTimer::timeout, this, &MenuBar::reloadDesktop);
 
-    // Right to left, as SystemUIServer lays them: Spotlight at the edge, then the clock... then
-    // AirPort and Bluetooth (a 10.6 MacBook's default order)
-    m_extras = {new SpotlightExtra(this), new ClockExtra(this),  new BatteryExtra(this),
-                new VolumeExtra(this),    new AirPortExtra(this), new BluetoothExtra(this)};
+    // Right to left, as SystemUIServer lays them: Spotlight at the edge (Spotlight's own), then the
+    // .menu bundles of com.apple.systemuiserver's menuExtras (a 10.6 MacBook's by default)
+    m_extras = {new SpotlightExtra(this)};
+    for (const QString &bundle : menuExtraBundles())
+        if (MenuExtra *e = loadMenuExtra(bundle, this))
+            m_extras.append(e);
     for (MenuExtra *e : m_extras)
         connect(e, &MenuExtra::changed, this, [this] { layoutItems(); update(); });
 

@@ -50,6 +50,12 @@ WANTED = {
         # the AirPort menu extra's bars, scanning and off pictures (BaseSystem has AirPort.menu,
         # Essentials the other extras)
         "./System/Library/CoreServices/Menu Extras/AirPort.menu/Contents/Resources/*.pdf",
+        # its panels (Apple80211's ClientDialogs: join a network, its password, create one) and the
+        # security types' names (ClientController)
+        "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle/Contents/Resources/English.lproj/*",
+        "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle/Contents/Resources/*.icns",
+        "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle/Contents/Resources/*.pdf",
+        "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientController.bundle/Contents/Resources/English.lproj/Localizable.strings",
         # the colour spaces ImageIO gives untagged icns data (Generic RGB, Generic Gray), for
         # matching them to the screen (_CGImagePluginInitICNS)
         "./System/Library/ColorSync/Profiles/Generic RGB Profile.icc",
@@ -59,6 +65,14 @@ WANTED = {
         # the fonts a Stickies note may be in (its RTF names them: Helvetica, Times, Courier...)
         "./System/Library/Fonts/*.dfont",
         "./System/Library/Fonts/Menlo.ttc",
+        # NSDocument's and NSUndoManager's strings (AppKit's): Untitled, the save alerts, Undo %@
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/Document.strings",
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/Undo.strings",
+        # NSTextView's find panel and its ruler's accessory and strings (TextEdit's, AppKit's)
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/NSFindPanel.nib/*",
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/FindPanel.strings",
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/NSTextRulerAccessory.nib/*",
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/Ruler.strings",
         "./Applications/Utilities/*.app/Contents/Info.plist",
         "./Applications/Utilities/*.app/Contents/Resources/*.icns",
         # Parental Controls' pane is BaseSystem's (the others, Essentials')
@@ -86,6 +100,13 @@ WANTED = {
         "./Applications/Stickies.app/Contents/Resources/Stickies.help/*",
         "./Library/Fonts/*.ttc",
         "./Library/Fonts/*.ttf",
+        # TextEdit (shell/src/textedit): its window's and panels' nibs, strings, document icons, help
+        # and test document (TextEdit 1.6 (264): the same binary on 10.6 and 10.6.8)
+        "./Applications/TextEdit.app/Contents/version.plist",
+        "./Applications/TextEdit.app/Contents/Resources/*.rtf",
+        "./Applications/TextEdit.app/Contents/Resources/DocumentWindow.nib/*",
+        "./Applications/TextEdit.app/Contents/Resources/English.lproj/*",
+        "./Applications/TextEdit.app/Contents/Resources/TextEdit.help/*",
         # Photo Booth (shell/src/photobooth): its pictures, sounds, nibs and strings, and the three
         # compositions whose embedded pictures its effects use (composition_images takes them out;
         # the effects themselves are in effects.cpp, so the .qtz files go afterwards)

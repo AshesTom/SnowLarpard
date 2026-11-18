@@ -1279,7 +1279,7 @@ int main()
         std::fprintf(stderr, "Photo Booth: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     if (!Assets::exists(std::string(Bundle) + "/Contents/Resources/photo_back.png")) {
         std::fprintf(stderr, "Photo Booth: its pictures are not in the assets (tools/extract.py takes them from the DVD)\n");
         return 1;

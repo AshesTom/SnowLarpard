@@ -1473,7 +1473,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "Mail: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     MailApp mail(mailto);
     mail.start();
     return app.run();

@@ -16,7 +16,7 @@
 #include "foundation.h"
 #include "mainmenu.h"
 #include "nib.h"
-#include "richtext.h"
+#include "attributedstring.h"
 #include "text.h"
 #include "textview.h"
 
@@ -1220,7 +1220,6 @@ void FindPanel::build()
             control->action = [this] { replaceAll(); };
     }
     m_window->onUnhandledKey = [this](Event &e) { m_c.menu().performKeyEquivalent(e); };
-    m_window->onClose = [this] { m_window->close(); };
 }
 
 void FindPanel::show()
@@ -1807,7 +1806,6 @@ void Controller::showAbout()
         auto *copyright = c->add<Label>(get("NSHumanReadableCopyright"), Font::system(10));
         copyright->style.align = Align::Center;
         copyright->setFrame({0, 160, 285, 14});
-        m_about->onClose = [this] { m_about->close(); };
         m_about->onUnhandledKey = [this](Event &e) { m_menu.performKeyEquivalent(e); };
     }
     m_about->show();
@@ -2041,8 +2039,8 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "Stickies: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
-    Assets::registerAllFonts();
+    FontManager::registerSystemFonts();
+    FontManager::registerAllFonts();
     if (!Assets::exists(std::string(Bundle) + "/Contents/Resources/English.lproj/MainMenu.nib")) {
         std::fprintf(stderr, "Stickies: its files are not in the assets (tools/extract.py takes them from the DVD)\n");
         return 1;

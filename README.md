@@ -55,9 +55,11 @@ It follows the same idea as Winedows' native shell (XP) and the Aqua session of 
 | **Software Update** | Mac OS X 10.6.8, from Apple's own catalog | AquaKit |
 | **Mail** | Early: IMAP and SMTP, passwords in the desktop's keyring | AquaKit, libcurl, libsecret |
 | **Stickies** | Stickies 7.0: its database, its notes' colours and frames, Arrange, Find, Import and Export | AquaKit |
+| **TextEdit** | TextEdit 1.6: rich and plain text, RTF and RTFD, Make Plain / Rich Text, the ruler, Wrap to Page, Find, Preferences | AquaKit |
 
-**AquaKit** is a small AppKit without Qt: AppKit's skeleton on cairo and pango, with controls
-drawn by CoreUI's own renderer (reversed), on Wayland or X11.
+**AquaKit** is the Mac's frameworks without Qt, each its own library shared by the programs as on
+the Mac: Foundation, CoreGraphics (PNG, JPEG, TIFF, icns and PDF pictures, poppler drawing the PDFs),
+CoreText, CoreUI (its own renderer, reversed) and AppKit, on cairo and pango, on Wayland or X11.
 
 **Text** is drawn as Quartz draws it: Lucida Grande's unhinted outlines, made heavier by Quartz's
 own font smoothing dilation, then its LCD smoothing (the red, green and blue filters and the gamma
@@ -146,9 +148,11 @@ Restart and Shut Down only act on the computer with `SNOWLEOPARD_POWER=1`.
 - **The applications' own menus**, over D-Bus (the global menu: Qt and KDE applications by
   themselves, GTK ones through appmenu-gtk-module).
 - **Menu extras**: Spotlight (finds applications for now), the clock, the battery, the volume
-  (a slider, through `pactl`), AirPort (the networks with their bars, joining, Turn AirPort Off,
-  through NetworkManager) and Bluetooth (the devices and their submenus, Discoverable, through
-  `bluetoothctl`), as 10.6.8's AirPort.menu and Bluetooth.menu make them.
+  (a slider, through `pactl`), AirPort (the networks with their bars, joining with AirPort's own
+  password, Join Other and Create Network panels from the DVD's nibs, Turn AirPort Off, through
+  NetworkManager and `iw`) and Bluetooth (the devices and their submenus, Discoverable, a phone's
+  network, the diagnostics report, through `bluetoothctl`), as 10.6.8's AirPort.menu and
+  Bluetooth.menu make them.
 - The bar is **translucent**, made from the desktop as 10.6's window server makes it (its menu
   bar filter, reversed from CoreGraphics and QuartzCore).
   `AppleEnableMenuBarTransparency=false` in `~/.config/snowleopard/menubar.conf` makes it
@@ -331,10 +335,13 @@ tools/extract.py      takes the files out of the DVD (partition map, HFS+, xar, 
 tools/softwareupdate.py  Apple's update catalog: what applies, its download, its installation
 shell/src/common      aquashell, shared by every program (assets, apps, X11, session)
 shell/src/menubar     SystemUIServer.app
+shell/src/menuextras  the menu extras' bundles (Clock, Battery, Volume, AirPort, Bluetooth .menu)
+shell/src/systemuiplugin  SystemUIPlugin.framework (NSMenuExtra)
+shell/src/privateframeworks  Apple80211's ClientDialogs.bundle
 shell/src/dock        Dock.app
 shell/src/windowserver  WindowServer
 shell/src/finder      Finder.app (the desktop, and browser/ for its windows)
-shell/src/aquakit     AquaKit: AppKit's skeleton on cairo and pango, CoreUI's renderer
+shell/src/frameworks  AquaKit: Foundation, CoreGraphics, CoreText, CoreUI, AppKit (one library each)
 shell/src/prefs       System Preferences.app
 shell/src/preview     Preview.app
 shell/src/loginwindow About This Mac

@@ -467,7 +467,12 @@ void AquaStyle::drawComplexControl(ComplexControl cc, const QStyleOptionComplex 
             const QRect groove = subControlRect(cc, opt, SC_ScrollBarGroove, w);
             const QRect slider = subControlRect(cc, opt, SC_ScrollBarSlider, w);
             if (slider.isEmpty()) {
-                drawElement(p, art({"scrollbars", "nothingtoscroll", "regular", "track", "vertical"}), opt->rect);
+                // one piece, the track's cross section: stretched along its length
+                const ArtFile::Element e = art({"scrollbars", "nothingtoscroll", "regular", "track", "vertical"});
+                if (e.pieces.size() == 1)
+                    p->drawImage(opt->rect, e.pieces[0]);
+                else
+                    drawElement(p, e, opt->rect);
                 return;
             }
             // the track, the arrows' block at the bottom (its top cap over the track's end), the thumb

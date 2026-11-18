@@ -41,6 +41,7 @@ private:
         int unifiedToolbar = 0;  // a toolbar continuing the title bar (_SNOWLEOPARD_UNIFIED_TOOLBAR): its height
         bool hasToolbar = false; // its second value: the window has a toolbar, shown or not (the toolbar button)
         QImage proxyIcon;        // the represented file's icon before the title (_SNOWLEOPARD_PROXY_ICON)
+        bool documentEdited = false;  // the close button's dot (_SNOWLEOPARD_DOCUMENT_EDITED)
         bool roundedBottom = false;   // a textured window's bottom corners (_SNOWLEOPARD_ROUNDED_BOTTOM)
         bool minimized = false, fullscreen = false, zoomed = false;
         bool hidden = false;     // minimized by Hide (⌘H): no tile in the Dock, no genie

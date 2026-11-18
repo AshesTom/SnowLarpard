@@ -857,7 +857,7 @@ int main()
         std::fprintf(stderr, "Calculator: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     if (!Assets::exists(std::string(PlugIn) + "/Contents/Resources/Functions.xml")) {
         std::fprintf(stderr, "Calculator: its files are not in the assets (tools/extract.py takes them from the DVD)\n");
         return 1;

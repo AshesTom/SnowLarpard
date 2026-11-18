@@ -2876,7 +2876,7 @@ int main(int argc, char **argv)
     }
 
     setProgramName("Finder");
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     App &app = App::shared();
     if (!app.open()) {
         std::fprintf(stderr, "FinderWindows: no display\n");

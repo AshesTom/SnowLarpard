@@ -22,8 +22,8 @@ the DVD, it extracts again without it. The result is about 150 MiB, half of it t
 
 | package | what the shell takes |
 |---|---|
-| BaseSystem | CoreUI's `ArtFile.bin`/`SArtFile.bin` (the controls' art), HIToolbox's pictures, CoreTypes' and the disks' icons and the types' names, LaunchServices' strings, Lucida Grande, Helvetica Neue, the .dfont fonts and Menlo, DefaultDesktop.jpg, SystemVersion.plist, AirPort.menu's pictures, Utilities' icons, Parental Controls' pane; QuartzCore's menu bar Apple (32 x 22 RGBA, out of the library) |
-| Essentials | Dock.app's, Finder.app's (nibs, canned searches), SystemUIServer's and the Menu Extras' resources; loginwindow's About This Mac; System Preferences' and its panes' and monitor panels' nibs, pictures and search terms; Preview's, Photo Booth's and Stickies' resources; the fonts of /Library/Fonts (Stickies' notes); three compositions' embedded pictures; the User Template's PDFs; the applications' icons and Info.plist |
+| BaseSystem | CoreUI's `ArtFile.bin`/`SArtFile.bin` (the controls' art), HIToolbox's pictures, CoreTypes' and the disks' icons and the types' names, LaunchServices' strings, Lucida Grande, Helvetica Neue, the .dfont fonts and Menlo, DefaultDesktop.jpg, SystemVersion.plist, AirPort.menu's pictures, Apple80211's ClientDialogs panels and security types' names, Utilities' icons, Parental Controls' pane; QuartzCore's menu bar Apple (32 x 22 RGBA, out of the library) |
+| Essentials | Dock.app's, Finder.app's (nibs, canned searches), SystemUIServer's and the Menu Extras' resources; loginwindow's About This Mac; System Preferences' and its panes' and monitor panels' nibs, pictures and search terms; Preview's, Photo Booth's, Stickies' and TextEdit's resources; the fonts of /Library/Fonts (Stickies' notes); three compositions' embedded pictures; the User Template's PDFs; the applications' icons and Info.plist |
 | MediaFiles | the desktop pictures |
 | Mail | Mail.app's pictures, toolbars, English nibs and strings, its icon |
 | Safari, iTunes, iCal, AddressBook, iChat, DVDPlayer | their icons and Info.plist |
@@ -56,17 +56,42 @@ shell/src/common   aquashell, shared by every program
   x11              EWMH (or the root's children without a window manager), the shell's window types
   session          hide, quit, force quit, About This Mac, power, log out
   aqua             start-up: X11 platform, fonts, the menus' style
-shell/src/menubar  SystemUIServer.app: the menu bar, the menu extras
+shell/src/menubar  SystemUIServer.app: the menu bar, Spotlight's place in it; it loads the menu extras'
+                   bundles (com.apple.systemuiserver's menuExtras: ~/.config/snowleopard/systemuiserver.conf)
+shell/src/systemuiplugin  SystemUIPlugin.framework: NSMenuExtra and what the extras share, a shared library
+                   (apps/PrivateFrameworks/SystemUIPlugin.framework)
+shell/src/menuextras  the menu extras, each a bundle of its own (apps/Menu Extras/<Name>.menu/Contents/MacOS/
+                   <Name>, a library SystemUIServer loads): Clock, Battery, Volume, AirPort, Bluetooth
+shell/src/privateframeworks  the private frameworks' programs: Apple80211's ClientDialogs.bundle (AirPort's
+                   panels, on AquaKit)
+
+Each component's source folder has its **Info.plist**: Apple's identifier and version of the bundle
+it reproduces, and two keys of ours, `SLReproducesSystem` (Mac OS X 10.6.8 (10K549)) and
+`SLReproducesBundle` (the Mac path). The build copies it where the Mac has it (`Dock.app/Contents`,
+`Menu Extras/AirPort.menu/Contents`, `Frameworks/AppKit.framework/Resources`...), so that each
+component can be brought to a later release (Lion, Mountain Lion…) on its own, and what each one is
+stays readable from the installed programs.
 shell/src/dock     Dock.app
 shell/src/finder   Finder.app: the desktop picture (Qt)
   browser          FinderWindows, on AquaKit: the Finder's windows (icon, list, column and Cover Flow views, sidebar, toolbar, status
                    bar), one process for all of them (a second launch hands its folders over an
                    abstract socket); their WM_CLASS "Finder", so the Dock and the menu bar take them
                    for the Finder's; Apps::finder() launches it
-shell/src/aquakit  AquaKit, for the Mac applications, without Qt: AppKit's skeleton on cairo and pango,
-                   CoreUI's renderer (coreui), text in Lucida Grande, the shell's settings files;
-                   on Wayland (xdg-shell, drawing 10.6's title bar itself) or X11 (platform_*.cpp);
-                   the unified toolbar (toolbar.cpp: Preview's and the Finder's), CoreUI's named images
+shell/src/frameworks  AquaKit: the Mac's frameworks without Qt, one reimplementation of each, shared
+                   by every program as on the Mac, each its own library (so each can follow macOS's
+                   releases on its own); `aquakit` is their umbrella, as Cocoa.framework is:
+  Foundation       Assets (the DVD's files), .strings, the shell's settings files, NSKeyedUnarchiver
+                   (archive) and NSUnarchiver's typedstream, NSRunLoop and NSTask (runloop)
+  CoreGraphics     images (PNG, JPEG, TIFF, icns, PDF as NSPDFImageRep: poppler) and their colour
+                   matching, template images tinted (graphics)
+  CoreText         text as Quartz draws it, in Lucida Grande (text); the DVD's fonts (FontManager,
+                   as CTFontManager)
+  CoreUI           CoreUI's renderer (coreui): the controls', menus' and windows' art, its named images
+  AppKit           windows, views, controls, the unified toolbar (Preview's and the Finder's), menus,
+                   nibs; NSTextView (textview) and NSAttributedString's RTF / RTFD (attributedstring),
+                   shared by Stickies and TextEdit; NSRulerView with the text ruler's accessory (rulerview); the standard panels (panels: NSOpenPanel and
+                   NSSavePanel by kdialog or zenity, NSAlert as a window or a sheet, one instance per
+                   application); on Wayland (xdg-shell, drawing 10.6's title bar itself) or X11 (platform_*.cpp)
 shell/src/prefs    System Preferences.app, on AquaKit: Show All, every pane from its nib (nib.cpp), their Linux side
 shell/src/loginwindow  loginwindow's About This Mac, on AquaKit: its nib, filled as AboutThisMacController does
 shell/src/preview  Preview.app, on AquaKit: PDFs (poppler) and pictures, the toolbar from CommonToolbar.proplist,
@@ -74,7 +99,10 @@ shell/src/preview  Preview.app, on AquaKit: PDFs (poppler) and pictures, the too
 shell/src/photobooth  Photo Booth.app, on AquaKit: the camera through Video4Linux (camera), the effects' compositions
                    on the processor (effects), ~/Pictures/Photo Booth and its Recents.plist (library)
 shell/src/stickies  Stickies.app, on AquaKit: ~/Library/StickiesDatabase (NSArchiver's typedstream, database),
-                   the notes' RTFD (richtext) and their text view (textview), the notes' own frames
+                   the notes' own frames (their text is AppKit's NSTextView and RTFD)
+shell/src/textedit  TextEdit.app, on AquaKit: rich and plain text documents (RTF, RTFD, text in its
+                   encoding), DocumentWindow.nib, Edit.nib's menus, Preferences.nib, AppKit's Find panel;
+                   Wrap to Page through TextView's pages (MultiplePageView's geometry)
 shell/src/windowserver  WindowServer: the window manager, 10.6's title bars; its compositor (compositor.cpp:
                    Composite, Damage and Render), which puts the windows together over their shadows
 shell/src/menubar/appmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu
@@ -106,3 +134,5 @@ stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKARE
 5. **The applications**, each a program of its own on AquaKit (`System Preferences.app` and
    `Preview.app` are there; `TextEdit.app`... next).
 6. **loginwindow** as a display manager, Spaces, Exposé, Dashboard.
+
+SystemUIServer's move from Qt to AquaKit, stage by stage: [systemuiserver-port.md](systemuiserver-port.md).

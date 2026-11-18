@@ -594,7 +594,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "loginwindow: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     AboutThisMac about;
     if (!about.load()) {
         std::fprintf(stderr, "loginwindow: AboutThisMac.nib not found (extract the DVD's files: tools/extract.py)\n");

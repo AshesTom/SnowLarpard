@@ -167,94 +167,6 @@ std::string stateDir()
 }
 
 // A child whose output is read line by line as it comes, with the display's events
-class Helper {
-public:
-    std::function<void(const std::string &)> onLine;
-    std::function<void(int)> onExit;
-
-    bool start(std::vector<std::string> args)
-    {
-        int fds[2];
-        if (pipe(fds) != 0)
-            return false;
-        posix_spawn_file_actions_t fa;
-        posix_spawn_file_actions_init(&fa);
-        posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
-        posix_spawn_file_actions_addclose(&fa, fds[0]);
-        std::vector<char *> argv;
-        for (std::string &a : args)
-            argv.push_back(a.data());
-        argv.push_back(nullptr);
-        const int rc = posix_spawnp(&m_pid, argv[0], &fa, nullptr, argv.data(), environ);
-        posix_spawn_file_actions_destroy(&fa);
-        close(fds[1]);
-        if (rc != 0) {
-            close(fds[0]);
-            return false;
-        }
-        m_fd = fds[0];
-        fcntl(m_fd, F_SETFL, O_NONBLOCK);
-        App::shared().watch(m_fd, [this] { read(); });
-        return true;
-    }
-
-    void stop()
-    {
-        if (m_pid > 0)
-            kill(m_pid, SIGTERM);
-    }
-
-    ~Helper()
-    {
-        if (m_fd >= 0) {
-            App::shared().unwatch(m_fd);
-            close(m_fd);
-        }
-        if (m_pid > 0) {
-            kill(m_pid, SIGTERM);
-            waitpid(m_pid, nullptr, 0);
-        }
-    }
-
-private:
-    void read()
-    {
-        char buf[4096];
-        for (;;) {
-            const ssize_t n = ::read(m_fd, buf, sizeof buf);
-            if (n > 0) {
-                m_buffer.append(buf, size_t(n));
-                for (size_t nl; (nl = m_buffer.find('\n')) != std::string::npos;) {
-                    const std::string line = m_buffer.substr(0, nl);
-                    m_buffer.erase(0, nl + 1);
-                    if (onLine)
-                        onLine(line);
-                }
-                continue;
-            }
-            if (n < 0 && (errno == EAGAIN || errno == EINTR))
-                return;
-            break;   // the end
-        }
-        App::shared().unwatch(m_fd);
-        close(m_fd);
-        m_fd = -1;
-        int status = 0;
-        waitpid(m_pid, &status, 0);
-        m_pid = -1;
-        const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-        // after this callback the helper may be gone
-        App::shared().later([cb = onExit, code] {
-            if (cb)
-                cb(code);
-        });
-    }
-
-    pid_t m_pid = -1;
-    int m_fd = -1;
-    std::string m_buffer;
-};
-
 // The tool's command line: through pkexec when the files are the system's (install.sh's, root's)
 std::vector<std::string> tool(std::vector<std::string> args, bool writes = false)
 {
@@ -491,10 +403,11 @@ private:
         };
         m_scanPanel->show();
         std::string out;
-        m_helper = std::make_unique<Helper>();
+        m_helper = std::make_unique<Task>();
+        m_helper->errors = Task::Errors::Inherit;
         auto buffer = std::make_shared<std::string>();
         m_helper->onLine = [buffer](const std::string &l) { *buffer += l; };
-        m_helper->onExit = [this, buffer](int code) {
+        m_helper->onExit = [this, buffer](int code, const std::string &) {
             m_scanPanel->onClose = nullptr;
             m_scanPanel->close();
             if (code != 0 || buffer->find("\"products\"") == std::string::npos) {
@@ -507,7 +420,7 @@ private:
             else
                 simplified();
         };
-        if (toolsDir().empty() || !m_helper->start(tool({"scan"})))
+        if (toolsDir().empty() || !m_helper->launch(tool({"scan"})))
             App::shared().later([this] {
                 m_scanPanel->close();
                 failed();
@@ -733,11 +646,12 @@ private:
         if (m_stop) {
             m_stop->title = tr("SUAppSessionController", "STOP_TITLE", "Stop");
             m_stop->action = [this] {   // stopDownload: the packages kept, Software Update gone
-                m_helper->stop();
+                m_helper->terminate();
                 App::shared().quit();
             };
         }
-        m_helper = std::make_unique<Helper>();
+        m_helper = std::make_unique<Task>();
+        m_helper->errors = Task::Errors::Inherit;
         m_started = now();
         m_startBytes = -1;
         m_helper->onLine = [this, p](const std::string &l) {
@@ -762,7 +676,7 @@ private:
                 }
             }
         };
-        m_helper->onExit = [this, p](int code) {
+        m_helper->onExit = [this, p](int code, const std::string &) {
             if (code != 0) {
                 m_busy = false;
                 setInstall(tr("SUAppSessionController", "DOWNLOAD_ONLY_FAILED", "An error occurred during download."),
@@ -789,8 +703,8 @@ private:
                 restartAlert();
             });
         };
-        if (!m_helper->start(tool({"download", p.key})))
-            m_helper->onExit(1);
+        if (!m_helper->launch(tool({"download", p.key})))
+            m_helper->onExit(1, {});
     }
 
     void openInstallWindow()
@@ -925,7 +839,8 @@ private:
         const std::string items = tr("SUAppSessionController", "1_ITEM", "1 item");
         setInstall(format(tr("SUAppSessionController", "INSTALLING_X_TITLE", "Installing %@"), {items}),
                    tr("SUAppSessionController", "INSTALLING_ITEM_STATUS", "Installing updates…"), "");
-        m_helper = std::make_unique<Helper>();
+        m_helper = std::make_unique<Task>();
+        m_helper->errors = Task::Errors::Inherit;
         m_started = now();
         m_helper->onLine = [this](const std::string &l) {
             double done = 0, total = 0;
@@ -941,7 +856,7 @@ private:
                 }
             }
         };
-        m_helper->onExit = [this](int code) {
+        m_helper->onExit = [this](int code, const std::string &) {
             m_busy = false;
             if (m_time)
                 m_time->setHidden(true);
@@ -964,8 +879,8 @@ private:
                        tr("SUAppRootInstall", "SYSTEM_WILL_RESTART_MESSAGE", "The computer will restart automatically."), "");
             App::shared().addTimer(3, false, [] { App::shared().quit(0); });
         };
-        if (toolsDir().empty() || !m_helper->start(tool({"install", key}, true)))
-            m_helper->onExit(1);
+        if (toolsDir().empty() || !m_helper->launch(tool({"install", key}, true)))
+            m_helper->onExit(1, {});
     }
 
     bool m_atLogout;
@@ -973,7 +888,7 @@ private:
     MainMenu m_menu;
     std::unique_ptr<Window> m_scanPanel, m_window, m_installWindow, m_backdrop;
     std::unique_ptr<Nib> m_scanNib, m_installNib;
-    std::unique_ptr<Helper> m_helper;
+    std::unique_ptr<Task> m_helper;
     View *m_content = nullptr;
     std::vector<Product> m_products;
     bool m_checked = true, m_busy = false;
@@ -995,7 +910,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "Software Update: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     if (!Assets::exists(Bundle + "/Contents/Resources/English.lproj/SUAppInstallWindow.nib/keyedobjects.nib")) {
         std::fprintf(stderr, "Software Update: its files are not in the assets (tools/extract.py takes them from the DVD)\n");
         if (atLogout)

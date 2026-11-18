@@ -760,7 +760,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "Preview: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     std::vector<std::unique_ptr<DocumentWindow>> windows;
     std::function<void()> openPanel;
     // MainMenu.nib's menus, for the menu bar and the key equivalents; the actions go to the key
