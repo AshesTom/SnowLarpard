@@ -403,6 +403,9 @@ public:
         m_timer = App::shared().addTimer(m_period, true, [this] { refresh(); });
     }
 
+    // launched again (the Dock): its window forward
+    void comeForward() { m_window->orderFront(); }
+
 private:
     // ActivityMonitor.nib's _window: its outline (a TableView here) and its tabs, under the toolbar
     void build()
@@ -1057,7 +1060,7 @@ int main()
     }
     if (Instance::handToRunning("Activity Monitor", {}))
         return 0;
-    Instance::listen("Activity Monitor", [](std::vector<std::string>) {});
     Monitor monitor;
+    Instance::listen("Activity Monitor", [&monitor](std::vector<std::string>) { monitor.comeForward(); });
     return app.run();
 }

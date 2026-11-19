@@ -160,6 +160,9 @@ private:
     void remove()
     {
         documents.erase(std::remove(documents.begin(), documents.end(), this), documents.end());
+        // the last one closed: Grab stays in front with its menus and its keys, as on the Mac
+        if (documents.empty())
+            App::shared().setFrontWithoutWindows(true);
         delete this;
     }
 
@@ -182,6 +185,20 @@ public:
         m_menu.perform = [this](const MainMenuItem &it) { perform(it); };
         m_menu.publish();
         // launched alone: in front with its menus, no window (Grab opens none of its own)
+        App::shared().setFrontWithoutWindows(true);
+    }
+
+    // launched again (the Dock, the Finder): forward, its last document's window, else its menus alone
+    void comeForward()
+    {
+        if (m_panel && m_panel->isVisible()) {
+            m_panel->orderFront();
+            return;
+        }
+        if (!documents.empty()) {
+            documents.back()->window()->orderFront();
+            return;
+        }
         App::shared().setFrontWithoutWindows(true);
     }
 
@@ -295,8 +312,8 @@ private:
             return;
         m_mode = mode;
         showFeedback();
-        if (mode == Selection)   // -variableSelection: the drag at once
-            App::shared().later([this] { takePicture(); });
+        if (mode == Selection)   // -variableSelection: the drag once the panel is on the screen
+            App::shared().addTimer(0.3, false, [this] { takePicture(); });
         else if (mode == Screen)   // a click outside the panel
             proceed();
     }
@@ -615,7 +632,7 @@ int main()
     }
     if (Instance::handToRunning("Grab", {}))
         return 0;
-    Instance::listen("Grab", [](std::vector<std::string>) {});
     Grab grab;
+    Instance::listen("Grab", [&grab](std::vector<std::string>) { grab.comeForward(); });
     return app.run();
 }

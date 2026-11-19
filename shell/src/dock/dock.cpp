@@ -106,6 +106,60 @@ static QImage tileShadow(const QImage &icon)
     return shadow;
 }
 
+// A label's text shadow (CGContextSetShadowWithColor: offset 0, −1, blur 2, black): the text in black
+// one down, through a Gaussian of deviation 1 (Quartz's blur taken as twice the deviation, as above).
+// Drawn with its baseline's start at labelShadowOrigin().
+static constexpr int LabelShadowMargin = 4;
+static QPointF labelShadowOrigin() { return QPointF(LabelShadowMargin, LabelShadowMargin + QFontMetricsF(Assets::uiFont(14)).ascent()); }
+
+static QImage labelShadow(const QString &text, const QFont &font)
+{
+    static QHash<QString, QImage> cache;
+    if (auto it = cache.constFind(text); it != cache.constEnd())
+        return *it;
+    const QFontMetricsF fm(font);
+    const int W = int(std::ceil(fm.horizontalAdvance(text))) + 2 * LabelShadowMargin,
+              H = int(std::ceil(fm.ascent() + fm.descent())) + 2 * LabelShadowMargin;
+    QImage glyphs(W, H, QImage::Format_ARGB32_Premultiplied);
+    glyphs.fill(Qt::transparent);
+    {
+        QPainter gp(&glyphs);
+        gp.setFont(font);
+        gp.setPen(Qt::black);
+        gp.drawText(labelShadowOrigin() + QPointF(0, 1), text);
+    }
+    static const float k[] = {0.006f, 0.061f, 0.242f, 0.383f, 0.242f, 0.061f, 0.006f};
+    std::vector<float> a(size_t(W) * H), tmp(a.size(), 0.0f);
+    for (int y = 0; y < H; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(glyphs.constScanLine(y));
+        for (int x = 0; x < W; ++x)
+            a[size_t(y) * W + x] = qAlpha(line[x]) / 255.0f;
+    }
+    for (bool across : {true, false}) {
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                float s = 0;
+                for (int i = -3; i <= 3; ++i) {
+                    const int xx = across ? x + i : x, yy = across ? y : y + i;
+                    if (xx >= 0 && xx < W && yy >= 0 && yy < H)
+                        s += k[i + 3] * a[size_t(yy) * W + xx];
+                }
+                tmp[size_t(y) * W + x] = s;
+            }
+        a.swap(tmp);
+    }
+    QImage shadow(W, H, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < H; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(shadow.scanLine(y));
+        for (int x = 0; x < W; ++x)
+            line[x] = qPremultiply(qRgba(0, 0, 0, qBound(0, int(std::lround(a[size_t(y) * W + x] * 255)), 255)));
+    }
+    if (cache.size() > 256)
+        cache.clear();
+    cache.insert(text, shadow);
+    return shadow;
+}
+
 static QString configFile()
 {
     return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/dock.conf";
@@ -753,19 +807,22 @@ void Dock::paintDock(QPainter &p)
     // The name over the icon under the pointer
     if (m_hover >= 0 && m_dragging < 0 && m_pressed < 0 && m_hideOffset < 0.01) {
         const Tile &t = m_tiles[m_hover];
+        // DOCKLabelLayer (-update, -init, -drawLayer:inContext:): the text 20 wider and its ascent and
+        // descent 4 taller, rounded by 10, in (30, 30, 30) at 0.6; white, 10 in, the baseline its
+        // descent and 4 over the bottom, unsmoothed, with a black shadow one down, blurred by 2
         QFont f = Assets::uiFont(14);
         QFontMetricsF fm(f);
-        qreal w = fm.horizontalAdvance(t.label) + 24, h = fm.height() + 6;
-        QRectF label(t.x - w / 2, baseline - t.size - h - 10, w, h);
-        label.moveLeft(qBound(4.0, label.left(), width() - w - 4));
+        const int w = int(fm.horizontalAdvance(t.label) + 20), h = int(fm.ascent() + fm.descent() + 4);
+        QRectF label(std::round(t.x - w / 2.0), std::round(baseline - t.size - h - 10), w, h);
+        label.moveLeft(qBound(4.0, label.left(), width() - w - 4.0));
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0, 0, 0, 40));
-        p.drawRoundedRect(label.translated(0, 1.5), h / 2, h / 2);
-        p.setBrush(QColor(40, 40, 40, 200));
-        p.drawRoundedRect(label, h / 2, h / 2);
+        p.setBrush(QColor(30, 30, 30, 153));
+        p.drawRoundedRect(label, 10, 10);
+        const QPointF at(label.left() + 10, label.bottom() - fm.descent() - 4);
+        p.drawImage(at - labelShadowOrigin(), labelShadow(t.label, f));
         p.setFont(f);
         p.setPen(Qt::white);
-        Aqua::drawText(p, label, Qt::AlignCenter, t.label);
+        p.drawText(at, t.label);
     }
 }
 
@@ -959,12 +1016,10 @@ void Dock::showStack(int index)
             }
         };
         (*fill)(menu, t.folder);
-        if (!t.folder.startsWith("applications:")) {
-            menu->addSeparator();
-            const QString folder = t.folder;
-            menu->addAction(Assets::tr("/System/Library/CoreServices/Dock.app", "Localizable", "SHOW_IN_FINDER", "Open in Finder"),
-                            [folder] { Apps::launch(Apps::finder(), {folder}); });
-        }
+        menu->addSeparator();
+        const QString folder = Stacks::finderFolder(t.folder);
+        menu->addAction(Assets::tr("/System/Library/CoreServices/Dock.app", "Localizable", "SHOW_IN_FINDER", "Open in Finder"),
+                        [folder] { Apps::launch(Apps::finder(), {folder}); });
         menu->popupAbove(centre.x(), top);
         return;
     }
@@ -1014,9 +1069,8 @@ void Dock::stackMenu(DockMenu *menu, const Tile &t)
         a->setChecked(st.view == value);
     }
     menu->addSeparator();
-    if (!folder.startsWith("applications:"))
-        menu->addAction(menuText("OPEN_FILENAME", "Open \u201c%@\u201d").replace("%@", t.label),
-                        [folder] { Apps::launch(Apps::finder(), {folder}); });
+    menu->addAction(menuText("OPEN_FILENAME", "Open \u201c%@\u201d").replace("%@", t.label),
+                    [folder] { Apps::launch(Apps::finder(), {Stacks::finderFolder(folder)}); });
 }
 
 void Dock::foldersChanged(const QString &path)

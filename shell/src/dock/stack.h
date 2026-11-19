@@ -32,6 +32,9 @@ struct Settings {
 Settings settings(const QString &folder);
 void save(const QString &folder, const Settings &s);
 QString name(const QString &folder);   // "Downloads", "Applications"
+// The folder the Finder shows for a stack: its own, or for "applications:" (and its Utilities) the
+// Finder's Applications, every installed application (10.6's Open in Finder opens /Applications)
+QString finderFolder(const QString &folder);
 
 struct Item {
     QString name;

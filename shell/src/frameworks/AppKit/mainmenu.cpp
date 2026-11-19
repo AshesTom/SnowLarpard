@@ -3,6 +3,7 @@
 
 #include "archive.h"
 #include "foundation.h"
+#include "platform.h"
 
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -276,6 +277,16 @@ void MainMenu::publish()
 {
     if (m_listener >= 0)
         return;
+    // in front without a window: the keys go to the menus (-[NSApplication sendEvent:]'s key equivalents)
+    if (Platform *p = App::shared().platform(); p && !p->keyWithoutWindows)
+        p->keyWithoutWindows = [this](uint32_t keysym, const std::string &text, unsigned modifiers) {
+            Event e;
+            e.type = Event::KeyDown;
+            e.keysym = keysym;
+            e.text = text;
+            e.modifiers = modifiers;
+            performKeyEquivalent(e);
+        };
     socklen_t length = 0;
     const sockaddr_un addr = address(socketName(int(getpid())), length);
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);

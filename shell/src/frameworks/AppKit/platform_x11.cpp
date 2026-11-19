@@ -93,15 +93,29 @@ public:
     int fd() const override { return xcb_get_file_descriptor(conn); }
     void flush() override { xcb_flush(conn); }
     Rect screenFrame() const override { return {0, 0, double(screen->width_in_pixels), double(screen->height_in_pixels)}; }
+    xcb_window_t focusWindow = 0;   // the keyboard's, in front without a window
     void setFrontWithoutWindows(bool front) override
     {
         const xcb_atom_t a = atom("_SNOWLEOPARD_FRONT_APP");
         if (front) {
-            // the serial tells the menu bar the application came forward again
+            // a window off the screen, outside the window manager's (override-redirect), that takes the
+            // keyboard: the application's key equivalents work with none of its windows open
+            if (!focusWindow) {
+                focusWindow = xcb_generate_id(conn);
+                const uint32_t values[2] = {1, XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_FOCUS_CHANGE};
+                xcb_create_window(conn, XCB_COPY_FROM_PARENT, focusWindow, screen->root, -100, -100, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                                  XCB_COPY_FROM_PARENT, XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK, values);
+            }
+            xcb_map_window(conn, focusWindow);
+            xcb_set_input_focus(conn, XCB_INPUT_FOCUS_POINTER_ROOT, focusWindow, XCB_CURRENT_TIME);
+            // the serial tells the menu bar the application came forward again; the window, WindowServer
+            // which application has the keyboard (its ⌘Q, ⌘H)
             static uint32_t serial = 0;
-            const uint32_t v[2] = {uint32_t(getpid()), ++serial + uint32_t(now() * 1000)};
-            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, screen->root, a, XCB_ATOM_CARDINAL, 32, 2, v);
+            const uint32_t v[3] = {uint32_t(getpid()), ++serial + uint32_t(now() * 1000), focusWindow};
+            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, screen->root, a, XCB_ATOM_CARDINAL, 32, 3, v);
         } else {
+            if (focusWindow)
+                xcb_unmap_window(conn, focusWindow);
             auto *r = xcb_get_property_reply(conn, xcb_get_property(conn, 0, screen->root, a, XCB_ATOM_CARDINAL, 0, 2), nullptr);
             const bool ours = r && xcb_get_property_value_length(r) >= 4 &&
                               static_cast<const uint32_t *>(xcb_get_property_value(r))[0] == uint32_t(getpid());
@@ -250,6 +264,20 @@ public:
         for (int s : {16, 32, 48, 128})
             appendIcon(data, icon.scaled(s, s));
         X->property(m_id, "_NET_WM_ICON", XCB_ATOM_CARDINAL, 32, data.size(), data.data());
+    }
+    void activate() override
+    {
+        // _NET_ACTIVE_WINDOW from an application (source 1): WindowServer raises it and gives it the keys
+        xcb_client_message_event_t ev = {};
+        ev.response_type = XCB_CLIENT_MESSAGE;
+        ev.format = 32;
+        ev.window = m_id;
+        ev.type = X->atom("_NET_ACTIVE_WINDOW");
+        ev.data.data32[0] = 1;
+        ev.data.data32[1] = XCB_CURRENT_TIME;
+        xcb_send_event(X->conn, 0, X->screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                       reinterpret_cast<const char *>(&ev));
+        xcb_flush(X->conn);
     }
     void show() override
     {
@@ -625,6 +653,18 @@ void X11Platform::dispatch(xcb_generic_event_t *e)
         xcb_refresh_keyboard_mapping(keySymbols, reinterpret_cast<xcb_mapping_notify_event_t *>(e));
         return;
     default: return;
+    }
+    if (target && target == focusWindow) {
+        if ((e->response_type & 0x7F) == XCB_KEY_PRESS && keyWithoutWindows) {
+            auto *k = reinterpret_cast<const xcb_key_press_event_t *>(e);
+            xcb_keysym_t sym = xcb_key_symbols_get_keysym(keySymbols, k->detail, (k->state & XCB_MOD_MASK_SHIFT) ? 1 : 0);
+            if (!sym)
+                sym = xcb_key_symbols_get_keysym(keySymbols, k->detail, 0);
+            char buf[8] = {};
+            const int n = xkb_keysym_to_utf8(sym, buf, sizeof buf);
+            keyWithoutWindows(sym, n > 1 ? std::string(buf) : std::string(), modifiers(k->state));
+        }
+        return;
     }
     // a grab sends everything to the grabbing window, whatever is under the pointer
     for (X11Window *w : std::vector<X11Window *>(windows))

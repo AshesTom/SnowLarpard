@@ -110,6 +110,8 @@ public:
     void setTitle(const std::string &title);
     void setIcon(const Image &icon);
     void show();
+    // -[NSWindow makeKeyAndOrderFront:]: shown, or brought forward and made key when it is
+    void orderFront();
     void close();
     void miniaturize();   // into the Dock ([NSWindow performMiniaturize:])
     bool isKey() const { return m_key; }

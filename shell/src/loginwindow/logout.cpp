@@ -408,6 +408,11 @@ public:
         }
         m_windows = m_x.applicationWindows();
         m_processes = applicationProcesses(m_x, m_windows);
+        const xcb_atom_t pidAtom = m_x.atom("_NET_WM_PID");
+        for (xcb_window_t w : m_windows)
+            for (uint32_t p : m_x.cardinals(w, pidAtom, XCB_ATOM_CARDINAL))
+                if (std::find(m_processes.begin(), m_processes.end(), pid_t(p)) != m_processes.end())
+                    m_windowProcesses.push_back(pid_t(p));
         for (xcb_window_t w : m_windows)
             m_x.close(w);
         m_started = 0;
@@ -424,11 +429,25 @@ private:
             if (std::find(now.begin(), now.end(), w) != now.end())
                 left.push_back(w);
         if (left.empty()) {
-            // their windows closed (what they had to save, saved): the applications quit, as the
-            // quit event ('quit') does on the Mac
+            // their windows closed (what they had to save, saved): the applications quit, as the quit
+            // event ('quit') does on the Mac. Those that had windows quit by themselves once their last
+            // one is gone, writing what they keep (a browser its cookies and its session): they are
+            // given the time to (DrainTime), and only those still there then are told to; the others
+            // (the shell's applications in front without a window) at once
+            if (m_draining < 0) {
+                m_draining = 0;
+                for (pid_t pid : m_processes)
+                    if (std::find(m_windowProcesses.begin(), m_windowProcesses.end(), pid) == m_windowProcesses.end())
+                        kill(pid, SIGTERM);
+            }
+            m_draining += 0.25;
+            const bool alive = std::any_of(m_windowProcesses.begin(), m_windowProcesses.end(), [](pid_t pid) { return running(pid); });
+            if (alive && m_draining < DrainTime)
+                return;
             m_app.removeTimer(m_timer);
-            for (pid_t pid : m_processes)
-                kill(pid, SIGTERM);
+            for (pid_t pid : m_windowProcesses)
+                if (running(pid))
+                    kill(pid, SIGTERM);
             if (beforeEnd)
                 beforeEnd();
             endSession();
@@ -445,7 +464,22 @@ private:
                    {}, {"OK"}, [this](int) { m_app.quit(1); });
     }
 
+    // a process still running, not a zombie waiting for its parent
+    static bool running(pid_t pid)
+    {
+        if (kill(pid, 0) != 0)
+            return false;
+        std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+        std::string line;
+        std::getline(stat, line);
+        const size_t close = line.rfind(')');
+        return close == std::string::npos || close + 2 >= line.size() || line[close + 2] != 'Z';
+    }
+
     static constexpr double TimeOut = 30;   // the applications' time to quit (not read from 10.6 yet)
+    static constexpr double DrainTime = 20;   // once their windows are gone, to quit by themselves
+    std::vector<pid_t> m_windowProcesses;
+    double m_draining = -1;
     App &m_app;
     Display m_x;
     std::vector<xcb_window_t> m_windows;

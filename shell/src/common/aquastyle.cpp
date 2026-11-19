@@ -266,6 +266,11 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
             // toolbar buttons: textured segments; side by side ones share their edges
             QString s = (opt->state & State_Sunken) ? "pressed" : windowState(opt);
             ArtFile::Element e = art({"segment", "clear", "fortexture", s, "regular"});
+            // no disabled art for a textured segment: its inactive bezel (the image says it's disabled)
+            if (e.isNull() && s == "disabled")
+                e = art({"segment", "clear", "fortexture", "inactive", "regular"});
+            if (e.isNull())
+                e = art({"segment", "clear", "fortexture", "active", "regular"});
             QString pos = w->property("aquaSegmentPosition").toString();
             p->save();
             p->setClipRect(opt->rect);

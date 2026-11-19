@@ -856,6 +856,19 @@ void WindowServer::grabKeys()
     }
 }
 
+xcb_window_t WindowServer::frontAppKeyboard()
+{
+    const QVector<uint32_t> front = X11::cardinals(m_root, atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
+    if (front.size() < 3 || !front[2])
+        return 0;
+    xcb_window_t focused = 0;
+    if (auto *r = xcb_get_input_focus_reply(m_conn, xcb_get_input_focus(m_conn), nullptr)) {
+        focused = r->focus;
+        free(r);
+    }
+    return focused == front[2] ? front[2] : 0;
+}
+
 void WindowServer::handleKey(xcb_key_press_event_t *e)
 {
     xcb_keysym_t sym = xcb_key_symbols_get_keysym(m_keySymbols, e->detail, 0);
@@ -891,6 +904,17 @@ void WindowServer::handleKey(xcb_key_press_event_t *e)
                 focus(next);
                 break;
             }
+        return;
+    }
+    // an application in front without a window has the keyboard (its window off the screen, the root's
+    // _SNOWLEOPARD_FRONT_APP's third value): ⌘Q, ⌘H... are its menus'
+    if (const xcb_window_t keys = frontAppKeyboard()) {
+        xcb_key_press_event_t k = *e;
+        k.event = keys;
+        k.child = XCB_NONE;
+        k.same_screen = 1;
+        xcb_send_event(m_conn, 0, keys, XCB_EVENT_MASK_KEY_PRESS, reinterpret_cast<const char *>(&k));
+        xcb_flush(m_conn);
         return;
     }
     if (!c)
@@ -969,6 +993,15 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
     }
     case XCB_PROPERTY_NOTIFY: {
         auto *e = reinterpret_cast<xcb_property_notify_event_t *>(ev);
+        // an application came in front without a window and took the keyboard: no window is key
+        if (e->window == m_root && e->atom == atom("_SNOWLEOPARD_FRONT_APP") && m_active && frontAppKeyboard()) {
+            Client *old = m_active;
+            m_active = nullptr;
+            setActiveProperty(0);
+            paintTitle(old);
+            m_compositor.damageAll();
+            xcb_flush(m_conn);
+        }
         if (Client *c = find(e->window); c && e->window == c->window) {
             if (e->atom == XCB_ATOM_WM_NAME || e->atom == atom("_NET_WM_NAME")) {
                 readProperties(c);

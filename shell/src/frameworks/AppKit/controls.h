@@ -165,6 +165,9 @@ public:
     static void update(const std::vector<MenuItem> &items);
     static void close();
     static constexpr double ItemHeight = 19, SeparatorHeight = 12, Padding = 4, SwatchRowHeight = 40;
+    // HIToolbox's Aqua theme metrics (kThemeMetricMenuMarkColumnWidth, …TextTrailingEdgeMargin,
+    // …IndentWidth) and the item's extra width past its key, as 10.6 draws it
+    static constexpr double MarkColumn = 21, TextTrailingMargin = 19, IndentWidth = 12, ItemExtra = 7;
 };
 
 class PopUpButton : public Control {

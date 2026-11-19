@@ -34,14 +34,19 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMenu>
+#include <QBuffer>
 #include <QPainter>
+#include <QStyle>
+#include <QStyleOptionSlider>
 #include <QPainterPath>
 #include <QPrinter>
 #include <QPrintDialog>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTimer>
-#include <QToolButton>
+#include <QPushButton>
+#include <QElapsedTimer>
+#include <QMouseEvent>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWebEngineHistory>
@@ -297,6 +302,73 @@ QHash<QString, QString> parseHelpURL(QString s)
     return out;
 }
 
+// ---- the pages' scroll bars
+
+// WebKit's WebView drew AppKit's scroll bars: Aqua's, the arrows together at the bottom. Chromium's
+// own ::-webkit-scrollbar parts get AquaStyle's pictures: the track (its ends kept, its middle
+// repeated), the thumb (blue in the key window, clear otherwise: :window-inactive), the up and down
+// arrows under the track. Vertical only, as AquaStyle draws them.
+QString aquaScrollbarStyle()
+{
+    QStyle *style = QApplication::style();
+    constexpr int W = 15, H = 240, Up = 14, Down = 16, Groove = H - Up - Down;
+    auto render = [&](bool active, int page, int position) {
+        QImage img(W, H, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
+        QStyleOptionSlider o;
+        o.rect = QRect(0, 0, W, H);
+        o.orientation = Qt::Vertical;
+        o.minimum = 0;
+        o.maximum = 1000;
+        o.pageStep = page;
+        o.sliderPosition = o.sliderValue = position;
+        o.state = QStyle::State_Enabled | (active ? QStyle::State_Active : QStyle::State_None);
+        QPainter p(&img);
+        style->drawComplexControl(QStyle::CC_ScrollBar, &o, &p, nullptr);
+        p.end();
+        QStyleOptionSlider sized = o;
+        return std::make_pair(img, style->subControlRect(QStyle::CC_ScrollBar, &sized, QStyle::SC_ScrollBarSlider, nullptr));
+    };
+    auto url = [](const QImage &img) {
+        QByteArray png;
+        QBuffer b(&png);
+        b.open(QIODevice::WriteOnly);
+        img.save(&b, "PNG");
+        return QStringLiteral("url(data:image/png;base64,%1)").arg(QString::fromLatin1(png.toBase64()));
+    };
+    // a part: its two ends in its transparent top and bottom borders, its middle repeated between
+    auto piece = [&](const char *part, const QString &when, const QString &top, const QString &bottom, const QString &middle, int end,
+                     int minHeight) {
+        return QStringLiteral("::-webkit-scrollbar-%1%2 { min-height: %3px; border-style: solid; border-color: transparent; "
+                              "border-width: %4px 0; background: %5 top / %6px %4px no-repeat border-box border-box, "
+                              "%7 bottom / %6px %4px no-repeat border-box border-box, %8 0 0 / %6px 1px repeat-y padding-box padding-box; }\n")
+            .arg(QString::fromLatin1(part), when).arg(minHeight).arg(end).arg(top).arg(W).arg(bottom, middle);
+    };
+    QString css = QStringLiteral("::-webkit-scrollbar { width: %1px; height: 0; }\n"
+                                 "::-webkit-scrollbar-button { display: none; }\n"
+                                 "::-webkit-scrollbar-corner { background: transparent; }\n").arg(W);
+    for (bool active : {true, false}) {
+        const QString when = active ? QString() : QStringLiteral(":window-inactive");
+        // the track, free of the thumb: its top from a thumb at the bottom, its bottom (with the
+        // arrows' cap over its end) from a thumb at the top
+        const auto [low, lowThumb] = render(active, 1, 1000);
+        const auto [high, highThumb] = render(active, 1, 0);
+        const int cap = 24;
+        const QImage trackTop = low.copy(0, 0, W, cap), trackBottom = high.copy(0, Groove - cap, W, cap),
+                     trackMiddle = low.copy(0, cap, W, 1);
+        css += piece("track", when, url(trackTop), url(trackBottom), url(trackMiddle), cap, 0);
+        css += QStringLiteral("::-webkit-scrollbar-button:vertical:end:decrement%1 { display: block; height: %2px; background: %3; }\n"
+                              "::-webkit-scrollbar-button:vertical:end:increment%1 { display: block; height: %4px; background: %5; }\n")
+                   .arg(when).arg(Up).arg(url(high.copy(0, Groove, W, Up))).arg(Down).arg(url(high.copy(0, Groove + Up, W, Down)));
+        // the thumb: its ends and a row of its middle, from a long one
+        const auto [thumb, rect] = render(active, 1000, 0);
+        const int end = 12;
+        css += piece("thumb", when, url(thumb.copy(rect.x(), rect.y(), W, end)), url(thumb.copy(rect.x(), rect.bottom() + 1 - end, W, end)),
+                     url(thumb.copy(rect.x(), rect.y() + end, W, 1)), end, 2 * end);
+    }
+    return css;
+}
+
 // ---- the window
 
 class HelpPage : public QWebEnginePage {
@@ -339,17 +411,81 @@ public:
     }
 };
 
-// the textured segments of the toolbar (NSSegmentedControl, style 2): Aqua's buttons side by side
-QToolButton *segment(const QImage &image, const QString &tip)
-{
-    auto *b = new QToolButton;
-    b->setIcon(QIcon(QPixmap::fromImage(image)));
-    b->setIconSize(QSize(16, 16));
-    b->setToolTip(tip);
-    b->setFixedSize(23, 23);
-    b->setAutoRaise(false);
-    return b;
-}
+// NSSegmentedControl, NSSegmentStyleTexturedRounded (style 2, -_setupSegmentedButtons): AquaStyle's
+// textured segment art (CoreUI's "segment" "fortexture"); side by side ones share their edges
+class Segment : public QPushButton {
+public:
+    Segment(const QImage &image, const QString &tip, const QString &position, int width, bool menuIndicator = false)
+        : m_menuIndicator(menuIndicator)
+    {
+        setProperty("aquaTextured", true);
+        if (!position.isEmpty())
+            setProperty("aquaSegmentPosition", position);
+        setToolTip(tip);
+        setFocusPolicy(Qt::NoFocus);
+        setFixedSize(width, 24);
+        m_image = image;
+    }
+    // -setMenu:forSegment: with the indicator: a press on the arrow, or held, shows it
+    QMenu *menu = nullptr;
+    std::function<void()> action;
+
+protected:
+    void paintEvent(QPaintEvent *e) override
+    {
+        QPushButton::paintEvent(e);
+        QPainter p(this);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        QImage img = m_image;
+        if (!isEnabled()) {   // a disabled segment's image at half
+            img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            QPainter ip(&img);
+            ip.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            ip.fillRect(img.rect(), QColor(0, 0, 0, 110));
+        }
+        const int iw = std::min(img.width(), 16), ih = std::min(img.height(), 16);
+        const int x = m_menuIndicator ? (width() - 8 - iw) / 2 : (width() - iw) / 2;
+        p.drawImage(QRect(x, (height() - ih) / 2, iw, ih), img);
+        if (m_menuIndicator) {   // NSSegmentedCell's menu indicator: a small black triangle
+            QPainterPath t;
+            const double cx = width() - 8, cy = height() / 2.0 + 1;
+            t.moveTo(cx - 2.5, cy - 1.5);
+            t.lineTo(cx + 2.5, cy - 1.5);
+            t.lineTo(cx, cy + 1.5);
+            t.closeSubpath();
+            p.setRenderHint(QPainter::Antialiasing);
+            p.fillPath(t, isEnabled() ? QColor(0, 0, 0, 200) : QColor(0, 0, 0, 90));
+        }
+    }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        QPushButton::mousePressEvent(e);
+        if (menu && (!action || e->position().x() > width() - 12))
+            showMenu();
+        else if (menu)
+            m_hold.start();
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        const bool held = m_hold.isValid() && m_hold.elapsed() > 450;
+        m_hold.invalidate();
+        QPushButton::mouseReleaseEvent(e);
+        if (held && menu)
+            showMenu();
+        else if (action && rect().contains(e->position().toPoint()) && !(menu && e->position().x() > width() - 12))
+            action();
+    }
+
+private:
+    void showMenu()
+    {
+        setDown(false);
+        menu->popup(mapToGlobal(QPoint(0, height() + 1)));
+    }
+    QImage m_image;
+    bool m_menuIndicator;
+    QElapsedTimer m_hold;
+};
 
 // NSActionTemplate: AppKit draws it (no picture on the DVD): the gear
 QImage gear()
@@ -361,74 +497,116 @@ QImage gear()
     QPainterPath path;
     const QPointF c(8, 8);
     for (int i = 0; i < 8; ++i) {
-        const double a = i * M_PI / 4;
         QPainterPath tooth;
-        tooth.addRect(QRectF(-1.6, -7.5, 3.2, 3.5));
+        tooth.addRect(QRectF(-1.5, -7.5, 3, 3.2));
         QTransform t;
         t.translate(c.x(), c.y());
-        t.rotateRadians(a);
+        t.rotateRadians(i * M_PI / 4);
         path |= t.map(tooth);
     }
-    path.addEllipse(c, 5.2, 5.2);
+    path.addEllipse(c, 5, 5);
     QPainterPath hole;
-    hole.addEllipse(c, 2.2, 2.2);
-    p.fillPath(path.subtracted(hole), QColor(64, 64, 64));
+    hole.addEllipse(c, 2.1, 2.1);
+    p.fillPath(path.subtracted(hole), QColor(50, 50, 50));
     return img;
 }
 
+// NSSearchField's magnifier with the arrow of its search menu (its cell's searchMenuTemplate)
+QImage magnifier()
+{
+    QImage img(22, 14, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(QColor(90, 90, 90), 1.6));
+    p.drawEllipse(QRectF(3, 2, 7, 7));
+    p.drawLine(QPointF(9, 8.5), QPointF(12, 11.5));
+    QPainterPath t;
+    t.moveTo(14.5, 6);
+    t.lineTo(19.5, 6);
+    t.lineTo(17, 9);
+    t.closeSubpath();
+    p.setPen(Qt::NoPen);
+    p.fillPath(t, QColor(90, 90, 90));
+    return img;
+}
+
+// An icon-only, regular size NSToolbar (-initWithHelpViewController: setDisplayMode:2, setSizeMode:1)
+// under a utility window's title bar, which it continues: a grey falling from 196 to 168 down its 33
+// rows, then its baseline (a 10.6 screenshot of Safari Help's window; the inactive colours lighter)
 class Toolbar : public QWidget {
 public:
     using QWidget::QWidget;
-    static constexpr int Height = 33;
+    static constexpr int Height = 34;
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
         const bool active = window()->isActiveWindow();
-        const int total = 22 + Height;
-        for (int y = 0; y < Height - 1; ++y)
-            p.fillRect(0, y, width(), 1, X11::unifiedToolbarColor(22 + y, total, active));
-        p.fillRect(0, Height - 1, width(), 1, active ? QColor(81, 81, 81) : QColor(135, 135, 135));
+        QLinearGradient g(0, 0, 0, Height - 1);
+        g.setColorAt(0, active ? QColor(196, 196, 196) : QColor(228, 228, 228));
+        g.setColorAt(1, active ? QColor(168, 168, 168) : QColor(210, 210, 210));
+        p.fillRect(QRect(0, 0, width(), Height - 1), g);
+        p.fillRect(0, Height - 1, width(), 1, active ? QColor(101, 101, 101) : QColor(150, 150, 150));
+    }
+    void changeEvent(QEvent *e) override
+    {
+        if (e->type() == QEvent::ActivationChange)
+            update();
+        QWidget::changeEvent(e);
     }
 };
 
 class HelpWindow : public QWidget {
 public:
-    HelpWindow(Library &library) : QWidget(nullptr, Qt::Window | Qt::WindowStaysOnTopHint), m_library(library)
+    // HelpWindow.nib: an HVWindow, style 159 (titled, closable, miniaturizable, resizable, utility,
+    // non-activating panel), 480 × 400, its content no smaller than 360 × 200; at the floating level
+    HelpWindow(Library &library) : QWidget(nullptr, Qt::Tool | Qt::WindowStaysOnTopHint), m_library(library)
     {
         setWindowTitle(loc("Help Viewer"));
         setWindowIcon(QIcon(QPixmap::fromImage(Assets::image(Bundle + "/Contents/Resources/HelpViewer.icns", QSize(128, 128)))));
-        resize(480, 600);
+        setAttribute(Qt::WA_ShowWithoutActivating);   // -setBecomesKeyOnlyIfNeeded:
+        setAttribute(Qt::WA_X11NetWmWindowTypeUtility);   // NSUtilityWindowMask: the small title bar
+        resize(480, 400);
+        setMinimumSize(360, 200 + Toolbar::Height);
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
         auto *bar = new Toolbar;
         bar->setFixedHeight(Toolbar::Height);
         auto *row = new QHBoxLayout(bar);
-        row->setContentsMargins(8, 4, 8, 6);
+        row->setContentsMargins(7, 4, 7, 5);
         row->setSpacing(0);
-        m_back = segment(Assets::image(Bundle + "/Contents/Resources/Back.tif"), loc("Back"));
-        m_forward = segment(Assets::image(Bundle + "/Contents/Resources/Forward.tif"), loc("Forward"));
+        // the default items: navButtons, homeButton, actionButton, a flexible space, the spinner, the
+        // search field; 8 points between the items (the toolbar's own spacing)
+        m_back = new Segment(Assets::image(Bundle + "/Contents/Resources/Back.tif"), loc("Back"), "left", 23);
+        m_forward = new Segment(Assets::image(Bundle + "/Contents/Resources/Forward.tif"), loc("Forward"), "right", 23);
         row->addWidget(m_back);
         row->addWidget(m_forward);
         row->addSpacing(8);
-        m_home = segment(Assets::image(Bundle + "/Contents/Resources/Home.tif"), loc("Go to the home page"));
-        m_home->setFixedWidth(34);
-        m_home->setPopupMode(QToolButton::MenuButtonPopup);
+        m_home = new Segment(Assets::image(Bundle + "/Contents/Resources/Home.tif"), loc("Go to the home page"), {}, 44, true);
         row->addWidget(m_home);
         row->addSpacing(8);
-        m_action = segment(gear(), {});
-        m_action->setFixedWidth(34);
-        m_action->setPopupMode(QToolButton::InstantPopup);
+        m_action = new Segment(gear(), {}, {}, 46, true);
         row->addWidget(m_action);
+        // NSSegmentedControl sized to its image and menu indicator: 44 and 46 points (measured on a
+        // 10.6 screenshot: AppKit's -sizeToFit isn't read); then the flexible space, the spinner's
+        // place (a small one, not displayed when stopped) and the search field, which grows first
         row->addStretch(1);
+        row->addSpacing(8 + 16 + 8);
         m_search = new QLineEdit;
+        m_search->setProperty("aquaSearch", true);
         m_search->setPlaceholderText(loc("Ask a Question"));
+        m_search->setToolTip(loc("Type a word or phrase, then press Return"));
         m_search->setClearButtonEnabled(true);
-        m_search->setMinimumWidth(110);
-        m_search->setMaximumWidth(220);
-        row->addWidget(m_search);
+        m_search->setFixedHeight(22);
+        // -[NSToolbar _minimumSizeForSearchFieldToolbarItem] / _maximum…: 140 × 22 to 200 × 22
+        m_search->setMinimumWidth(140);
+        m_search->setMaximumWidth(200);
+        auto *scope = m_search->addAction(QIcon(QPixmap::fromImage(magnifier())), QLineEdit::LeadingPosition);
+        connect(scope, &QAction::triggered, this, [this] { scopeMenu()->popup(m_search->mapToGlobal(QPoint(0, m_search->height()))); });
+        row->addWidget(m_search, 100);
         layout->addWidget(bar);
 
         m_view = new QWebEngineView;
@@ -453,6 +631,16 @@ document.addEventListener('click', function (e) {
 }, true);
 )js"));
         m_page->scripts().insert(links);
+        QWebEngineScript scrollers;
+        scrollers.setName("aqua-scrollbars");
+        scrollers.setInjectionPoint(QWebEngineScript::DocumentReady);
+        scrollers.setWorldId(QWebEngineScript::ApplicationWorld);
+        scrollers.setRunsOnSubFrames(true);
+        scrollers.setSourceCode(QStringLiteral("(function(){var s=document.createElement('style');s.textContent=%1;"
+                                               "(document.head||document.documentElement).appendChild(s);})();")
+                                    .arg(QString::fromUtf8(QJsonDocument(QJsonObject{{"c", aquaScrollbarStyle()}}).toJson(QJsonDocument::Compact))
+                                             .section("\"c\":", 1).chopped(1)));
+        m_page->scripts().insert(scrollers);
         m_view->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessFileUrls, true);
         m_view->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, false);
         layout->addWidget(m_view, 1);
@@ -464,21 +652,22 @@ document.addEventListener('click', function (e) {
         layout->addWidget(m_find);
         connect(m_find, &QLineEdit::returnPressed, this, [this] { m_page->findText(m_find->text()); });
 
-        connect(m_back, &QToolButton::clicked, m_view, &QWebEngineView::back);
-        connect(m_forward, &QToolButton::clicked, m_view, &QWebEngineView::forward);
-        connect(m_home, &QToolButton::clicked, this, [this] { goHome(); });
+        m_back->action = [this] { m_view->back(); };
+        m_forward->action = [this] { m_view->forward(); };
+        m_home->action = [this] { goHome(); };
         connect(m_view, &QWebEngineView::urlChanged, this, [this] { updateNav(); });
         connect(m_view, &QWebEngineView::titleChanged, this, [this] { updateTitle(); });
         connect(m_search, &QLineEdit::returnPressed, this, [this] {
             if (!m_search->text().trimmed().isEmpty())
-                open("help:search=" + m_search->text().trimmed() + (m_book ? " bookID=" + m_book->id : QString()));
+                open((m_searchAll || !m_book ? "help:searchall=" : "help:search=") + m_search->text().trimmed() +
+                     (m_book && !m_searchAll ? " bookID=" + m_book->id : QString()));
         });
 
         // Home's menu: the library (-_setLibraryMenuForHomeButton)
         auto *libraryMenu = new QMenu(this);
         for (const Book &b : m_library.books)
             libraryMenu->addAction(b.title, this, [this, id = b.id] { open("help:openbook=" + id); });
-        m_home->setMenu(libraryMenu);
+        m_home->menu = libraryMenu;
         // HelpActionMenu.nib
         auto *action = new QMenu(this);
         action->addAction("Make Text Smaller", this, [this] { m_view->setZoomFactor(std::max(0.5, m_view->zoomFactor() - 0.1)); });
@@ -495,7 +684,7 @@ document.addEventListener('click', function (e) {
             if (dialog.exec() == QDialog::Accepted)
                 m_view->print(printer);
         });
-        m_action->setMenu(action);
+        m_action->menu = action;
         updateNav();
     }
 
@@ -665,11 +854,27 @@ private:
         setWindowTitle(m_book ? m_book->title : loc("Help Viewer"));
     }
 
+    // -_setupSearchField's scope menu: "Search <the book>", "Search All Books"
+    QMenu *scopeMenu()
+    {
+        auto *menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        const QString book = m_book ? m_book->title : loc("Help Viewer");
+        auto *current = menu->addAction(QString(loc("Search %@")).replace("%@", book), this, [this] { m_searchAll = false; });
+        auto *all = menu->addAction(QString(loc("Search %@")).replace("%@", loc("All Books")), this, [this] { m_searchAll = true; });
+        current->setCheckable(true);
+        all->setCheckable(true);
+        current->setChecked(!m_searchAll);
+        all->setChecked(m_searchAll);
+        return menu;
+    }
+
     Library &m_library;
     Book *m_book = nullptr;
+    bool m_searchAll = false;
     QWebEngineView *m_view;
     HelpPage *m_page;
-    QToolButton *m_back, *m_forward, *m_home, *m_action;
+    Segment *m_back, *m_forward, *m_home, *m_action;
     QLineEdit *m_search, *m_find;
 };
 

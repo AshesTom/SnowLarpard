@@ -4,6 +4,8 @@
 // gives cairo something to draw a whole frame on, and turns its input into Window::native* calls.
 #pragma once
 
+#include <functional>
+
 #include "appkit.h"
 
 #include <memory>
@@ -17,6 +19,7 @@ public:
     virtual void setIcon(const Image &) {}
     virtual void show() = 0;
     virtual void hide() = 0;
+    virtual void activate() {}   // a shown window brought forward and made key
     // a frame: the whole surface, the title bar AquaKit draws included; null while it can't be drawn
     // (not configured yet, or the compositor hasn't shown the last one)
     virtual cairo_t *beginPaint() = 0;
@@ -77,6 +80,9 @@ public:
     // open): the root's _SNOWLEOPARD_FRONT_APP, [pid, serial], which the menu bar and the Dock read;
     // false takes it off (when it is this application's) or, quitting, lets them look again
     virtual void setFrontWithoutWindows(bool) {}
+    // the keys the application gets while in front without a window (X11: a window of its own off the
+    // screen has the keyboard, as the active application has it on the Mac): its menus' key equivalents
+    std::function<void(uint32_t keysym, const std::string &text, unsigned modifiers)> keyWithoutWindows;
 
     static std::unique_ptr<Platform> wayland();   // null without a compositor (or without the backend built)
     static std::unique_ptr<Platform> x11();       // null without a display

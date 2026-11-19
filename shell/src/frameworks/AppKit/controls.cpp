@@ -7,6 +7,7 @@
 #include <ctime>
 #include <map>
 #include <cmath>
+#include <cstring>
 #include <memory>
 
 namespace AK {
@@ -309,6 +310,8 @@ void SegmentedControl::mouseUp(Event &)
 
 namespace {
 
+std::pair<std::string, std::string> splitKeyEquivalent(const std::string &k);
+
 class MenuView : public View {
 public:
     std::vector<MenuItem> items;
@@ -321,7 +324,7 @@ public:
     MenuView *parentMenu = nullptr;   // a submenu's
     int parentItem = -1;              // the item it opened from
     MenuView *child = nullptr;        // the submenu open beside it
-    double keyColumn = 0;             // where the key equivalents start
+    double keyColumn = 0;             // where the keys' column starts (their modifiers end)
     double minWidth = 0;
 
     int itemAt(Point p, bool disabledToo = false) const
@@ -361,7 +364,7 @@ public:
             t.color = !items[i].enabled ? Color::gray(0, 0.3) : hi ? Color::gray(255) : Color::gray(0);
             if (items[i].checked)
                 drawText(cr, "✓", Rect{6, top, 14, Menu::ItemHeight}, t);
-            double x = 21 + 10 * items[i].indentation;
+            double x = Menu::MarkColumn + Menu::IndentWidth * items[i].indentation;
             if (!items[i].image.isNull()) {
                 items[i].image.draw(cr, Rect{x, top + 1, 16, 16});
                 x += 20;
@@ -377,10 +380,16 @@ public:
             }
             drawText(cr, items[i].title, Rect{x, top, right - x, Menu::ItemHeight}, t);
             if (!items[i].keyEquivalent.empty())
-                drawText(cr, items[i].keyEquivalent, Rect{keyColumn, top, frame().w - keyColumn - 10, Menu::ItemHeight}, t);
+            {
+                // the modifiers right aligned against the keys' column, the key left aligned in it
+                const auto [mods, key] = splitKeyEquivalent(items[i].keyEquivalent);
+                const double mw = textWidth(mods, font);
+                drawText(cr, mods, Rect{keyColumn - mw, top, mw + 1, Menu::ItemHeight}, t);
+                drawText(cr, key, Rect{keyColumn, top, frame().w - keyColumn, Menu::ItemHeight}, t);
+            }
             if (!items[i].submenu.empty()) {
-                // the submenu's arrow: a triangle pointing right
-                const double ax = frame().w - 15, ay = top + std::floor(Menu::ItemHeight / 2);
+                // the submenu's arrow: a triangle pointing right, 11 points from the edge (10.6's)
+                const double ax = frame().w - 18, ay = top + std::floor(Menu::ItemHeight / 2);
                 cairo_move_to(cr, ax, ay - 4.5);
                 cairo_line_to(cr, ax + 7, ay);
                 cairo_line_to(cr, ax, ay + 4.5);
@@ -562,27 +571,61 @@ std::unique_ptr<Window> openMenu;
 MenuView *openView = nullptr;   // popUp's menu, while it is open
 std::vector<std::unique_ptr<Window>> openSubmenus;   // the open submenus, outermost first
 
-// A menu's size for its items, and where its key equivalents start
+// A key equivalent's modifiers ("⌥⌘") and its key ("⎋"): HIToolbox draws the modifiers right
+// aligned against a column the menu's keys share, the key left aligned in it
+std::pair<std::string, std::string> splitKeyEquivalent(const std::string &k)
+{
+    size_t i = 0;
+    for (bool more = true; more && i < k.size();) {
+        more = false;
+        for (const char *m : {"⌃", "⌥", "⇧", "⌘"})
+            if (k.compare(i, std::strlen(m), m) == 0) {
+                i += std::strlen(m);
+                more = i < k.size();
+                break;
+            }
+    }
+    return {k.substr(0, i), k.substr(i)};
+}
+
+// A menu's size for its items, and where its keys' column starts.
+// HIStandardMenuView::GetOptimalSizeSelf: the widest row, each row measured on its own
+// (GetItemWidth): the mark column (kThemeMetricMenuMarkColumnWidth, 21), an icon and
+// kThemeMetricMenuIconTrailingEdgeMargin (4), the title and kThemeMetricMenuTextTrailingEdgeMargin
+// (19), the key equivalent (GetCommandKeyWidth: its modifiers and the keys' column; a row without
+// one keeps a "⌘"'s width, given back when no row has one), the item's extra width
+// (GetThemeMenuItemExtra) and kThemeMetricMenuIndentWidth (12) a level.
 Size menuSize(const std::vector<MenuItem> &items, double minWidth, const Font &font, double *keyColumn)
 {
-    double title = 0, keys = 0, trailing = 0, views = 0;
-    bool images = false, arrows = false;
+    double column = 0;   // the widest key
+    bool keys = false;
+    for (const MenuItem &i : items)
+        if (!i.keyEquivalent.empty()) {
+            keys = true;
+            column = std::max(column, textWidth(splitKeyEquivalent(i.keyEquivalent).second, font));
+        }
+    const double command = keys ? textWidth("⌘", font) : 0;
+    double w = minWidth;
     for (const MenuItem &i : items) {
-        title = std::max(title, textWidth(i.title, font) + 10 * i.indentation);
+        w = std::max(w, i.viewWidth);
+        if (i.separator || i.makeView)
+            continue;
+        double title = textWidth(i.title, font);
         if (!i.swatches.empty())
             title = std::max(title, i.swatches.size() * MenuView::SwatchPitch);
-        keys = std::max(keys, i.keyEquivalent.empty() ? 0.0 : textWidth(i.keyEquivalent, font));
-        images = images || !i.image.isNull();
-        arrows = arrows || !i.submenu.empty();
-        if (!i.trailingImage.isNull())
-            trailing = std::max(trailing, double(i.trailingImage.width()) + 10 + 12 - 30);
-        views = std::max(views, i.viewWidth);
+        double row = Menu::MarkColumn + Menu::IndentWidth * i.indentation + (i.image.isNull() ? 0 : 16 + 4) + title +
+                     Menu::TextTrailingMargin + Menu::ItemExtra;
+        if (!i.keyEquivalent.empty())
+            row += textWidth(splitKeyEquivalent(i.keyEquivalent).first, font) + column;
+        else if (!i.trailingImage.isNull())
+            row += std::max(command, double(i.trailingImage.width()));
+        else
+            row += command;
+        w = std::max(w, row);
     }
-    const double left = 21 + (images ? 20 : 0);
-    double w = std::max({minWidth, views, left + title + 30 + std::max(0.0, trailing) + (keys > 0 ? keys + 20 : 0) + (arrows ? 10 : 0)});
     const double h = Menu::itemTop(items, int(items.size())) + Menu::Padding;
     if (keyColumn)
-        *keyColumn = std::ceil(w) - 10 - keys - (arrows ? 10 : 0);
+        *keyColumn = std::ceil(w) - Menu::ItemExtra - column;
     return {std::ceil(w), std::ceil(h)};
 }
 

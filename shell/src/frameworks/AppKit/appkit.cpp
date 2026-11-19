@@ -387,6 +387,15 @@ void Window::show()
     App::shared().platform()->flush();
 }
 
+void Window::orderFront()
+{
+    if (!m_visible) {
+        show();
+        return;
+    }
+    m_native->activate();
+}
+
 void Window::close()
 {
     m_native->hide();

@@ -96,6 +96,7 @@ private:
     void grabKeys();
     void paintDesktopPicture();
     void handleKey(xcb_key_press_event_t *e);
+    xcb_window_t frontAppKeyboard();   // the window of the application in front without one, when it has the keyboard
 
     void buttonPress(xcb_button_press_event_t *e);
     void buttonRelease(xcb_button_release_event_t *e);
