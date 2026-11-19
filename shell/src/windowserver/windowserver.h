@@ -44,6 +44,7 @@ private:
         QImage proxyIcon;        // the represented file's icon before the title (_SNOWLEOPARD_PROXY_ICON)
         bool documentEdited = false;  // the close button's dot (_SNOWLEOPARD_DOCUMENT_EDITED)
         bool roundedBottom = false;   // a textured window's bottom corners (_SNOWLEOPARD_ROUNDED_BOTTOM)
+        bool outlined = false;   // a frame's outline though undecorated (the property set: iTunes' own frame)
         bool minimized = false, fullscreen = false, zoomed = false;
         bool hidden = false;     // minimized by Hide (⌘H): no tile in the Dock, no genie
         bool utility = false;    // a utility window's small title bar (_NET_WM_WINDOW_TYPE_UTILITY)

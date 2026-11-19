@@ -68,6 +68,12 @@ struct TextStyle {
 };
 TextStyle textStyle(int id);
 
+// iTunes' colour table (FUN_00021488, 44 RGBColors at 0xa62000), as it is in the normal appearance:
+// 0 / 1 the bands' lines, 10 / 11 / 19 / 20 the songs' selection, 14 the songs' stripe, 16 white,
+// 22 / 23 white and black text, 27 / 28 the sources' background, 29 / 30 / 31 the sources' headers,
+// 32 / 33 the sources' text, 34 / 35 its shadow when selected
+AK::Color colour(int index);
+
 // The menu bar from MBAR 129 and its xMNU resources (FUN_0026c16c, FUN_0026be3e): each item's text
 // (Localizable.strings), key, modifiers and command (its 4-char code as the action); submenus by the
 // classic hMenuCmd convention; the hidden "Commands" menu (160) for its key equivalents

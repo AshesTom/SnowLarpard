@@ -370,6 +370,7 @@ void WindowServer::readProperties(Client *c)
     c->documentEdited = !edited.isEmpty() && edited[0];
     QVector<uint32_t> rounded = X11::cardinals(c->window, atom("_SNOWLEOPARD_ROUNDED_BOTTOM"), XCB_ATOM_CARDINAL);
     c->roundedBottom = !rounded.isEmpty() && rounded[0];
+    c->outlined = !rounded.isEmpty();
     QVector<uint32_t> opacity = X11::cardinals(c->window, atom("_NET_WM_WINDOW_OPACITY"), XCB_ATOM_CARDINAL);
     c->opacity = opacity.isEmpty() ? 1.0 : opacity[0] / double(0xffffffffu);
     QVector<uint32_t> transient = X11::cardinals(c->window, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW);
@@ -420,14 +421,15 @@ void WindowServer::applyGeometry(Client *c)
 }
 
 // The frame's outline (CoreUI's CreateWindowPath): its top corners rounded, radius 4, its bottom ones
-// too for a textured window; whole pixels, those whose centre is in the corner's circle. The shadows
+// too for a textured window; whole pixels, those whose centre is in the corner's circle. An undecorated
+// window drawing its own frame (iTunes') has it when it says which bottom corners it has. The shadows
 // (AppKit's __NSSetWindowShadow) are the compositor's (compositor.cpp); AquaKit draws them on Wayland
 void WindowServer::applyShape(Client *c)
 {
     const QRect &g = c->geometry;
     const int w = qMax(1, g.width()), h = qMax(1, g.height() + c->titleHeight());
     QVector<xcb_rectangle_t> rects;
-    if (!c->decorated || c->fullscreen) {
+    if ((!c->decorated && !c->outlined) || c->fullscreen) {
         rects.append({0, 0, uint16_t(w), uint16_t(h)});
     } else {
         constexpr double r = 4;
