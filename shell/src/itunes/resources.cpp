@@ -146,9 +146,39 @@ ResourceFile &localized()
     return f;
 }
 
-bool resourcesPresent() { return art().isOpen() && localized().isOpen(); }
+bool resourcesPresent() { return art().isOpen() && (eleven() || localized().isOpen()); }
 
-std::string tr(const std::string &key) { return Assets::tr(Bundle, "Localizable", key, key); }
+int majorVersion()
+{
+    static const int v = std::atoi(Assets::plistStrings(std::string(Bundle) + "/Contents/Info.plist")["CFBundleShortVersionString"].c_str());
+    return v;
+}
+
+std::string tr(const std::string &key)
+{
+    // 11.4 numbers its texts by the STR# resources 8.2.1 had them in: "9006.001" is (9006 << 16) | 1
+    if (eleven()) {
+        const size_t dot = key.find('.');
+        if (dot != std::string::npos && dot > 0 && key.find_first_not_of("0123456789.") == std::string::npos) {
+            const std::string t = text((uint32_t(std::stoul(key.substr(0, dot))) << 16) | uint32_t(std::stoul(key.substr(dot + 1))));
+            return t.empty() ? key : t;
+        }
+    }
+    return Assets::tr(Bundle, "Localizable", key, key);
+}
+
+std::string text(uint32_t number)
+{
+    // LocalizableStringsMap.plist: hashed key -> number (iTunes looks a number's key up in it)
+    static const std::map<uint32_t, std::string> keys = [] {
+        std::map<uint32_t, std::string> m;
+        for (const auto &[key, n] : Assets::plistStrings(res("LocalizableStringsMap.plist")))
+            m[uint32_t(std::strtoul(n.c_str(), nullptr, 10))] = key;
+        return m;
+    }();
+    auto it = keys.find(number);
+    return it == keys.end() ? std::string() : Assets::tr(Bundle, "Localizable", it->second, {});
+}
 
 namespace {
 
@@ -276,7 +306,23 @@ Image picture(int id)
 
 PictureInfo pictureInfo(int id)
 {
-    // iTunes' table at 0xa622e0 (FUN_0000ebe4): columns, rows, fixed left, fixed right, kind
+    // 11.4's table (built by the initializer at 0xa79b59, read by FUN_00a76eb8): the entries the window
+    // draws. Their art is new: the same numbers no longer name the same pictures.
+    static const std::map<int, PictureInfo> table11 = {
+        {150, {1, 1, 4, 4, 0}},    {151, {1, 1, 0, 0, 0}},   {160, {1, 3, 10, 10, 0}}, {161, {3, 1, 0, 0, 1}},
+        {317, {5, 1, 0, 0, 5}},    {319, {5, 1, 0, 0, 5}},   {321, {5, 3, 0, 0, 5}},   {328, {3, 4, 0, 0, 3}},
+        {350, {1, 2, 10, 10, 0}},  {352, {3, 1, 0, 0, 3}},   {441, {4, 53, 0, 0, 3}},  {5000, {2, 1, 4, 4, 1}},
+        {5001, {2, 1, 4, 4, 1}},   {13004, {4, 2, 0, 0, 4}}, {13005, {4, 2, 0, 0, 4}}, {13006, {4, 2, 0, 0, 4}},
+        // the nav bar's
+        {869, {3, 1, 11, 11, 3}},  {870, {1, 1, 0, 0, 0}},   {871, {3, 1, 11, 11, 3}}, {876, {3, 2, 13, 13, 3}},
+        {879, {1, 1, 0, 0, 0}},    {882, {3, 1, 0, 0, 3}},   {883, {3, 1, 0, 0, 3}},   {887, {1, 1, 0, 0, 0}},
+        {8251, {2, 13, 0, 0, 3}},  {886, {4, 2, 11, 14, 4}},
+    };
+    if (eleven()) {
+        auto it = table11.find(id);
+        return it == table11.end() ? PictureInfo{} : it->second;
+    }
+    // iTunes 8.2.1's table at 0xa622e0 (FUN_0000ebe4): columns, rows, fixed left, fixed right, kind
     static const std::map<int, PictureInfo> table = {
         {153, {2, 1, 8, 8, 1}},    {154, {1, 1, 0, 0, 0}},   {316, {5, 1, 0, 0, 5}},   {318, {5, 1, 0, 0, 5}},
         {320, {5, 3, 0, 0, 5}},    {322, {5, 1, 0, 0, 5}},   {324, {5, 1, 0, 0, 5}},   {326, {5, 3, 0, 0, 5}},
@@ -346,8 +392,52 @@ Color colour(int index)
     return Color::rgb(table[index][0], table[index][1], table[index][2]);
 }
 
+namespace {
+
+// 11.4's TextStyles.plist (its JSON beside it): {"302": {"font": "HelveticaNeue-Medium", "size": 11,
+// "justification": "center"}, ...}, the numbers the Txtr resources had
+TextStyle textStyle11(int id)
+{
+    static const std::string json = [] {
+        std::ifstream in(Assets::path(res("English.lproj/TextStyles.plist")) + ".json");
+        return std::string((std::istreambuf_iterator<char>(in)), {});
+    }();
+    TextStyle s;
+    s.font = Font::system(11);
+    const size_t at = json.find("\"" + std::to_string(id) + "\": {");
+    if (at == std::string::npos)
+        return s;
+    const std::string entry = json.substr(at, json.find('}', at) - at);
+    auto value = [&](const char *key) {
+        const size_t k = entry.find(std::string("\"") + key + "\": ");
+        if (k == std::string::npos)
+            return std::string();
+        size_t v = k + std::strlen(key) + 4;
+        if (entry[v] == '"')
+            return entry.substr(v + 1, entry.find('"', v + 1) - v - 1);
+        return entry.substr(v, entry.find_first_of(",}", v) - v);
+    };
+    const std::string font = value("font"), size = value("size"), just = value("justification");
+    if (!size.empty())
+        s.font.size = std::atof(size.c_str());
+    // PostScript names: LucidaGrande(-Bold), HelveticaNeue(-Medium, -Bold), Helvetica(-Bold)
+    const size_t dash = font.find('-');
+    const std::string base = font.substr(0, dash), face = dash == std::string::npos ? "" : font.substr(dash + 1);
+    s.font.bold = face == "Bold";
+    if (base == "HelveticaNeue")
+        s.font.family = "Helvetica Neue";
+    else if (base == "Helvetica")
+        s.font.family = "Helvetica";
+    s.align = just == "center" ? Align::Center : just == "right" ? Align::Right : Align::Left;
+    return s;
+}
+
+} // namespace
+
 TextStyle textStyle(int id)
 {
+    if (eleven())
+        return textStyle11(id);
     // Txtr: size, style (1 bold), justification (1 centred, −1 right), 1, red, green, blue, 0xFFFF,
     // the font's name
     TextStyle s;
@@ -448,10 +538,159 @@ std::vector<MainMenuItem> parseMenu(int id, int depth)
 
 } // namespace
 
-std::vector<MainMenuItem> menuItems(int id) { return parseMenu(id, 0); }
+namespace {
+
+// ---- 11.4's menus: tables in the program (built by the initializer at 0x934e2a): each menu its ID,
+// 4-char tag and title's text number, its items {command, submenu ID, text number}, "DIV0" / "DIV1"
+// a separator. The texts carry their keys: "Minimize###M", "Show in Finder###R#shift",
+// "Convert…####option" (no key: the Option alternate of the item before), and Controls ▸ Play's
+// hand-made column ("Play      Space").
+struct Item11 {
+    const char *command;
+    int submenu;
+    uint32_t text;
+};
+struct Menu11 {
+    int id;
+    uint32_t title;
+    std::vector<Item11> items;
+};
+
+const std::vector<Menu11> &menus11()
+{
+    static const std::vector<Menu11> menus = {
+        // {menu ID, its title text's number, {command, submenu, text number}...}: iTunes 11.4's tables
+        {129, 0x75300001, {{"abou", 0, 0x75300002}, {"DIV0", 0, 0x0}, {"pref", 0, 0x75300003}, {"DIV0", 0, 0x0}, {"Feed", 0, 0x75300004}, {"ckup", 0, 0x75300005}, {"DIV0", 0, 0x0}, {"serv", 0, 0x75300006}, {"DIV0", 0, 0x0}, {"hitn", 0, 0x75300007}, {"hoth", 0, 0x75300008}, {"shal", 0, 0x75300009}, {"DIV0", 0, 0x0}, {"quit", 0, 0x7530000a}}},
+        {131, 0x75f80001, {{"ctxe", 225, 0x75f80002}, {"epls", 0, 0x75f80016}, {"CLOS", 0, 0x75f8000f}, {"DIV0", 0, 0x0}, {"add ", 0, 0x75f8000c}, {"ctxe", 210, 0x75f8000d}, {"ctxe", 212, 0x75f80021}, {"ctxe", 228, 0x75f8000e}, {"DIV0", 0, 0x0}, {"ourl", 0, 0x77880002}, {"pcsb", 0, 0x77880003}, {"DIV0", 0, 0x0}, {"geti", 0, 0x75f80013}, {"SRAT", 200, 0x75f80014}, {"revl", 0, 0x75f80019}, {"ctxe", 226, 0x75f80003}, {"DIV0", 0, 0x0}, {"pset", 0, 0x75f8001e}, {"prnt", 0, 0x75f8001f}}},
+        {133, 0x765c0001, {{"undo", 0, 0x765c0002}, {"redo", 0, 0x765c0003}, {"DIV0", 0, 0x0}, {"cut ", 0, 0x765c0004}, {"copy", 0, 0x765c0005}, {"past", 0, 0x765c0006}, {"clea", 0, 0x765c0007}, {"sall", 0, 0x765c0008}, {"SNon", 0, 0x765c0009}}},
+        {135, 0x77240001, {{"VOpt", 0, 0x7724001e}, {"COpt", 217, 0x77240003}, {"PQsh", 0, 0x77240064}, {"ShBF", 0, 0x77240062}, {"shsl", 0, 0x7724005f}, {"DIV0", 0, 0x0}, {"SDup", 0, 0x7724001b}, {"SDup", 0, 0x7724001c}, {"shct", 0, 0x7724000a}, {"DIV0", 0, 0x0}, {"vdsz", 211, 0x7724006c}, {"vtog", 0, 0x77240013}, {"viss", 204, 0x77240015}, {"DIV0", 0, 0x0}, {"eeFS", 0, 0x77240017}}},
+        {134, 0x76c00001, {{"plps", 0, 0x76c00002}, {"gnsh", 0, 0x76c00003}, {"stop", 0, 0x76c00004}, {"ntrk", 0, 0x76c00005}, {"back", 0, 0x76c00006}, {"plyr", 218, 0x76c00007}, {"SCur", 0, 0x75f8001a}, {"DIV0", 0, 0x0}, {"nchp", 0, 0x76c00008}, {"pchp", 0, 0x76c00009}, {"DIV0", 0, 0x0}, {"audi", 209, 0x76c0000d}, {"volu", 0, 0x76c00012}, {"vold", 0, 0x76c00013}, {"DIV0", 0, 0x0}, {"shfm", 214, 0x76c0000a}, {"rptm", 215, 0x76c0000e}, {"DIV0", 0, 0x0}, {"ejct", 0, 0x76c00015}}},
+        {141, 0x79180001, {{"Msgb", 0, 0x79180004}, {"Msgf", 0, 0x79180005}, {"Msgh", 0, 0x79180003}, {"Msrp", 0, 0x79180014}, {"DIV1", 0, 0x0}, {"TMtc", 0, 0x79180006}, {"UMtc", 0, 0x7918000d}, {"TGen", 0, 0x7918000a}, {"UGen", 0, 0x7918000c}, {"DIV0", 0, 0x0}, {"autA", 0, 0x79180010}, {"dauS", 0, 0x79180011}, {"daud", 0, 0x7788000d}, {"DIV0", 0, 0x0}, {"mssi", 0, 0x79180012}, {"Msvc", 0, 0x79180013}, {"SCDN", 0, 0x7918000f}}},
+        {138, 0x77ec0001, {{"minw", 0, 0x77ec0002}, {"zoom", 0, 0x77ec0003}, {"DIV0", 0, 0x0}, {"brwn", 0, 0x77ec0004}, {"eqwn", 0, 0x77ec0005}, {"minp", 0, 0x77ec0006}, {"Dwld", 0, 0x77ec0007}, {"DIV0", 0, 0x0}, {"smin", 0, 0x77ec0008}, {"DIV0", 0, 0x0}, {"batf", 0, 0x77ec0009}}},
+        {140, 0x78b40001, {{"ahlp", 0, 0x78b40002}, {"DIV0", 0, 0x0}, {"Wlcm", 0, 0x78b40009}, {"KeyB", 0, 0x78b40004}, {"DIV0", 0, 0x0}, {"podH", 0, 0x78b40005}, {"iPhH", 0, 0x78b40007}, {"iPdH", 0, 0x78b40008}, {"atvH", 0, 0x78b40006}, {"DIV0", 0, 0x0}, {"Supp", 0, 0x78b40003}}},
+        {160, 0x797c0001, {{"TFnd", 0, 0x797c0002}, {"pref", 0, 0x797c0003}, {"mute", 0, 0x76c00014}, {"Sbti", 0, 0x797c0006}, {"getS", 0, 0x797c0009}, {"pitm", 0, 0x797c0008}, {"nitm", 0, 0x797c0007}, {"NbTB", 0, 0x797c000a}, {"RMus", 0, 0x797c000b}, {"RMov", 0, 0x797c000c}, {"RTVS", 0, 0x797c000d}, {"RPod", 0, 0x797c000e}, {"RITU", 0, 0x797c000f}, {"RBok", 0, 0x797c0010}, {"RApp", 0, 0x797c0011}, {"vtog", 0, 0x797c0004}, {"Brfs", 0, 0x797c0005}}},
+        {139, 0x0, {{"", 0, 0x78500001}, {"sgnc", 0, 0x78500002}, {"MRAT", 201, 0x78500003}, {"DIV0", 0, 0x0}, {"fist", 0, 0x78500004}, {"DIV0", 0, 0x0}, {"rptm", 219, 0x78500005}, {"SHUF", 0, 0x78500006}, {"DIV0", 0, 0x0}, {"PLPS", 0, 0x78500007}, {"ntrk", 0, 0x78500008}, {"ptrk", 0, 0x78500009}, {"plyr", 220, 0x7850000a}}},
+        {210, 0x0, {{"gath", 0, 0x77880008}, {"expl", 0, 0x75f80012}, {"DIV0", 0, 0x0}, {"impt", 0, 0x75f80010}, {"expr", 0, 0x75f80011}, {"DIV0", 0, 0x0}, {"gart", 0, 0x77880009}}},
+        {212, 0x0, {{"sync", 0, 0x7e2c000d}, {"rsyn", 0, 0x7e2c0010}, {"DIV0", 0, 0x0}, {"bkud", 0, 0x7e2c0014}, {"resd", 0, 0x7e2c0015}}},
+        {226, 0x0, {{"imph", 0, 0x77880006}, {"imat", 0, 0x77880007}, {"imps", 0, 0x77880004}, {"imps", 0, 0x77880005}}},
+        {228, 0x0, {{"THSh", 0, 0x7788000e}, {"ATpp", 0, 0x77880011}}},
+        {225, 0x0, {{"nply", 0, 0x75f80004}, {"npls", 0, 0x75f80005}, {"nspl", 0, 0x75f80006}, {"nfld", 0, 0x75f80007}}},
+        {200, 0x0, {{"SRT0", 0, 0x79e00001}, {"SRT1", 0, 0x79e00002}, {"SRT2", 0, 0x79e00003}, {"SRT3", 0, 0x79e00004}, {"SRT4", 0, 0x79e00005}, {"SRT5", 0, 0x79e00006}}},
+        {217, 0x0, {{"SBro", 0, 0x77240007}}},
+        {213, 0x0, {{"dins", 0, 0x7b0c0003}, {"DIV0", 0, 0x0}, {"sins", 0, 0x7b0c0006}, {"hins", 0, 0x7b0c0004}, {"Hins", 0, 0x7b0c0005}}},
+        {214, 0x0, {{"shuf", 0, 0x76c0000b}, {"DIV0", 0, 0x0}, {"shfs", 0, 0x76c00016}, {"shfa", 0, 0x76c00017}, {"shfg", 0, 0x76c00018}}},
+        {215, 0x0, {{"rpt0", 0, 0x76c0000f}, {"rpt2", 0, 0x76c00010}, {"rpt1", 0, 0x76c00011}}},
+        {209, 0x0, {}},
+        {204, 0x0, {{"DIV0", 0, 0x0}, {"Vpvt", 0, 0x7aa80002}, {"VisO", 0, 0x7aa80001}}},
+        {227, 0x0, {{"gnam", 0, 0x7788000a}, {"scdi", 0, 0x7788000b}, {"jsel", 0, 0x7788000c}}},
+    };
+    return menus;
+}
+
+const Menu11 *menu11(int id)
+{
+    for (const Menu11 &m : menus11())
+        if (m.id == id)
+            return &m;
+    return nullptr;
+}
+
+std::vector<MainMenuItem> parseMenu11(int id, int depth)
+{
+    std::vector<MainMenuItem> items;
+    const Menu11 *m = menu11(id);
+    if (!m || depth > 4)
+        return items;
+    for (const Item11 &i : m->items) {
+        MainMenuItem it;
+        const std::string cmd = i.command;
+        if (cmd == "DIV0" || cmd == "DIV1") {
+            it.separator = true;
+            items.push_back(it);
+            continue;
+        }
+        std::string t = text(i.text);
+        const size_t gap = t.find("  ");
+        if (gap != std::string::npos)
+            t = t.substr(0, gap);
+        const size_t keys = t.find("###");
+        if (keys != std::string::npos) {
+            std::string rest = t.substr(keys + 3);
+            t = t.substr(0, keys);
+            // the key (none when "#" follows at once), then "#shift", "#option", "#control"
+            if (!rest.empty() && rest[0] != '#') {
+                it.key = std::string(1, char(std::tolower((unsigned char)rest[0])));
+                rest = rest.substr(1);
+            }
+            it.modifiers = it.key.empty() ? 0 : unsigned(Command);
+            if (rest.find("#shift") != std::string::npos)
+                it.modifiers |= Shift;
+            if (rest.find("#option") != std::string::npos)
+                it.modifiers |= Option;
+            if (rest.find("#control") != std::string::npos)
+                it.modifiers |= Control;
+            if (it.key.empty() && (it.modifiers & Option) && !items.empty() && !items.back().separator)
+                it.alternate = true;
+        }
+        it.title = t;
+        it.action = cmd;
+        if (i.submenu) {
+            it.hasSubmenu = true;
+            it.items = parseMenu11(i.submenu, depth + 1);
+            it.action.clear();
+        }
+        if (cmd.empty())
+            it.action.clear();   // the Dock menu's Now Playing: a title
+        items.push_back(it);
+    }
+    return items;
+}
+
+std::vector<MainMenuItem> menuBar11()
+{
+    // the menu bar's order: iTunes, File, Edit, View, Controls, Store, Window, Help
+    std::vector<MainMenuItem> bar;
+    for (int id : {129, 131, 133, 135, 134, 141, 138, 140}) {
+        const Menu11 *m = menu11(id);
+        if (!m)
+            continue;
+        MainMenuItem menu;
+        menu.hasSubmenu = true;
+        menu.title = id == 129 ? std::string("iTunes") : text(m->title);
+        menu.items = parseMenu11(id, 0);
+        for (MainMenuItem &it : menu.items) {
+            // the application menu's own: Services, Hide, Quit as AppKit names them
+            if (it.action == "serv") {
+                it.hasSubmenu = true;
+                it.action.clear();
+            } else if (it.action == "hitn")
+                it.action = "hide:";
+            else if (it.action == "hoth")
+                it.action = "hideOtherApplications:";
+            else if (it.action == "shal")
+                it.action = "unhideAllApplications:";
+            else if (it.action == "quit")
+                it.action = "terminate:";
+        }
+        bar.push_back(menu);
+    }
+    MainMenuItem hidden;   // "Commands" (160): its keys work, it isn't shown
+    hidden.title = text(0x797c0001);
+    hidden.hasSubmenu = true;
+    hidden.hidden = true;
+    hidden.items = parseMenu11(160, 0);
+    bar.push_back(hidden);
+    return bar;
+}
+
+} // namespace
+
+std::vector<MainMenuItem> menuItems(int id) { return eleven() ? parseMenu11(id, 0) : parseMenu(id, 0); }
 
 std::vector<MainMenuItem> menuBar()
 {
+    if (eleven())
+        return menuBar11();
     std::vector<MainMenuItem> bar;
     const std::string *mbar = localized().get("MBAR", 129);
     if (!mbar)

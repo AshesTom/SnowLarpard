@@ -1,8 +1,9 @@
 # iTunes (8.2.1, 10.6): what was recovered
 
 First pass over the iTunes on Snow Leopard's DVD. No Apple file is in the repository: the material
-below lives in `.local/media/re/itunes/` (ignored by git) and is rebuilt from the DVD. 10.6.8's
-combo update brings iTunes 11.4, a different program (Cocoa, x86_64), not covered here.
+below lives in `.local/media/re/itunes/` (ignored by git) and is rebuilt from the DVD. The last iTunes
+for Snow Leopard, 11.4, is a separate Software Update product for 10.6.8 (not part of the combo):
+section 7.
 
 ## Where the files come from
 
@@ -179,3 +180,78 @@ to 700 wide.
 - The rest of `FUN_000249e4`: the browser columns (+0xC0 / +0xCC / +0xD8, a third of the width
   each, at least 300 high), Cover Flow, the Store bar.
 - The library: `iTunes Library` (binary, `hdfm`) and `iTunes Music Library.xml`.
+
+## 7. iTunes 11.4 (Software Update, 10.6.8)
+
+The last iTunes for Snow Leopard. Apple's Snow Leopard catalog (`index-leopard-snowleopard.merged-1`)
+still serves two iTunes products: **041-88055, iTunes 10.6.3** (its .dist: 10.6 and later) and
+**041-84834, iTunes 11.4** (its .dist refuses below 10.6.8, `ERROR_0`; it replaces 11.3.1 or older,
+`SourceVersion` 1140011004000018). 11.4's packages: iTunesX.pkg (192.5 MB, the application),
+MobileDevice, CoreFP, CoreADI, iTunesAccess. The material is in `.local/media/re/itunes11/`.
+
+| File | Notes |
+|---|---|
+| `iTunes.app/Contents/MacOS/iTunes` | universal **i386 + x86_64**; `LSMinimumSystemVersionByArchitecture`: i386 10.6.8, x86_64 10.7, so on Snow Leopard the **i386** slice runs (26.5 MB, sha256 `346a1382…2c76`, stripped: 83 286 functions, 2 426 C++ classes by their RTTI). C++ on its own view layer (`ITView`, `ITWindowFrameView`, `ITViewController`; boost's shared pointers), a little Cocoa (`__OBJC`, the old runtime) |
+| `Resources/iTunes.rsrc` | 1 012 `PNG ` (1×), an `aete`, an `icns`: no `TMPL`, `PBUT` or `Txtr` any more. `Images.rsrc` (512) and `Images2.rsrc` (215) are their @2x (ID + 15000 for most) |
+| `English.lproj/TextStyles.plist` | the text styles, by the numbers the Txtr resources had (302 the LCD: HelveticaNeue-Medium 11 centred; 9002 the list: HelveticaNeue 12; 9004 its header) |
+| `English.lproj/Localizable.strings` | a binary plist (12 086 strings) under hashed keys; `LocalizableStringsMap.plist` gives each key its number, which is **(8.2.1's STR# ID << 16) \| its index** (`9006.001` "Name" is 0x232E0001; 135.006 LIBRARY, 135.009 PLAYLISTS) |
+| `English.lproj/MainMenu.nib` | an empty `AMainMenu`: the menus are tables in the program (below) |
+| the package's `Scripts/obsolete-files` | 5 453 paths its preinstall (`deleteObsoleteFiles.pl`, `deleteomatic`) deletes: 8.2.1's `Localized.rsrc` and icons among them |
+
+REA 6.9.0 (Ghidra 12.2) on the i386 slice; section 4's tools (`classes.py` for the classes and their
+vtables, `all.s`) redone for 11.4; `pictures.txt` (the picture table), `menus11.txt` (the menus).
+
+| Item | Source | Status |
+|---|---|---|
+| The picture table: built at launch by a static initializer (0xa79b59–0xa9ce1e) at 0x18fdc60, 823 entries of 0x4C bytes: the ID, columns, rows, fixed left / right / top / bottom, flags, the kind (+0x20), the @2x and alternative IDs (+0x24…). Read back from the initializer's stores | `FUN_00a76eb8` (lookup), `FUN_00a77820` (a cell into a rect) | Done (`pictures.txt`) |
+| The menus: a table of menus (initializer at 0x934e2a: ID, 4-char tag, title's text number, items, count; 129 iTunes, 131 File, 133 Edit, 135 View, 134 Controls, 141 Store, 138 Window, 140 Help; 160 Commands, 139 Dock and the submenus) and items of 16 bytes {command, submenu, 0, text number}, `DIV0` a separator. The texts carry their keys: `Minimize###M`, `Show in Finder###R#shift`, `Convert…####option` (an Option alternate) | the items at 0x133dba4…, Controls' built at launch at 0x19343b4 | Done |
+| The main window's frame: `BrowserWindowFrameView` (the other windows' is `ITGradientFrameView`); its body parts (`_BrowserWindowFrameViewBodyPartView`): the top **5000** (144 × 61, two 72-point columns active and inactive, 4-point ends; its last rows the lines 185 and 123) and the bottom **5001** (144 × 24, its first row 123), column 1 when the window isn't key | `FUN_001cba14`, `FUN_0001d572` | Done |
+| The other windows' gradient frame (`ITGradientFrameView`): 13200 / 13204 / 13206 / 13208 / 13209 (1040 wide, two columns); the top rect the title bar plus the top border, the bottom rect the bottom border (+12 with a grow box) | `FUN_007d2956`, `FUN_007d3404`, `FUN_007d208e` | Read |
+| The stoplights (`ITWindowControlsView`, `ITStoplightViewController`): 13004–13006 (14 × 16 cells, kind 4, colour and Graphite rows) in a 300 × 23 area, at (7, 5), 7 apart (6 for the small ones) | `FUN_001e8e54`, `FUN_001e97b0` | Done |
+| The top part's layout (`BWHeaderController`): the transport at (60, 16); the volume from its right + 10, at most 110 wide, its right 8 before the AirPlay button (5 before the LCD); under 68 the transport moves left to keep 68; the LCD **40 %** of the width, centred; the search field 175 wide, its right at W − 36 (W − 40 with the full-screen button), narrower by the Downloads button (16 or 25, + 5); mirrored right to left | `FUN_001ebd78` | Done (AirPlay, Downloads, Up Next not ported) |
+| The transport (`TransportControlView`): Previous **317**, Play **321** (rows Play, Pause, Stop), Next **319**, 30 × 30 cells of kind 5, 13 apart, centred on Play | `FUN_001d2e24` | Done |
+| The volume (`VolumeControlView`): the speaker **328** (21 × 21, four rows quiet to loud), the slider (track **350**, two rows, 10-point ends; thumb **352**, kind 3), the loud speaker at the right, the slider between them less 4 | `FUN_001d4018`, `FUN_001d4cc4` | Done |
+| The LCD (`LCDBackgroundView`): picture **150** (464 × 60, 4-point ends) through a layer, the Apple **151** centred when nothing plays. `LCDPlayerView`: the artwork at (12, 8), as tall as the LCD less 16, past 360 points; the scrubber (track **160**, thumb **161**) 2 above the bottom between the two times, past 240 inset by a tenth of the excess; the two lines centred above it | `FUN_00022168`, `FUN_0002257e`, `FUN_001dca1c`, `FUN_002b1dae` | Partial (the lines' exact heights read approximately, the artwork not ported) |
+| The list's header (`ITListHeaderView`, pictures 9137–9140) and the status icons | | Missing (the port draws a flat header and the volume's speaker) |
+
+The port (`shell/src/itunes`) follows the installed version (`resources.cpp`, Info.plist's version).
+With 11.4: the menus from the tables above (their texts and keys from the user's Localizable.strings
+through LocalizableStringsMap.plist), the text styles from TextStyles.plist, the pictures by 11.4's
+table; the window as above (the top part, the stoplights, the transport, the volume, the LCD, the
+search field, the status bar with the totals in 301); the sidebar shown (11.4 hides it by default);
+no Up Next, artwork, Store or grid. 8.2.1 stays as it was.
+
+Software Update (`tools/softwareupdate.py`): on 10.6.8, the catalog's iTunesX.pkg products whose
+.dist allows the system and that are newer than the installed iTunes; only iTunesX.pkg is downloaded;
+no restart: the Software Update app installs it after the download, in its install window.
+`extract.py --update` deletes what a package's `Scripts/obsolete-files` lists before laying its files
+over, converts binary-plist `.strings`, and takes 11.4's TextStyles.plist, AppConfig.plist and
+LocalizableStringsMap.plist. Verified in Xvfb: the scan offers iTunes 11.4 (192.5 MB) on 10.6.8 with
+8.2.1 installed; the app installs it (Show Details without the restart line); iTunes then opens in
+11.4's window and menus, and plays.
+
+## 8. iTunes 11.4: the nav bar and the iTunes Store
+
+| Item | Source | Status |
+|---|---|---|
+| The nav bar (`BWNavBarController`; `BWWindowController` puts it between the top part and the body): 29 points, picture 870 (light theme; 880 the dark one), a line 887 under it | `FUN_000ffd88` (870), `FUN_00109564` (887) | Done |
+| The library's (`BWLibraryNavBarController`, `FUN_00100874`): the media kind's picture 8251 (24 × 24 cells, rows Music, Movies, TV Shows, Podcasts, Books, Apps, iTunes U, Tones…) at the left; the views (`BWNavBarRadioButtonDataSource`, their names in STR# 163 by kind through the jump table at 0x13664d0: Songs 163.099, Albums 163.100, Artists 163.101, Genres 163.102, Playlists 163.104, Radio 163.106) on 871 (three cells, 11-point ends), 869 (blue) when chosen, text in TextStyles' 310 (`FUN_0045b6b2`: 310, 311 or 1306 by the bar's kind), 3 apart; "iTunes Store" (163.084) on 871 at the right (`FUN_00103c9e`) | | Done (only Songs has its view in the port) |
+| The Store's (`BWStoreNavBarController`): back 882, forward 883 (three cells), home 879; the menus its pages give (`iTunes.addProtocol(<plist>)`: navbar ▸ menus, each a title, a URL and items, dividers among them; navbar-selected-menu) on the pills 876, or 886 with their arrow (a drop-down of the items), text 311; "Library" (163.092) at the right | `FUN_00215f7a`, the pictures 876–886 | Done |
+| The URL bag: `https://init.itunes.apple.com/bag.xml?ix=5` (a signed plist {bag, certs, signature}, the bag a plist in its data); its `storeFront` the first page; the response's `X-Set-Apple-Store-Front` sent back as `X-Apple-Store-Front` | the strings, `MusicStore` | Done (still served by Apple to iTunes 11.4) |
+| The User-Agent: "iTunes/11.4 (Macintosh; OS X " the system ")" and " AppleWebKit/" for the pages | `FUN_0096c93b` | Done |
+| The pages' JavaScript object `iTunes` (`StoreiTunesJSObject`): 157 bindings in the tables at 0x227fe8 (methods), 0x229574 (library and playback), 0x229e9e and 0x22a2fc (properties), 0x22a674 (osBuildID, platform "Mac", version "11.4", acceptedLanguages, appIsFrontmost, appBundleName "com.apple.iTunes"); its window (0x22d996: id, data, open, colours, modal, title, style, width, height; 0x22d8d2: close, resizeTo); Storage (setValue, valueForKey, removeValue, removeAllItems) | `jsbindings.txt`, `FUN_00232ce6`, `FUN_0022cb0b`, `FUN_0022e568`, `FUN_00d610aa`, `FUN_0023c262` | Done (what needs an account answers null) |
+| The catalog's lookups (`client-api.itunes.apple.com/…/lookup`, the "lockup" and "product-dv" profiles) are signed by the client (`X-JS-SP-TOKEN`, `signStorePlatformRequestData`, obfuscated in the binary) | `FUN_00d6088d` | Not reproduced: see below |
+
+The port: `shell/src/itunes/storeprocess.cpp`, the program `iTunesStore` (built when Qt WebEngine
+is), renders the pages off screen as WebKit2's web content process would, with the `iTunes` object
+above, the bag's store front, cross-origin requests allowed (WebKit 1 in iTunes had them);
+`store.cpp` shows its pictures in the window and hands it the mouse, the wheel and the keyboard;
+the nav bar is `main.cpp`'s `NavBar`. The catalog lookups, whose signature is not reproduced, are
+answered for this proof of concept from Apple's public lookup API (`itunes.apple.com/lookup`, with
+`entity=song` for a product page) made into the StorePlatform shape the pages read: `{results: {id:
+{id, kind, name, artistName, url, artwork {url "…/{w}x{h}bb.{f}", width, height}, offers [{price,
+priceFormatted, actionText, assets [the preview]}], childrenIds, children}}, version: 2}`. Verified in
+Xvfb: the Store's home with its Cover Flow (turning, a click opening the album), the genre pages'
+grids (New Albums, Pre-Orders, Top Albums), an album's page with its songs, the menus and their
+drop-downs, back and forward. Not done: buying, signing in, previews' playback, the library's
+Albums, Artists, Genres, Playlists and Radio views.

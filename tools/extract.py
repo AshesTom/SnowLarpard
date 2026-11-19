@@ -231,11 +231,15 @@ WANTED = {
 for app in ("Safari", "Mail", "iTunes", "iCal", "AddressBook", "iChat", "DVDPlayer"):
     WANTED[app + ".pkg"] = ["./Applications/*.app/Contents/Info.plist", "./Applications/*.app/Contents/Resources/*.icns"]
 # iTunes.app (8.2.1, shell/src/itunes): its resource files (the art, the xMNU menus, the text styles)
-# and its English strings (docs/itunes-reverse.md)
+# and its English strings (docs/itunes-reverse.md); 11.4's, which Software Update brings (iTunesX.pkg):
+# its text styles, its configuration and the key of each of its strings' numbers
 WANTED["iTunes.pkg"] += [
     "./Applications/iTunes.app/Contents/Resources/iTunes.rsrc",
     "./Applications/iTunes.app/Contents/Resources/English.lproj/Localized.rsrc",
     "./Applications/iTunes.app/Contents/Resources/English.lproj/Localizable.strings",
+    "./Applications/iTunes.app/Contents/Resources/English.lproj/TextStyles.plist",
+    "./Applications/iTunes.app/Contents/Resources/English.lproj/AppConfig.plist",
+    "./Applications/iTunes.app/Contents/Resources/LocalizableStringsMap.plist",
 ]
 # Mail.app (shell/src/mail): its pictures, toolbars and English nibs and strings (docs/mail-reverse.md)
 WANTED["Mail.pkg"] += [
@@ -311,6 +315,42 @@ def xar_payload(pkg):
             return (heap + int(data.findtext("offset")), int(data.findtext("length")),
                     data.find("encoding").get("style"))
     raise ValueError(f"{pkg}: no Payload")
+
+
+def xar_member(pkg, name):
+    """A flat package's member (Scripts, PackageInfo) as bytes, inflated; None when it has none."""
+    with open(pkg, "rb") as f:
+        magic, hsize, _ver, toc_c, _toc_u, _ck = struct.unpack(">4sHHQQI", f.read(28))
+        if magic != b"xar!":
+            return None
+        f.seek(hsize)
+        toc = ET.fromstring(zlib.decompress(f.read(toc_c)))
+        heap = hsize + toc_c
+        for file in toc.iter("file"):
+            if file.findtext("name") == name and file.find("data") is not None:
+                data = file.find("data")
+                f.seek(heap + int(data.findtext("offset")))
+                raw = f.read(int(data.findtext("length")))
+                style = data.find("encoding").get("style") if data.find("encoding") is not None else ""
+                return zlib.decompress(raw) if "zlib" in style else raw
+    return None
+
+
+def obsolete_files(pkg):
+    """The paths a package's preinstall deletes: iTunes' Scripts/obsolete-files, which its
+    deleteObsoleteFiles.pl hands to deleteomatic (8.2.1's Localized.rsrc among them)."""
+    scripts = xar_member(pkg, "Scripts")
+    if not scripts:
+        return []
+    if scripts[:2] == b"\x1f\x8b":
+        scripts = zlib.decompress(scripts, 31)
+    with tempfile.TemporaryDirectory() as tmp:
+        got = subprocess.run(["cpio", "-idm", "--quiet", "--no-absolute-filenames", "./obsolete-files", "obsolete-files"],
+                             cwd=tmp, input=scripts, stderr=subprocess.DEVNULL)
+        listing = Path(tmp) / "obsolete-files"
+        if got.returncode or not listing.exists():
+            return []
+        return [line.strip() for line in listing.read_text(errors="replace").splitlines() if line.startswith("/")]
 
 
 def unpack(pkg, patterns, dest, overwrite=False, progress=None):
@@ -463,8 +503,11 @@ def to_json(assets):
                     data = plistlib.load(f)
             else:
                 raw = path.read_bytes()
-                enc = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8"
-                data = strings_to_dict(raw.decode(enc, "replace"))
+                if raw[:8] == b"bplist00":    # compiled .strings (iTunes 11's): a binary plist
+                    data = plistlib.loads(raw)
+                else:
+                    enc = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8"
+                    data = strings_to_dict(raw.decode(enc, "replace"))
         except Exception as e:  # noqa: BLE001 - a file the shell can do without
             print(f"    {path.name}: {e}")
             continue
@@ -572,6 +615,12 @@ def update(sources, final):
 
     for pkg, _ in with_payload:
         say(f"Installing {pkg.name}")
+        # what the package's own scripts delete first (a new version's leftovers of the old one)
+        for gone in obsolete_files(pkg):
+            target = assets / gone.lstrip("/")
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+                Path(str(target) + ".json").unlink(missing_ok=True)
         unpack(pkg, patterns, assets, overwrite=True, progress=advance)
     if any((assets / "System/Library/Compositions").glob("*.qtz")):
         composition_images(assets)

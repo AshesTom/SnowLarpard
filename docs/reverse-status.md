@@ -30,6 +30,7 @@ with ImageMagick.
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv; iTunes' own title bar not yet) |
+| iTunes 11.4 (Software Update on 10.6.8; the i386 slice) | clear (stripped) | the picture table, the menus' tables, BrowserWindowFrameView, BWHeaderController's layout, the transport, the volume, the LCD, the nav bar, the Store's URL bag and its `iTunes` JavaScript object (sections 7 and 8 of [itunes-reverse.md](itunes-reverse.md)); ported when installed, the Store in its own process (iTunesStore, Qt WebEngine; its catalog lookups from Apple's public API: a proof of concept); the list's header, artwork, Up Next, the library's grid views not yet; offered by Software Update |
 
 ## 1. CoreUI's shared art (`SArtFile.bin`)
 

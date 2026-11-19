@@ -13,6 +13,15 @@
 //   Genius sidebar 470 from the right at 18; the totals in Txtr 304.
 //   The body: the source list (200 wide, at least 150), a line, the songs (Name, Time, Artist, Album,
 //   Genre, Plays: CWid 9000's widths), at least 300 wide.
+// iTunes 11.4 (Software Update's, once the system is 10.6.8) when it is the installed one: its window
+// as BrowserWindowFrameView and BWHeaderController make it (docs/itunes-reverse.md, "iTunes 11.4"):
+//   no title bar: one top part, picture 5000 (61 high, its two columns active and inactive, 4-point
+//   ends) under the stoplights 13004–13006 (at 7, 5, 7 apart); the transport 317, 321, 319 at (60, 16),
+//   13 apart; the volume (VolumeControlView: the speaker 328, the track 350 and thumb 352, the loud
+//   speaker 4 after) 10 after the transport, 68 to 110 wide, ending 8 before the LCD's left less 5;
+//   the LCD 40% of the width, centred (picture 150, the Apple 151 when stopped; LCDPlayerView's lines
+//   and its scrubber 160 / 161); the search field 175 wide, its right 36 from the window's; the
+//   status bar, picture 5001 (24 high), the totals in TextStyles' 301.
 #include "appkit.h"
 #include "controls.h"
 #include "foundation.h"
@@ -23,6 +32,7 @@
 #include "library.h"
 #include "player.h"
 #include "resources.h"
+#include "store.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,7 +75,17 @@ void drawShadowed(cairo_t *cr, const std::string &text, const Rect &r, AK::TextS
     drawText(cr, text, r, t);
 }
 
+// 11.4: a menu item's text by its number, its keys ("###M#option") and hand-made column dropped
+std::string menuText(uint32_t number)
+{
+    std::string t = text(number);
+    t = t.substr(0, t.find("###"));
+    return t.substr(0, t.find("  "));
+}
+
 constexpr double TitleBarHeight = 22, TopBandHeight = 54, BottomBandHeight = 29;
+// 11.4: the window's top part (5000) and its status bar (5001), no title bar
+constexpr double TopHeight11 = 61, BottomHeight11 = 24;
 
 // ---- a picture button (UIPictureButton): its picture's cell for its state, its row its value
 
@@ -121,10 +141,19 @@ public:
     double value = 1;
     void draw(cairo_t *cr) override
     {
-        drawCell(cr, 350, 0, 0, Rect{0, 0, frame().w, frame().h});
         const Size thumb = cellSize(352);
         const double x = std::round(value * (frame().w - thumb.w));
         const int state = m_dragging ? 2 : 1;
+        if (eleven()) {
+            // 11.4: the track's two rows (21 high, 10-point ends), the lower one the side up to the
+            // thumb; the thumb 21 × 21, the three cells of kind 3
+            const double y = std::floor((frame().h - thumb.h) / 2);
+            drawCell(cr, 350, 0, 0, Rect{0, y, frame().w, thumb.h});
+            drawCell(cr, 350, 0, 1, Rect{0, y, std::max(20.0, x + thumb.w / 2), thumb.h});
+            drawCell(cr, 352, stateColumn(3, state), 0, Rect{x, y, thumb.w, thumb.h});
+            return;
+        }
+        drawCell(cr, 350, 0, 0, Rect{0, 0, frame().w, frame().h});
         drawCell(cr, 352, stateColumn(3, state), 0, Rect{x, 0, thumb.w, thumb.h});
     }
     void mouseDown(Event &e) override
@@ -205,6 +234,18 @@ public:
 
     Rect scrubberRect() const
     {
+        if (eleven()) {
+            // 11.4 (LCDPlayerView, FUN_002b1dae): in the picture's box (2 to 56), the scrubber 2 above
+            // its bottom between the times, past 240 inset by a tenth of the excess on each side
+            const double t = timeWidth(), w = frame().w;
+            Rect r{4 + t + 2, 56 - 2 - 21, w - 8 - 2 * (t + 2), 21};
+            if (r.w > 240) {
+                const double inset = std::floor((r.w - 240) / 10);
+                r.x += inset;
+                r.w -= 2 * inset;
+            }
+            return r;
+        }
         const double t = timeWidth(), w = frame().w;
         Rect r{t + 2, frame().h - 15, w - 2 * (t + 2), 14};
         if (r.w > 240) {
@@ -217,6 +258,10 @@ public:
 
     void draw(cairo_t *cr) override
     {
+        if (eleven()) {
+            draw11(cr);
+            return;
+        }
         // the background: picture 153, its second column when inactive (10.5 and later)
         drawCell(cr, 153, windowIsKey() ? 0 : 1, 0, bounds());
         if (!showing) {
@@ -274,12 +319,50 @@ public:
         }
     }
 
+    // 11.4's LCD: picture 150 stretched (its 4-point ends kept), the Apple 151 centred when stopped
+    // (LCDBackgroundView, FUN_00022168); the title, then the artist and the album in turn, centred in
+    // TextStyles' 302; the scrubber's track 160 (its first row, 10-point ends) and thumb 161 (10 × 13)
+    void draw11(cairo_t *cr)
+    {
+        drawCell(cr, 150, 0, 0, bounds());
+        if (!showing) {
+            const Image apple = picture(151);
+            apple.draw(cr, Point{std::floor((frame().w - apple.width()) / 2), std::floor((frame().h - apple.height()) / 2)});
+            return;
+        }
+        const iTunes::TextStyle lcd = textStyle(302);
+        const double W = frame().w, lineH = std::ceil(lineHeight(lcd.font));
+        const Rect bar = scrubberRect();
+        m_lines[0].draw(cr, Rect{9, 6, W - 18, lineH}, lcd);
+        m_lines[1].draw(cr, Rect{9, bar.y - lineH + 4, W - 18, lineH}, lcd);
+        drawCell(cr, 160, 0, 0, bar);
+        if (duration > 0) {
+            const Size thumb = cellSize(161);
+            const double f = std::clamp(position / duration, 0.0, 1.0);
+            drawCell(cr, 161, stateColumn(1, m_seeking ? 2 : 1), 0,
+                     Rect{std::round(bar.x + f * (bar.w - thumb.w)), bar.y + std::floor((bar.h - thumb.h) / 2), thumb.w, thumb.h});
+        }
+        AK::TextStyle t;
+        t.font = lcd.font;
+        t.color = Color::gray(0x3c);
+        t.elide = false;
+        const double tw = timeWidth(), ty = bar.y + std::floor((bar.h - 14) / 2);
+        const int played = int(position), whole = int(duration);
+        t.align = Align::Right;
+        drawText(cr, formatTime(played * 1000), Rect{bar.x - tw - 2, ty, tw, 14}, t);
+        if (duration > 0) {
+            t.align = Align::Left;
+            const std::string right = showTotal ? formatTime(whole * 1000) : "-" + formatTime(std::max(0, whole - played) * 1000);
+            drawText(cr, right, Rect{bar.right() + 2, ty, tw, 14}, t);
+        }
+    }
+
     void mouseDown(Event &e) override
     {
         if (!showing)
             return;
         const Rect bar = scrubberRect();
-        if (duration > 0 && Rect{bar.right() + 2, bar.y - 1, timeWidth(), 14}.contains(e.location)) {
+        if (duration > 0 && Rect{bar.right() + 2, bar.y - 1, timeWidth(), std::max(14.0, bar.h)}.contains(e.location)) {
             // the time on the right: the time left and the whole time in turn (FUN_0013658a)
             showTotal = !showTotal;
             if (onToggleTime)
@@ -528,10 +611,16 @@ private:
 
 class TopBand : public FrameBand {
 public:
-    TopBand() { m_titleBar = TitleBarHeight; }
+    TopBand() { m_titleBar = eleven() ? TopHeight11 : TitleBarHeight; }
     std::string title;
     void draw(cairo_t *cr) override
     {
+        if (eleven()) {
+            // 11.4: BrowserWindowFrameView's top part, picture 5000 (its column 1 when inactive:
+            // _BrowserWindowFrameViewBodyPartView, FUN_0001d572), no title
+            drawCell(cr, 5000, windowIsKey() ? 0 : 1, 0, bounds());
+            return;
+        }
         // the title bar's 22 points and the content border's 54: one gradient of 76 rows
         const bool key = windowIsKey();
         const double w = frame().w;
@@ -562,6 +651,17 @@ public:
     void draw(cairo_t *cr) override
     {
         const bool key = windowIsKey();
+        if (eleven()) {
+            // 11.4's status bar: picture 5001, the totals in TextStyles' 301 (Helvetica Neue 11, centred)
+            drawCell(cr, 5001, key ? 0 : 1, 0, bounds());
+            const iTunes::TextStyle s = textStyle(301);
+            AK::TextStyle t;
+            t.font = s.font;
+            t.color = key ? Color::gray(0x3c) : Color::gray(0x80);
+            t.align = Align::Center;
+            drawText(cr, totals, Rect{100, 4, std::max(0.0, frame().w - 200), 17}, t);
+            return;
+        }
         drawGradient(cr, bounds(), key ? 191 : 229, key ? 150 : 207, int(BottomBandHeight), 0);
         fill(cr, Rect{0, 0, frame().w, 1}, Color::gray(key ? 64 : 135));
         const iTunes::TextStyle s = textStyle(304);
@@ -571,6 +671,175 @@ public:
         t.align = Align::Center;
         drawText(cr, totals, Rect{200, 5, frame().w - 400, 18}, t);
     }
+};
+
+// ---- 11.4's nav bar (BWNavBarController; docs/itunes-reverse.md, section 8)
+//   29 points (picture 870, its light theme, under the top part), a line of 887 under it. The library's
+//   (BWLibraryNavBarController, FUN_00100874): the media kind's picture 8251 at the left (24 × 24, its
+//   rows Music, Movies, TV Shows, Podcasts, Books, Apps, iTunes U, Tones…), the views as buttons
+//   (BWNavBarRadioButtonDataSource; their names STR# 163: Songs 0x63, Albums 0x64, Artists 0x65,
+//   Genres 0x66, Playlists 0x68, Radio 0x6a) 3 apart in the middle, on 871 (11-point ends) or 869 when
+//   chosen, their text in TextStyles' 310 (FUN_0045b6b2); "iTunes Store" (163.054) on 871 at the right
+//   (FUN_00103c9e). The Store's (BWStoreNavBarController): back 882 and forward 883, home 879, the
+//   store's menus as its pages give them (addProtocol's navbar ▸ menus) on the pills 876, text 311;
+//   "Library" (163.092) at the right.
+class NavBar : public View {
+public:
+    bool store = false;
+    std::vector<std::string> views;   // the library's
+    std::vector<bool> viewEnabled;
+    int selectedView = 0;
+    std::vector<StoreMenu> menus;     // the store's
+    std::string selectedMenu;
+    bool canBack = false, canForward = false;
+    std::string storeTitle, libraryTitle;
+    std::function<void(int)> onView;
+    std::function<void()> onStore, onLibrary, onBack, onForward, onHome;
+    std::function<void(const std::string &)> onMenu;
+
+    static constexpr double Height = 29, ButtonH = 23, Margin = 8, Gap = 3, Pad = 12;
+
+    void draw(cairo_t *cr) override
+    {
+        drawCell(cr, 870, 0, 0, Rect{0, 0, frame().w, Height});
+        layoutItems();
+        const double by = std::floor((Height - ButtonH) / 2);
+        const iTunes::TextStyle light = textStyle(310), dark = textStyle(311);
+        if (!store) {
+            drawCell(cr, 8251, 0, 0, Rect{Margin, std::floor((Height - 24) / 2), 24, 24});
+            for (size_t i = 0; i < m_items.size(); ++i) {
+                const bool on = int(i) == selectedView;
+                const bool enabled = i < viewEnabled.size() && viewEnabled[i];
+                const int state = m_pressed == int(i) ? 2 : enabled ? 1 : 0;
+                drawCell(cr, on ? 869 : 871, stateColumn(3, on && state == 0 ? 1 : state), 0, m_items[i]);
+                label(cr, views[i], m_items[i], light, on ? Color::gray(255) : enabled ? Color::gray(0x40) : Color::gray(0x40, 0.4));
+            }
+            drawCell(cr, 871, stateColumn(3, m_pressed == 1000 ? 2 : 1), 0, m_right);
+            label(cr, storeTitle, m_right, light, Color::gray(0x40));
+            return;
+        }
+        drawCell(cr, 882, stateColumn(3, !canBack ? 0 : m_pressed == 2000 ? 2 : 1), 0, m_back);
+        drawCell(cr, 883, stateColumn(3, !canForward ? 0 : m_pressed == 2001 ? 2 : 1), 0, m_forward);
+        const Image home = picture(879);
+        home.draw(cr, Point{m_home.x + std::floor((m_home.w - home.width()) / 2), std::floor((Height - home.height()) / 2)},
+                  m_pressed == 2002 ? 0.6 : 1);
+        for (size_t i = 0; i < m_items.size(); ++i) {
+            // a menu with items: the pill with its arrow (886, 4 columns of kind 4, 14-point right end)
+            const bool on = menus[i].title == selectedMenu, drop = !menus[i].items.empty();
+            const int col = on || m_pressed == int(i) ? (drop ? 3 : 2) : 1;
+            drawCell(cr, drop ? 886 : 876, col, 1, m_items[i]);
+            Rect text = m_items[i];
+            if (drop)
+                text.w -= 14 - Pad / 2;
+            label(cr, menus[i].title, text, dark, on ? Color::gray(255) : Color::gray(0x40));
+        }
+        drawCell(cr, 871, stateColumn(3, m_pressed == 1000 ? 2 : 1), 0, m_right);
+        label(cr, libraryTitle, m_right, light, Color::gray(0x40));
+        (void)by;
+    }
+
+    void mouseDown(Event &e) override
+    {
+        m_pressed = hit(e.location);
+        setNeedsDisplay();
+    }
+    void mouseUp(Event &e) override
+    {
+        const int p = m_pressed;
+        m_pressed = -1;
+        setNeedsDisplay();
+        if (p < 0 || hit(e.location) != p)
+            return;
+        if (p == 1000) {
+            if (store ? bool(onLibrary) : bool(onStore))
+                store ? onLibrary() : onStore();
+        } else if (p == 2000 && canBack && onBack) {
+            onBack();
+        } else if (p == 2001 && canForward && onForward) {
+            onForward();
+        } else if (p == 2002 && onHome) {
+            onHome();
+        } else if (store && size_t(p) < menus.size() && onMenu) {
+            const StoreMenu &m = menus[size_t(p)];
+            const Rect r = m_items[size_t(p)];
+            if (!m.items.empty() && e.location.x >= r.right() - 18) {
+                // its drop-down: the items, the dividers as lines
+                std::vector<MenuItem> items;
+                for (const StoreMenu &i : m.items)
+                    items.push_back(i.divider ? MenuItem::line() : MenuItem(i.title));
+                const std::vector<StoreMenu> list = m.items;
+                Menu::popUp(window(), toWindow(Point{r.x, r.bottom()}), items, r.w, Font::system(13), [this, list](int c) {
+                    if (c >= 0 && size_t(c) < list.size() && !list[size_t(c)].url.empty() && onMenu)
+                        onMenu(list[size_t(c)].url);
+                });
+            } else {
+                onMenu(m.url);
+            }
+        } else if (!store && size_t(p) < viewEnabled.size() && viewEnabled[size_t(p)] && onView) {
+            selectedView = p;
+            onView(p);
+        }
+    }
+
+private:
+    static void label(cairo_t *cr, const std::string &t, const Rect &r, const iTunes::TextStyle &s, const Color &c)
+    {
+        AK::TextStyle ts;
+        ts.font = s.font;
+        ts.color = c;
+        ts.align = Align::Center;
+        drawText(cr, t, Rect{r.x, r.y, r.w, r.h - 1}, ts);
+    }
+    double buttonWidth(const std::string &t, const iTunes::TextStyle &s) const { return std::ceil(textWidth(t, s.font)) + 2 * Pad; }
+
+    void layoutItems()
+    {
+        const double W = frame().w, by = std::floor((Height - ButtonH) / 2);
+        const iTunes::TextStyle light = textStyle(310), dark = textStyle(311);
+        m_items.clear();
+        const double rw = buttonWidth(store ? libraryTitle : storeTitle, light);
+        m_right = Rect{W - Margin - rw, by, rw, ButtonH};
+        std::vector<double> widths;
+        double total = 0;
+        const size_t n = store ? menus.size() : views.size();
+        for (size_t i = 0; i < n; ++i) {
+            widths.push_back(buttonWidth(store ? menus[i].title : views[i], store ? dark : light) +
+                             (store && !menus[i].items.empty() ? 14 : 0));
+            total += widths.back() + (i ? Gap : 0);
+        }
+        double x = std::floor((W - total) / 2);
+        for (double w : widths) {
+            m_items.push_back(Rect{x, by, w, ButtonH});
+            x += w + Gap;
+        }
+        const Size back = cellSize(882), fwd = cellSize(883);
+        m_back = Rect{Margin, by, back.w, back.h};
+        m_forward = Rect{m_back.right(), by, fwd.w, fwd.h};
+        m_home = Rect{m_forward.right() + Margin, 0, 24, Height};
+    }
+
+    int hit(Point p)
+    {
+        layoutItems();
+        if (m_right.contains(p))
+            return 1000;
+        if (store) {
+            if (m_back.contains(p))
+                return 2000;
+            if (m_forward.contains(p))
+                return 2001;
+            if (m_home.contains(p))
+                return 2002;
+        }
+        for (size_t i = 0; i < m_items.size(); ++i)
+            if (m_items[i].contains(p))
+                return int(i);
+        return -1;
+    }
+
+    std::vector<Rect> m_items;
+    Rect m_right, m_back, m_forward, m_home;
+    int m_pressed = -1;
 };
 
 // ---- the songs (TrackDisplay, ColumnDisplay)
@@ -639,7 +908,14 @@ public:
         for (size_t c = 0; c < columns.size(); ++c) {
             const double w = c + 1 == columns.size() ? std::max(columns[c].width, frame().w - x) : columns[c].width;
             const int row = int(c) == sortColumn ? (ascending ? 2 : 1) : 0;
-            drawCell(cr, 304, stateColumn(pictureInfo(304).kind, m_pressed == int(c) ? 2 : state), row, Rect{x, 0, w, HeaderHeight});
+            if (eleven()) {
+                // 11.4's header (ITListHeaderView): flat; its own pictures (9137–9140) not traced yet
+                fill(cr, Rect{x, 0, w, HeaderHeight}, Color::gray(m_pressed == int(c) ? 230 : 250));
+                fill(cr, Rect{x + w - 1, 3, 1, HeaderHeight - 6}, Color::gray(217));
+                fill(cr, Rect{x, HeaderHeight - 1, w, 1}, Color::gray(199));
+            } else {
+                drawCell(cr, 304, stateColumn(pictureInfo(304).kind, m_pressed == int(c) ? 2 : state), row, Rect{x, 0, w, HeaderHeight});
+            }
             AK::TextStyle t;
             t.font = head.font;
             t.color = head.color;
@@ -721,7 +997,9 @@ private:
                     const Column &col = list->columns[c];
                     if (size_t(r) < list->rows.size()) {
                         if (c == 0) {
-                            if (r == list->playing)
+                            if (r == list->playing && eleven())   // 11.4: the volume's speaker (its status icons not traced)
+                                drawCell(cr, 328, 1, 2, Rect{x + std::floor((col.width - 14) / 2), y + std::floor((h - 14) / 2), 14, 14});
+                            else if (r == list->playing)
                                 drawCell(cr, 306, list->playingPaused ? 0 : 2, sel && focused ? 1 : 0,
                                          Rect{x + std::floor((col.width - 12) / 2), y + std::floor((h - 12) / 2), 12, 12});
                         } else {
@@ -881,7 +1159,7 @@ private:
 
     void buildWindow()
     {
-        m_window = std::make_unique<Window>(Size{1000, 620 + TitleBarHeight}, "iTunes");
+        m_window = std::make_unique<Window>(Size{1000, 620 + (eleven() ? 0 : TitleBarHeight)}, "iTunes");
         // its own frame (GradientFrameView): no title bar from the window server, the outline's rounded
         // corners, the bottom ones too
         m_window->setBorderless();
@@ -905,14 +1183,15 @@ private:
             else
                 zoom();
         };
-        m_prev = m_top->add<PictureButton>(316);
-        m_play = m_top->add<PictureButton>(320);
-        m_next = m_top->add<PictureButton>(318);
+        // 11.4's transport: TransportControlView's buttons 317, 321, 319 (FUN_001d2e24)
+        m_prev = m_top->add<PictureButton>(eleven() ? 317 : 316);
+        m_play = m_top->add<PictureButton>(eleven() ? 321 : 320);
+        m_next = m_top->add<PictureButton>(eleven() ? 319 : 318);
         m_prev->onClick = [this] { previous(); };
         m_play->onClick = [this] { playPause(); };
         m_next->onClick = [this] { advance(1, false); };
         m_speakerLow = m_top->add<PictureButton>(328, 0);
-        m_speakerHigh = m_top->add<PictureButton>(328, 2);
+        m_speakerHigh = m_top->add<PictureButton>(328, eleven() ? 3 : 2);   // 11.4: four rows, quiet to loud
         m_speakerLow->onClick = [this] { setVolume(0); };
         m_speakerHigh->onClick = [this] { setVolume(1); };
         m_volume = m_top->add<VolumeSlider>();
@@ -929,6 +1208,7 @@ private:
         for (int i = 0; i < 3; ++i) {
             m_views[i] = m_top->add<PictureButton>(540 + i, i == 0 ? 1 : 0);
             m_views[i]->setEnabled(i == 0);   // the list alone: no grid, no Cover Flow
+            m_views[i]->setHidden(eleven());  // 11.4: no view buttons in the top part
         }
         m_search = m_top->add<SearchField>();
         m_search->placeholder = tr("kSearchFieldPrompt") == "kSearchFieldPrompt" ? "Search" : tr("kSearchFieldPrompt");
@@ -956,6 +1236,9 @@ private:
             loadSource();
         };
 
+        if (eleven())
+            buildNavAndStore(c);
+
         m_bottom = c->add<BottomBand>();
         m_newPlaylist = m_bottom->add<PictureButton>(431, 0);
         m_newPlaylist->onClick = [this] { newPlaylist(); };
@@ -969,6 +1252,9 @@ private:
         m_geniusSidebar->setEnabled(false);
         m_genius = m_bottom->add<PictureButton>(436, 0);
         m_genius->setEnabled(false);
+        if (eleven())   // 11.4's status bar has the totals alone (shuffle and repeat: the Controls menu)
+            for (PictureButton *b : {m_newPlaylist, m_shuffleButton, m_repeatButton, m_artwork, m_geniusSidebar, m_genius})
+                b->setHidden(true);
 
         Settings s("itunes");
         m_shuffle = s.boolean("Shuffle", false);
@@ -983,6 +1269,59 @@ private:
         m_window->makeFirstResponder(m_list);
     }
 
+    // 11.4: the nav bar and the Store (BWNavBarController, BWStoreController)
+    void buildNavAndStore(View *c)
+    {
+        m_nav = c->add<NavBar>();
+        // STR# 163: Songs, Albums, Artists, Genres, Playlists, Radio; iTunes Store, Library
+        for (const char *k : {"163.099", "163.100", "163.101", "163.102", "163.104", "163.106"})
+            m_nav->views.push_back(tr(k));
+        m_nav->viewEnabled = {true, false, false, false, false, false};   // the songs' list alone so far
+        m_nav->storeTitle = tr("163.084");
+        m_nav->libraryTitle = tr("163.092");
+        m_nav->onView = [this](int) { setStoreMode(false); };
+        m_nav->onStore = [this] { setStoreMode(true); };
+        m_nav->onLibrary = [this] { setStoreMode(false); };
+        if (!StoreView::available())
+            m_nav->onStore = nullptr;
+        m_store = c->add<StoreView>();
+        m_store->setHidden(true);
+        m_nav->onBack = [this] { m_store->command("back"); };
+        m_nav->onForward = [this] { m_store->command("forward"); };
+        m_nav->onHome = [this] { m_store->command("home"); };
+        m_nav->onMenu = [this](const std::string &url) { m_store->load(url); };
+        m_store->onNavigation = [this] {
+            m_nav->canBack = m_store->canGoBack();
+            m_nav->canForward = m_store->canGoForward();
+            m_nav->setNeedsDisplay();
+        };
+        m_store->onMenus = [this](const std::vector<StoreMenu> &menus, const std::string &sel) {
+            m_nav->menus = menus;
+            m_nav->selectedMenu = sel;
+            m_nav->setNeedsDisplay();
+        };
+        m_store->onLibrary = [this] { setStoreMode(false); };
+    }
+
+    // The library or the Store in the body (iTunes Store / Library in the nav bar, Store ▸ Home)
+    void setStoreMode(bool on)
+    {
+        if (!m_nav)
+            return;
+        m_nav->store = on;
+        m_store->setHidden(!on);
+        for (View *v : {static_cast<View *>(m_sourceScroll), m_divider, static_cast<View *>(m_list)})
+            v->setHidden(on);
+        layout();
+        if (on) {
+            m_store->start();
+            m_window->makeFirstResponder(m_store);
+        } else {
+            m_window->makeFirstResponder(m_list);
+        }
+        m_nav->setNeedsDisplay();
+    }
+
     // BrowserWindow's layout pass (FUN_000249e4) and the top bar's places (FUN_00142cb2)
     // The zoom button: iTunes' mini player (the window down to its top band), not yet ported
     void zoom() {}
@@ -992,6 +1331,10 @@ private:
         const Size s = m_window->contentView()->frame().w > 0 ? Size{m_window->contentView()->frame().w, m_window->contentView()->frame().h}
                                                               : m_window->size();
         const double W = s.w, H = s.h;
+        if (eleven()) {
+            layout11(W, H);
+            return;
+        }
         // the frame's top: the title bar, then the content border; the controls under the title bar
         const double T = TitleBarHeight;
         m_top->setFrame({0, 0, W, T + TopBandHeight});
@@ -1044,6 +1387,66 @@ private:
         m_window->contentView()->setNeedsDisplay();
     }
 
+    // 11.4's layout: BWHeaderController's (FUN_001ebd78), the stoplights' (ITWindowControlsView,
+    // FUN_001e8e54), the volume's (VolumeControlView, FUN_001d4cc4); the body between the top part
+    // and the status bar
+    void layout11(double W, double H)
+    {
+        m_top->setFrame({0, 0, W, TopHeight11});
+        // the stoplights: 14 × 16 each, 7 apart, at (7, 5)
+        m_frameButtons->setFrame({7, 5, 56, 16});
+        // the transport at (60, 16): Previous, Play 13 after it, Next 13 after Play; the others on
+        // Play's middle
+        const Size prev = cellSize(317), play = cellSize(321), next = cellSize(319);
+        double tx = 60;
+        const double mid = 16 + play.h / 2;
+        // the LCD: 40% of the width, centred, the picture's height
+        const double lcdW = std::floor(W * 0.4), lcdH = picture(150).height();
+        const Rect lcd{std::floor((W - lcdW) / 2), 0, lcdW, lcdH};
+        m_lcd->setFrame(lcd);
+        // the volume: 10 after the transport, at most 110 wide, ending 8 + 5 before the LCD; under 68
+        // the transport moves left to keep 68
+        const double transportW = prev.w + 13 + play.w + 13 + next.w;
+        double vx = tx + transportW + 10, vw = lcd.x - 5 - 8 - vx;
+        if (vw > 110)
+            vw = 110;
+        else if (vw < 68) {
+            const double short_ = 68 - vw;
+            tx -= short_;
+            vx -= short_;
+            vw = 68;
+        }
+        m_prev->setFrame({tx, std::round(mid - prev.h / 2), prev.w, prev.h});
+        m_play->setFrame({tx + prev.w + 13, 16, play.w, play.h});
+        m_next->setFrame({tx + prev.w + 13 + play.w + 13, std::round(mid - next.h / 2), next.w, next.h});
+        // VolumeControlView: the speaker, the slider up to the loud speaker less 4
+        const Size speaker = cellSize(328);
+        const double sy = std::round(mid - speaker.h / 2);
+        m_speakerLow->setFrame({vx, sy, speaker.w, speaker.h});
+        m_volume->setFrame({vx + speaker.w, sy, std::max(0.0, vw - 2 * speaker.w - 4), speaker.h});
+        m_speakerHigh->setFrame({vx + vw - speaker.w, sy, speaker.w, speaker.h});
+        // the search field: 175 wide, its right 36 from the window's right
+        const double fieldH = 22;
+        m_search->setFrame({W - 36 - 175, std::round(mid - fieldH / 2), 175, fieldH});
+
+        double bodyTop = TopHeight11;
+        if (m_nav) {
+            m_nav->setFrame({0, TopHeight11, W, NavBar::Height});
+            bodyTop += NavBar::Height;
+        }
+        const double bodyH = std::max(0.0, H - bodyTop - BottomHeight11);
+        if (m_store)
+            m_store->setFrame({0, bodyTop, W, bodyH});
+        const double sourceW = std::clamp(m_sourceWidth, 150.0, std::max(150.0, W - 300 - 1));
+        m_sourceScroll->setFrame({0, bodyTop, sourceW, bodyH});
+        m_sources->setFrame({0, 0, sourceW - 15, std::max(bodyH, m_sources->contentHeight())});
+        m_sourceScroll->setDocumentHeight(m_sources->frame().h);
+        m_divider->setFrame({sourceW, bodyTop, 1, bodyH});
+        m_list->setFrame({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
+        m_bottom->setFrame({0, H - BottomHeight11, W, BottomHeight11});
+        m_window->contentView()->setNeedsDisplay();
+    }
+
     // ---- the sources: LIBRARY (Music), STORE, PLAYLISTS
 
     void rebuildSources()
@@ -1058,20 +1461,22 @@ private:
             h.title = tr(key);
             m_sources->rows.push_back(h);
         };
-        header("135.011");
+        // 11.4 has them elsewhere in the same tables: 135.006, 135.008, 135.009, 9000.034
+        const bool e = eleven();
+        header(e ? "135.006" : "135.011");
         SourceRow music;
-        music.title = tr("9000.036");
+        music.title = tr(e ? "9000.034" : "9000.036");
         music.icon = 0;
         music.tag = -1;
         m_sources->rows.push_back(music);
-        header("135.013");
+        header(e ? "135.008" : "135.013");
         SourceRow store;
         store.title = tr("137.001");
         store.icon = 7;
         store.selectable = false;
         store.tag = -2;
         m_sources->rows.push_back(store);
-        header("135.014");
+        header(e ? "135.009" : "135.014");
         int i = 0;
         for (const Playlist &p : m_library.playlists()) {
             if (!p.master) {
@@ -1241,6 +1646,15 @@ private:
         refreshLCD();
     }
 
+    void stop()
+    {
+        m_player.stop();
+        m_current = -1;
+        markPlaying();
+        m_list->body()->setNeedsDisplay();
+        refreshLCD();
+    }
+
     void advance(int step, bool atEnd)
     {
         if (m_queue.empty()) {
@@ -1391,7 +1805,7 @@ private:
 
     void addToLibrary()
     {
-        OpenPanel::run(tr("kMenuItemAddToLib"), Library::musicFolder(),
+        OpenPanel::run(eleven() ? menuText(0x75f8000c) : tr("kMenuItemAddToLib"), Library::musicFolder(),
                        {{"Audio files", {"*.mp3", "*.m4a", "*.aac", "*.aif", "*.aiff", "*.wav", "*.flac", "*.ogg", "*.oga", "*.opus"}}}, true,
                        [this](std::vector<std::string> files) { addFiles(files); });
     }
@@ -1446,7 +1860,7 @@ private:
         const std::string &a = it.action;
         const bool hasSel = m_list->selected >= 0;
         if (a == "plps") {
-            v.title = tr(m_player.isPlaying() ? "kMenuItemPause" : "kMenuItemPlay");
+            v.title = eleven() ? tr(m_player.isPlaying() ? "136.004" : "136.002") : tr(m_player.isPlaying() ? "kMenuItemPause" : "kMenuItemPlay");
             if (v.title.rfind("kMenuItem", 0) == 0)
                 v.title = m_player.isPlaying() ? "Pause" : "Play";
             const size_t gap = v.title.find("  ");
@@ -1454,18 +1868,26 @@ private:
                 v.title = v.title.substr(0, gap);
             return !m_list->ids.empty() || !m_player.isStopped();
         }
-        if (a == "ntrk" || a == "back")
+        if (a == "ntrk" || a == "back" || a == "ptrk")
             return !m_queue.empty();
+        if (m_store && (a == "Msgh" || a == "Msrp"))   // 11.4's Store ▸ Home, Reload Page
+            return true;
+        if (m_store && a == "Msgb")
+            return m_nav->store && m_store->canGoBack();
+        if (m_store && a == "Msgf")
+            return m_nav->store && m_store->canGoForward();
+        if (a == "stop")   // 11.4's Controls ▸ Stop
+            return !m_player.isStopped();
         if (a == "volu" || a == "vold" || a == "mute" || a == "TFnd" || a == "add " || a == "nply" || a == "minw" ||
             a == "zoom" || a == "brwn" || a == "batf" || a == "abou" || a == "terminate:" || a == "hide:" ||
-            a == "hideOtherApplications:" || a == "unhideAllApplications:" || a == "clos")
+            a == "hideOtherApplications:" || a == "unhideAllApplications:" || a == "clos" || a == "CLOS")
             return true;
         if (a == "npls" || a == "revl" || a == "clea" || a == "plps")
             return hasSel;
         if (a == "SCur")
             return m_current >= 0;
         if (a == "shuf") {
-            v.title = m_shuffle ? "Turn Off Shuffle" : tr("kMenuItemShuffleOn");
+            v.title = eleven() ? menuText(m_shuffle ? 0x76c0000c : 0x76c0000b) : m_shuffle ? "Turn Off Shuffle" : tr("kMenuItemShuffleOn");
             return true;
         }
         if (a == "rpt0" || a == "rpt1" || a == "rpt2") {
@@ -1486,8 +1908,15 @@ private:
             playPause();
         else if (a == "ntrk")
             advance(1, false);
-        else if (a == "back")
+        else if (a == "back" || a == "ptrk")
             previous();
+        else if (a == "stop")
+            stop();
+        else if (m_store && (a == "Msgh" || a == "Msrp" || a == "Msgb" || a == "Msgf")) {
+            if (!m_nav->store)
+                setStoreMode(true);
+            m_store->command(a == "Msgh" ? "home" : a == "Msrp" ? "reload" : a == "Msgb" ? "back" : "forward");
+        }
         else if (a == "volu")
             setVolume(m_volume->value + 0.1);
         else if (a == "vold")
@@ -1524,7 +1953,7 @@ private:
             m_window->miniaturize();
         else if (a == "brwn" || a == "batf")
             m_window->orderFront();
-        else if (a == "clos")
+        else if (a == "clos" || a == "CLOS")
             m_window->miniaturize();
         else if (a == "abou")
             showAbout();
@@ -1537,6 +1966,8 @@ private:
     MainMenu m_menu;
     std::unique_ptr<Window> m_window, m_about;
     TopBand *m_top = nullptr;
+    NavBar *m_nav = nullptr;
+    StoreView *m_store = nullptr;
     FrameButtons *m_frameButtons = nullptr;
     BottomBand *m_bottom = nullptr;
     PictureButton *m_prev = nullptr, *m_play = nullptr, *m_next = nullptr, *m_speakerLow = nullptr, *m_speakerHigh = nullptr;
@@ -1550,7 +1981,7 @@ private:
     SourceList *m_sources = nullptr;
     View *m_divider = nullptr;
     TrackList *m_list = nullptr;
-    double m_sourceWidth = 200;   // ACfg's Default Source Width
+    double m_sourceWidth = eleven() ? 185 : 200;   // ACfg's Default Source Width (11.4's AppConfig.plist: 185)
     std::vector<int> m_queue;
     int m_queuePos = 0, m_current = -1;
     bool m_shuffle = false;

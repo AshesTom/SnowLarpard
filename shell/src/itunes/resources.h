@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// iTunes 8.2.1's own resources, read from the DVD's files at run time (docs/itunes-reverse.md):
-//   iTunes.rsrc                 the art: PNG resources by ID
-//   English.lproj/Localized.rsrc the menus (MBAR 129 and its xMNU resources), the text styles (Txtr)
-//   English.lproj/Localizable.strings the menus' and windows' text, by key
-// and the pictures' grid of states, as iTunes' own table at 0xa622e0 has them (columns, rows, fixed
-// left and right sizes, the state mapping kind), for the pictures the window draws.
+// iTunes' own resources, read from the user's files at run time (docs/itunes-reverse.md). Two versions:
+// the DVD's 8.2.1, and 11.4, which Software Update installs over it once the system is 10.6.8.
+//   8.2.1: iTunes.rsrc the art (PNG resources by ID); English.lproj/Localized.rsrc the menus (MBAR 129
+//          and its xMNU resources), the text styles (Txtr); Localizable.strings the text, by key
+//   11.4:  iTunes.rsrc the art (PNG only); the menus are tables in the program (built in by their
+//          commands and text numbers, below); TextStyles.plist the text styles (the Txtr numbers kept);
+//          Localizable.strings by hashed key, LocalizableStringsMap.plist the key for each text number
+// and the pictures' grid of states, as each version's table has them (8.2.1's static table at
+// 0xa622e0; 11.4's built at launch at 0x18fdc60, entries of 0x4C bytes), for the pictures the window draws.
 #pragma once
 
 #include "graphics.h"
@@ -33,11 +36,17 @@ private:
 };
 
 ResourceFile &art();         // iTunes.rsrc
-ResourceFile &localized();   // English.lproj/Localized.rsrc
+ResourceFile &localized();   // English.lproj/Localized.rsrc (8.2.1)
 bool resourcesPresent();
+
+// The installed iTunes' version (Info.plist's CFBundleShortVersionString): 8 the DVD's, 11 the update's
+int majorVersion();
+inline bool eleven() { return majorVersion() >= 11; }
 
 // Localizable.strings
 std::string tr(const std::string &key);
+// 11.4: a text by its number (LocalizableStringsMap.plist's key for it, then Localizable.strings)
+std::string text(uint32_t number);
 
 // A PNG resource as an image (cached); null when missing
 AK::Image picture(int id);

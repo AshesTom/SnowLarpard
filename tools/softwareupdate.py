@@ -14,6 +14,10 @@ can apply is the client's Mac OS X Update Combined 10.6.8 v1.1, for 10.6 (10A432
 its .dist allows (InstallationCheck / VolumeCheck); its packages hold the 10.6.8 files, which
 extract.py --update lays over the DVD's. X11, QuickTime Player 7 and Rosetta's packages, which have
 nothing the shell reads, are left out.
+Then, on 10.6.8, iTunes: the catalog's iTunes products (an iTunesX.pkg) whose .dist allows the system
+and that are newer than the installed iTunes.app (the last for Snow Leopard is 11.4, for 10.6.8 on);
+only its iTunesX.pkg is taken (MobileDevice, CoreFP, CoreADI, iTunesAccess: nothing the shell reads),
+installed without a restart.
 
 Nothing is sent but the requests for Apple's public files. The packages (about 1 GB) go to
 $XDG_CACHE_HOME/snowleopard/Updates/KEY, as Software Update keeps them in /Library/Updates, and are
@@ -32,6 +36,7 @@ CATALOG = "https://swscan.apple.com/content/catalogs/others/index-leopard-snowle
 AGENT = "Software%20Update (unknown version) CFNetwork/454.12.4 Darwin/10.8.0 (i386)"
 # the client's combined update: its packages are named so (the server's are MacOSXServerUpdCombo...)
 COMBO = re.compile(r"/(MacOSXUpdCombo10\.6\.8\.Part\d+|SUBaseSystemCombo10\.6\.8)\.pkg$")
+ITUNES = re.compile(r"/iTunesX\.pkg$")
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -89,13 +94,51 @@ def products():
     return found
 
 
-def describe(key, p, pkgs):
-    meta = {}
-    if p.get("ServerMetadataURL"):
+def read_itunes(assets):
+    try:
+        with open(assets / "Applications/iTunes.app/Contents/Info.plist", "rb") as f:
+            return plistlib.load(f).get("CFBundleShortVersionString", "")
+    except OSError:
+        return ""
+
+
+def dist_minimum(dist):
+    """The system the .dist asks for: its compareVersions(system.version.ProductVersion, 'X') checks."""
+    found = re.findall(r"compareVersions\(\s*(?:my\.target\.)?system\.version\.ProductVersion,\s*['\"]([\d.]+)['\"]\s*\)\s*(?:<|&lt;)\s*0", dist)
+    found += re.findall(r"compareVersions\(\s*system\.version\.ProductVersion,\s*['\"]([\d.]+)['\"]\s*\)\s*>=\s*0", dist)
+    return max(found, key=version_tuple) if found else "10.5"
+
+
+def itunes_products(catalog, system, installed):
+    """The catalog's full iTunes updates (iTunesX.pkg, not the patches) for this system, newer than
+    the installed iTunes: (version, key, product, [iTunesX.pkg]), the newest first."""
+    found = []
+    for key, p in catalog.get("Products", {}).items():
+        pkgs = [x for x in p.get("Packages", []) if ITUNES.search(x.get("URL", ""))]
+        if not pkgs or not p.get("ServerMetadataURL"):
+            continue
+        try:
+            meta = plistlib.loads(fetch(p["ServerMetadataURL"]))
+            dist = fetch(p.get("Distributions", {}).get("English", "")).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - a product the catalog can't describe: not offered
+            continue
+        version = meta.get("CFBundleShortVersionString", "")
+        if not version or version_tuple(version) <= version_tuple(installed or "0"):
+            continue
+        if version_tuple(system.get("ProductVersion", "0")) < version_tuple(dist_minimum(dist)):
+            continue
+        found.append((version, key, p, pkgs, meta))
+    found.sort(key=lambda f: version_tuple(f[0]), reverse=True)
+    return found
+
+
+def describe(key, p, pkgs, meta=None, restart=True):
+    if meta is None and p.get("ServerMetadataURL"):
         try:
             meta = plistlib.loads(fetch(p["ServerMetadataURL"]))
         except Exception:  # noqa: BLE001 - the catalog's own names then
             meta = {}
+    meta = meta or {}
     english = meta.get("localization", {}).get("English", {})
     desc = english.get("description", b"")
     return {
@@ -105,7 +148,7 @@ def describe(key, p, pkgs):
         "serverComment": english.get("serverComment", ""),
         "description": desc.decode("utf-8", "replace") if isinstance(desc, bytes) else desc,
         "size": sum(x.get("Size", 0) for x in pkgs),
-        "restart": True,   # its first package's onConclusion="RequireRestart"
+        "restart": restart,   # the combo's first package's onConclusion="RequireRestart"; iTunes: none
         "packages": [{"url": x["URL"], "size": x.get("Size", 0)} for x in pkgs],
     }
 
@@ -129,6 +172,13 @@ def scan(args):
             item = describe(key, p, pkgs)
             item["downloaded"] = downloaded(cache_dir(args, key), item)
             out["products"].append(item)
+    elif version_tuple(system.get("ProductVersion", "0")) >= version_tuple("10.6.8"):
+        found = itunes_products(plistlib.loads(fetch(CATALOG)), system, read_itunes(assets))
+        if found:
+            _, key, p, pkgs, meta = found[0]
+            item = describe(key, p, pkgs, meta, restart=False)
+            item["downloaded"] = downloaded(cache_dir(args, key), item)
+            out["products"].append(item)
     print(json.dumps(out))
     return 0
 
@@ -138,10 +188,15 @@ def downloaded(folder, item):
                (folder / Path(x["url"]).name).stat().st_size == x["size"] for x in item["packages"])
 
 
-def product(key):
+def product(key, assets=None):
     for _, k, p, pkgs in products():
         if k == key:
             return describe(k, p, pkgs)
+    catalog = plistlib.loads(fetch(CATALOG))
+    p = catalog.get("Products", {}).get(key)
+    pkgs = [x for x in (p or {}).get("Packages", []) if ITUNES.search(x.get("URL", ""))]
+    if pkgs:
+        return describe(key, p, pkgs, restart=False)
     sys.exit(f"{key}: not in Apple's catalog")
 
 

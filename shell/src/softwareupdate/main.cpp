@@ -212,6 +212,8 @@ std::string jsonString(const std::string &json, const std::string &key, size_t f
         const char c = json[++i];
         if (c == 'n')
             out += '\n';
+        else if (c == 'r')
+            continue;   // the description's CR LF (iTunes'): the LF is enough
         else if (c == 't')
             out += '\t';
         else if (c == 'u') {
@@ -499,7 +501,11 @@ private:
         const bool restart = std::any_of(m_products.begin(), m_products.end(), [](const Product &p) { return p.restart; });
         const bool downloaded = std::all_of(m_products.begin(), m_products.end(), [](const Product &p) { return p.downloaded; });
         std::string message, info, ok;
-        if (downloaded) {
+        if (downloaded && !restart) {   // iTunes, downloaded: installed now, no restart
+            message = tr("SUAppNotif", "UPDATES_AVAILABLE_INSTALL_MESSAGE",
+                         "Software updates for your computer are ready to be installed. Do you want to install them now?");
+            ok = tr("SUAppNotif", "INSTALL_TITLE", "Install");
+        } else if (downloaded) {
             message = tr("SUAppNotif", "UPDATES_AVAILABLE_INSTALL_MESSAGE",
                          "Software updates for your computer are ready to be installed. Do you want to install them now?");
             info = tr("SUAppNotif", "UPDATES_AVAILABLE_INSTALL_AND_RESTART_INFORMATIVE",
@@ -600,6 +606,10 @@ private:
                                   Font::system(11));
         restart->setFrame({39, 598 - 59 - 14, 456, 14});
         v->addSubview(restart);
+        // the restart line only for an update that needs one (not iTunes)
+        const bool needsRestart = std::any_of(m_products.begin(), m_products.end(), [](const Product &p) { return p.restart; });
+        restartIcon->setHidden(!needsRestart);
+        restart->setHidden(!needsRestart);
         auto *legal = new Label(legalUpdateText(), Font::system(11));
         legal->wrap = true;
         legal->setFrame({20, 598 - 106 - 41, 472, 41});
@@ -631,7 +641,10 @@ private:
             return;
         const Product p = m_products.front();
         if (p.downloaded) {
-            restartAlert();
+            if (p.restart)
+                restartAlert();
+            else
+                installNow();
             return;
         }
         m_busy = true;
@@ -695,11 +708,15 @@ private:
                 m_bar->start();
             }
             App::shared().addTimer(1.5, false, [this] {
+                m_products.front().downloaded = true;
+                if (!m_products.front().restart) {   // installed at once, in the same window
+                    installNow();
+                    return;
+                }
                 m_busy = false;
                 if (m_installWindow)
                     m_installWindow->close();
                 m_installWindow.reset();
-                m_products.front().downloaded = true;
                 restartAlert();
             });
         };
@@ -753,6 +770,61 @@ private:
             m_time->setText(time);
             m_time->setHidden(time.empty());
         }
+    }
+
+    // An update without a restart (iTunes): installed after its download, in the install window
+    // (SUAppSessionController's INSTALLING_* then INSTALLATION_DONE_*)
+    void installNow()
+    {
+        const Product p = m_products.front();
+        m_busy = true;
+        if (!m_installWindow) {
+            if (m_window)
+                m_window->close();
+            m_window.reset();
+            m_content = nullptr;
+            openInstallWindow();
+        }
+        if (m_stop)
+            m_stop->setHidden(true);
+        if (m_bar) {
+            m_bar->indeterminate = true;
+            m_bar->start();
+        }
+        const std::string items = tr("SUAppSessionController", "1_ITEM", "1 item");
+        setInstall(format(tr("SUAppSessionController", "INSTALLING_X_TITLE", "Installing %@"), {items}),
+                   format(tr("SUAppSessionController", "INSTALLING_ITEM_STATUS_FORMAT", "Installing %@…"), {p.title}), "");
+        m_helper = std::make_unique<Task>();
+        m_helper->errors = Task::Errors::Inherit;
+        m_helper->onLine = [this](const std::string &l) {
+            double done = 0, total = 0;
+            if (std::sscanf(l.c_str(), "PROGRESS %lf %lf", &done, &total) == 2 && total > 0 && m_bar) {
+                m_bar->indeterminate = false;
+                m_bar->maxValue = total;
+                m_bar->value = done;
+                m_bar->setNeedsDisplay();
+            }
+        };
+        m_helper->onExit = [this](int code, const std::string &) {
+            m_busy = false;
+            if (m_stop) {
+                m_stop->title = tr("SUAppSessionController", "OK_TITLE", "OK");
+                m_stop->setHidden(false);
+                m_stop->action = [code] { App::shared().quit(code ? 1 : 0); };
+            }
+            if (code != 0) {
+                setInstall(tr("SUAppSessionController", "INSTALLATION_FAILED", "An error occurred during installation."), "", "");
+                return;
+            }
+            if (m_bar) {
+                m_bar->indeterminate = false;
+                m_bar->value = m_bar->maxValue;
+                m_bar->setNeedsDisplay();
+            }
+            setInstall(tr("SUAppSessionController", "INSTALLATION_DONE_SINGLE", "The update was installed successfully."), "", "");
+        };
+        if (toolsDir().empty() || !m_helper->launch(tool({"install", p.key}, true)))
+            m_helper->onExit(1, {});
     }
 
     // SUAppSession's: to install a restart-required update, log out and restart

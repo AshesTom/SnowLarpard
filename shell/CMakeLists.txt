@@ -182,10 +182,19 @@ set_target_properties(TextEdit PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "
 pkg_check_modules(ITUNES_DEPS IMPORTED_TARGET mpv taglib)
 if(ITUNES_DEPS_FOUND)
     add_executable(iTunes src/itunes/main.cpp src/itunes/resources.cpp src/itunes/resources.h
-                   src/itunes/library.cpp src/itunes/library.h src/itunes/player.cpp src/itunes/player.h)
+                   src/itunes/library.cpp src/itunes/library.h src/itunes/player.cpp src/itunes/player.h
+                   src/itunes/store.cpp src/itunes/store.h)
     target_link_libraries(iTunes PRIVATE aquakit PkgConfig::ITUNES_DEPS)
     target_compile_options(iTunes PRIVATE -Wall -Wextra)
     set_target_properties(iTunes PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/iTunes.app/Contents/MacOS")
+    # iTunes 11.4's Store: its pages in a process of their own (Qt's web engine, off screen), built
+    # when Qt WebEngine is installed (docs/itunes-reverse.md, section 8)
+    find_package(Qt6 6.4 QUIET COMPONENTS WebEngineWidgets Network)
+    if(Qt6WebEngineWidgets_FOUND)
+        add_executable(iTunesStore src/itunes/storeprocess.cpp)
+        target_link_libraries(iTunesStore PRIVATE Qt6::WebEngineWidgets Qt6::Network)
+        set_target_properties(iTunesStore PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/iTunes.app/Contents/MacOS")
+    endif()
 endif()
 
 # Grab.app (Utilities), on AquaKit: Grab 1.5's panel, timer, documents, Inspector and Preferences; its
