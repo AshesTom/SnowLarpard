@@ -230,6 +230,13 @@ WANTED = {
 }
 for app in ("Safari", "Mail", "iTunes", "iCal", "AddressBook", "iChat", "DVDPlayer"):
     WANTED[app + ".pkg"] = ["./Applications/*.app/Contents/Info.plist", "./Applications/*.app/Contents/Resources/*.icns"]
+# iTunes.app (8.2.1, shell/src/itunes): its resource files (the art, the xMNU menus, the text styles)
+# and its English strings (docs/itunes-reverse.md)
+WANTED["iTunes.pkg"] += [
+    "./Applications/iTunes.app/Contents/Resources/iTunes.rsrc",
+    "./Applications/iTunes.app/Contents/Resources/English.lproj/Localized.rsrc",
+    "./Applications/iTunes.app/Contents/Resources/English.lproj/Localizable.strings",
+]
 # Mail.app (shell/src/mail): its pictures, toolbars and English nibs and strings (docs/mail-reverse.md)
 WANTED["Mail.pkg"] += [
     "./Applications/Mail.app/Contents/Resources/*.tiff",

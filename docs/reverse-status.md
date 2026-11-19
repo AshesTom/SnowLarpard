@@ -29,6 +29,7 @@ with ImageMagick.
 | Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
+| iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv; iTunes' own title bar not yet) |
 
 ## 1. CoreUI's shared art (`SArtFile.bin`)
 

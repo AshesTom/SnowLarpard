@@ -176,6 +176,18 @@ target_link_libraries(TextEdit PRIVATE aquakit)
 target_compile_options(TextEdit PRIVATE -Wall -Wextra)
 set_target_properties(TextEdit PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/TextEdit.app/Contents/MacOS")
 
+# iTunes.app (8.2.1), on AquaKit: its xMNU menus, its browser window and LCD from iTunes.rsrc, the
+# library in ~/Music/iTunes/iTunes Music Library.xml, libmpv's playback, TagLib's tags
+# (docs/itunes-reverse.md)
+pkg_check_modules(ITUNES_DEPS IMPORTED_TARGET mpv taglib)
+if(ITUNES_DEPS_FOUND)
+    add_executable(iTunes src/itunes/main.cpp src/itunes/resources.cpp src/itunes/resources.h
+                   src/itunes/library.cpp src/itunes/library.h src/itunes/player.cpp src/itunes/player.h)
+    target_link_libraries(iTunes PRIVATE aquakit PkgConfig::ITUNES_DEPS)
+    target_compile_options(iTunes PRIVATE -Wall -Wextra)
+    set_target_properties(iTunes PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/iTunes.app/Contents/MacOS")
+endif()
+
 # Grab.app (Utilities), on AquaKit: Grab 1.5's panel, timer, documents, Inspector and Preferences; its
 # grabs are screencapture's (docs/reverse-status.md, section 21)
 add_executable(Grab src/grab/main.cpp)
@@ -423,6 +435,9 @@ component_info(calculator "Calculator.app/Contents")
 component_info(stickies "Stickies.app/Contents")
 component_info(textedit "TextEdit.app/Contents")
 component_info(grab "Grab.app/Contents")
+if(ITUNES_DEPS_FOUND)
+    component_info(itunes "iTunes.app/Contents")
+endif()
 component_info(activitymonitor "Activity Monitor.app/Contents")
 foreach(app IN ITEMS Preview Mail PhotoBooth)
     if(TARGET ${app})
