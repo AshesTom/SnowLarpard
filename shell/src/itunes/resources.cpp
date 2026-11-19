@@ -150,6 +150,99 @@ bool resourcesPresent() { return art().isOpen() && localized().isOpen(); }
 
 std::string tr(const std::string &key) { return Assets::tr(Bundle, "Localizable", key, key); }
 
+namespace {
+
+// A PICT's DirectBitsRect (opcode 0x009A): baseAddr, the PixMap's 46 bytes, the source and
+// destination rects, the mode; then each row's byte count (one byte up to 250 row bytes, else two)
+// and its PackBits, packType 4: one plane per component (cmpCount 3: red, green, blue), each as wide
+// as the picture. The rows as RGB; empty when the PICT isn't one
+struct Pixels {
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgb;
+};
+
+Pixels directBits(const std::string &d)
+{
+    Pixels px;
+    const auto u16 = [&](size_t at) { return at + 2 <= d.size() ? (uint8_t(d[at]) << 8) | uint8_t(d[at + 1]) : 0; };
+    const size_t op = d.find(std::string("\x00\x9a\x00\x00\x00\xff", 6));
+    if (op == std::string::npos)
+        return px;
+    size_t at = op + 2 + 4;
+    const int rowBytes = u16(at) & 0x3fff;
+    const int top = int16_t(u16(at + 2)), left = int16_t(u16(at + 4)), bottom = int16_t(u16(at + 6)), right = int16_t(u16(at + 8));
+    const int packType = u16(at + 12), cmpCount = u16(at + 30);
+    if (packType != 4 || cmpCount < 3 || right <= left || bottom <= top)
+        return px;
+    px.width = right - left;
+    px.height = bottom - top;
+    px.rgb.assign(size_t(px.width) * px.height * 3, 0);
+    at += 46 + 8 + 8 + 2;
+    for (int y = 0; y < px.height; ++y) {
+        int count = 0;
+        if (rowBytes > 250) {
+            count = u16(at);
+            at += 2;
+        } else {
+            count = at < d.size() ? uint8_t(d[at]) : 0;
+            at += 1;
+        }
+        std::vector<uint8_t> row;
+        for (size_t i = at, end = std::min(d.size(), at + count); i < end;) {
+            const int c = uint8_t(d[i++]);
+            if (c < 128) {
+                for (int k = 0; k <= c && i < end; ++k)
+                    row.push_back(uint8_t(d[i++]));
+            } else if (c > 128 && i < end) {
+                row.insert(row.end(), size_t(257 - c), uint8_t(d[i++]));
+            }
+        }
+        at += count;
+        for (int x = 0; x < px.width; ++x)
+            for (int k = 0; k < 3; ++k) {
+                const size_t from = size_t(k) * px.width + x;
+                px.rgb[(size_t(y) * px.width + x) * 3 + k] = from < row.size() ? row[from] : 0;
+            }
+    }
+    return px;
+}
+
+} // namespace
+
+Image slider(int id)
+{
+    static std::map<int, Image> cache;
+    auto it = cache.find(id);
+    if (it != cache.end())
+        return it->second;
+    Image img;
+    const std::string *psld = art().get("PSLD", id);
+    if (psld && psld->size() >= 4) {
+        const int pictureId = int16_t((uint8_t((*psld)[0]) << 8) | uint8_t((*psld)[1]));
+        const int maskId = int16_t((uint8_t((*psld)[2]) << 8) | uint8_t((*psld)[3]));
+        const std::string *pic = art().get("PICT", pictureId), *mask = art().get("PICT", maskId);
+        const Pixels colour = pic ? directBits(*pic) : Pixels{}, alpha = mask ? directBits(*mask) : Pixels{};
+        if (colour.width > 0 && colour.width == alpha.width && colour.height == alpha.height) {
+            cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, colour.width, colour.height);
+            cairo_surface_flush(s);
+            unsigned char *data = cairo_image_surface_get_data(s);
+            const int stride = cairo_image_surface_get_stride(s);
+            for (int y = 0; y < colour.height; ++y)
+                for (int x = 0; x < colour.width; ++x) {
+                    const size_t i = (size_t(y) * colour.width + x) * 3;
+                    // the mask: white leaves the picture out, black keeps it whole
+                    const unsigned a = 255 - alpha.rgb[i];
+                    auto *p = reinterpret_cast<uint32_t *>(data + y * stride) + x;
+                    *p = (a << 24) | ((colour.rgb[i] * a / 255) << 16) | ((colour.rgb[i + 1] * a / 255) << 8) | (colour.rgb[i + 2] * a / 255);
+                }
+            cairo_surface_mark_dirty(s);
+            img = Image(s);
+        }
+    }
+    cache[id] = img;
+    return img;
+}
+
 Image picture(int id)
 {
     static std::map<int, Image> cache;

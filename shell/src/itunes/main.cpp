@@ -155,14 +155,25 @@ private:
     bool m_dragging = false;
 };
 
-// ---- the LCD (BrowserLCD: LCDBackgroundView, LCDStaticTextView, LCDProgressBarView)
+// ---- the LCD (BrowserLCD, LCDPlayerView; docs/itunes-reverse.md section 5)
+//   LCDPlayerView's layout (FUN_0004ee6a), in the LCD's W × 46: the time's width t is "-00:00:00"'s in
+//   the LCD style (Txtr 302); the scrubber (ITScrubberView, PSLD 512) at (t + 2, 46 − 15), W − 2(t + 2)
+//   wide, 14 high, past 240 inset by a quarter of the excess on each side; the time played left of it,
+//   right-justified, t wide, a point up; the time left (or the whole time: the `stim` preference, a
+//   click on it switching) right of it, left-justified. The first line (title) 2 down,
+//   centred in W − 10 from 5; the second (artist, album in turn every 10 s: BrowserLCDPlayer's kinds
+//   1 to 5, the empty ones skipped) at (37, 16), W − 74 wide.
+//   LCDStaticTextView: centred when it fits; else scrolling left a point every 1/15 s after 1.5 s, drawn
+//   twice 10 points apart, pausing 1.5 s at each turn; a new text slides up over the old, a point a
+//   frame, the old going out at the top.
 
 class LCD : public View {
 public:
-    std::string line1, line2;
-    double position = 0, duration = 0;   // seconds
     bool showing = false;                // a song: else the Apple
+    double position = 0, duration = 0;   // seconds
+    bool showTotal = false;              // `stim` 2: the whole time on the right, not the time left
     std::function<void(double)> onSeek;
+    std::function<void()> onToggleTime;
 
     LCD()
     {
@@ -170,24 +181,36 @@ public:
     }
     ~LCD() override { App::shared().removeTimer(m_timer); }
 
-    void setLines(const std::string &a, const std::string &b)
+    // A song's fields: a new title restarts the lines; the second line goes to the first field that
+    // changed (FUN_0004d90c), else stays where it is
+    void setTrack(const std::string &name, const std::string &artist, const std::string &album)
     {
-        if (a != line1 || b != line2) {
-            line1 = a;
-            line2 = b;
-            m_scroll[0] = m_scroll[1] = 0;
-            m_wait = 0;
-        }
+        if (name == m_name && artist == m_fields[1] && album == m_fields[2])
+            return;
+        const bool artistChanged = artist != m_fields[1], albumChanged = album != m_fields[2];
+        m_name = name;
+        m_fields[1] = artist;
+        m_fields[2] = album;
+        m_lines[0].set(name, false);
+        int kind = m_kind;
+        if (artistChanged && !artist.empty())
+            kind = 1;
+        else if (albumChanged && !album.empty())
+            kind = 2;
+        m_kind = nextKind(kind, false);
+        m_lines[1].set(m_fields[m_kind], false);
+        m_cycle = 0;
         setNeedsDisplay();
     }
 
-    Rect barRect() const
+    Rect scrubberRect() const
     {
-        // LCDProgressBarView (FUN_0005f712): 15 to 5 above the bottom, 25 in from each side, at most 240
-        Rect r{25, frame().h - 15, frame().w - 50, 10};
+        const double t = timeWidth(), w = frame().w;
+        Rect r{t + 2, frame().h - 15, w - 2 * (t + 2), 14};
         if (r.w > 240) {
-            r.x += (r.w - 240) / 2;
-            r.w = 240;
+            const double inset = (r.w - 240) * 0.25;
+            r.x += inset;
+            r.w -= 2 * inset;
         }
         return r;
     }
@@ -202,97 +225,203 @@ public:
             return;
         }
         const iTunes::TextStyle lcd = textStyle(302);
-        drawLine(cr, 0, line1, Rect{8, 3, frame().w - 16, 14}, lcd);
-        drawLine(cr, 1, line2, Rect{8, 16, frame().w - 16, 14}, lcd);
-        // the progress bar: the frame 475, the fill 478 to the part played
-        const Rect bar = barRect();
-        drawCell(cr, 475, 0, 0, bar);
-        const Rect inner{bar.x + 2, bar.y + 1, bar.w - 4, bar.h - 3};
-        if (duration > 0) {
-            const double w = std::floor(inner.w * std::clamp(position / duration, 0.0, 1.0));
-            drawCell(cr, 478, 0, 0, Rect{inner.x, inner.y, w, inner.h});
+        const double W = frame().w, lineH = std::ceil(lineHeight(lcd.font));
+        m_lines[0].draw(cr, Rect{5, 2, W - 10, lineH}, lcd);
+        m_lines[1].draw(cr, Rect{37, 16, std::max(0.0, W - 74), lineH}, lcd);
+
+        // the scrubber: the track (PSLD 512's slider rect, 21 × 10, its 7-point ends kept) across, the
+        // thumb (8 × 10 at 21) on the time played, within the drag rect (2 in from each end)
+        const Rect bar = scrubberRect();
+        const Image art = slider(512);
+        if (!art.isNull()) {
+            // QuickDraw's CopyMask: whole pixels, the middle repeated, never blended into the ends
+            const auto part = [&](const Rect &src, const Rect &dst) {
+                if (dst.w <= 0)
+                    return;
+                cairo_save(cr);
+                cairo_rectangle(cr, dst.x, dst.y, dst.w, dst.h);
+                cairo_clip(cr);
+                cairo_translate(cr, dst.x, dst.y);
+                cairo_scale(cr, dst.w / src.w, dst.h / src.h);
+                cairo_set_source_surface(cr, art.surface(), -src.x, -src.y);
+                cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
+                cairo_paint(cr);
+                cairo_restore(cr);
+            };
+            const double y = bar.y;
+            part(Rect{0, 0, 7, 10}, Rect{bar.x, y, 7, 10});
+            part(Rect{7, 0, 7, 10}, Rect{bar.x + 7, y, std::max(0.0, bar.w - 14), 10});
+            part(Rect{14, 0, 7, 10}, Rect{bar.right() - 7, y, 7, 10});
+            if (duration > 0) {
+                const double f = std::clamp(position / duration, 0.0, 1.0);
+                const double x = std::round(bar.x + 2 + f * (bar.w - 4 - 8));
+                part(Rect{21, 0, 8, 10}, Rect{x, y, 8, 10});
+            }
         }
-        // the times in the margins either side of the bar
+        // the times (FUN_0004eaf6, whole seconds)
         AK::TextStyle t;
         t.font = lcd.font;
-        t.font.size = 10;
         t.color = lcd.color;
         t.elide = false;
+        const double tw = timeWidth();
+        const int played = int(position), whole = int(duration);
         t.align = Align::Right;
-        drawText(cr, formatTime(int(position * 1000)), Rect{2, bar.y - 2, bar.x - 4, 13}, t);
-        t.align = Align::Left;
-        if (duration > 0)
-            drawText(cr, "-" + formatTime(int(std::max(0.0, duration - position) * 1000)),
-                     Rect{bar.right() + 2, bar.y - 2, frame().w - bar.right() - 4, 13}, t);
+        drawText(cr, formatTime(played * 1000), Rect{bar.x - tw - 2, bar.y - 1, tw, 14}, t);
+        if (duration > 0) {
+            t.align = Align::Left;
+            const std::string right = showTotal ? formatTime(whole * 1000) : "-" + formatTime(std::max(0, whole - played) * 1000);
+            drawText(cr, right, Rect{bar.right() + 2, bar.y - 1, tw, 14}, t);
+        }
     }
 
     void mouseDown(Event &e) override
     {
-        const Rect bar = barRect();
-        if (showing && duration > 0 && Rect{bar.x, bar.y - 3, bar.w, bar.h + 6}.contains(e.location))
+        if (!showing)
+            return;
+        const Rect bar = scrubberRect();
+        if (duration > 0 && Rect{bar.right() + 2, bar.y - 1, timeWidth(), 14}.contains(e.location)) {
+            // the time on the right: the time left and the whole time in turn (FUN_0013658a)
+            showTotal = !showTotal;
+            if (onToggleTime)
+                onToggleTime();
+            setNeedsDisplay();
+            return;
+        }
+        m_seeking = duration > 0 && bar.contains(e.location);
+        if (m_seeking)
             seekAt(e.location.x);
     }
     void mouseDragged(Event &e) override
     {
-        if (showing && duration > 0)
+        if (m_seeking)
             seekAt(e.location.x);
     }
+    void mouseUp(Event &) override { m_seeking = false; }
 
 private:
+    // A LCDStaticTextView's state
+    struct Line {
+        std::string text, old;
+        double width = 0, room = 0, oldScroll = 0;
+        int scroll = 0, pause = 0, slide = -1;   // slide: the new text's rise, −1 when still
+        void set(const std::string &t, bool animate)
+        {
+            if (t == text)
+                return;
+            if (animate) {
+                old = text;
+                oldScroll = scroll;
+                slide = 0;
+            } else {
+                slide = -1;
+            }
+            text = t;
+            scroll = 0;
+            pause = 0;
+        }
+        bool scrolls() const { return width > room; }
+        void drawText(cairo_t *cr, const std::string &s, double x, double y, double h, double offset, const iTunes::TextStyle &style)
+        {
+            AK::TextStyle t;
+            t.font = style.font;
+            t.color = style.color;
+            t.elide = false;
+            const double w = textWidth(s, style.font);
+            if (w <= room) {
+                t.align = Align::Center;
+                AK::drawText(cr, s, Rect{x, y, room, h}, t);
+                return;
+            }
+            t.align = Align::Left;
+            AK::drawText(cr, s, Rect{x - offset, y, w + 2, h}, t);
+            AK::drawText(cr, s, Rect{x - offset + w + 10, y, w + 2, h}, t);
+        }
+        void draw(cairo_t *cr, const Rect &r, const iTunes::TextStyle &style)
+        {
+            width = textWidth(text, style.font);
+            room = r.w;
+            cairo_save(cr);
+            cairo_rectangle(cr, r.x, r.y, r.w, r.h);
+            cairo_clip(cr);
+            double y = r.y;
+            if (slide >= 0) {
+                drawText(cr, old, r.x, y - slide, r.h, oldScroll, style);
+                y = y - slide + r.h;
+            }
+            drawText(cr, text, r.x, y, r.h, scroll, style);
+            cairo_restore(cr);
+        }
+        // a frame (FUN_00051e3a): the slide, else the scroll after its pause
+        bool tick(double height)
+        {
+            if (slide >= 0) {
+                if (++slide > height)
+                    slide = -1;
+                return true;
+            }
+            if (!scrolls())
+                return false;
+            if (pause < 22) {   // 1.5 s
+                ++pause;
+                return false;
+            }
+            if (++scroll >= width + 10) {
+                scroll = 0;
+                pause = 0;
+            }
+            return true;
+        }
+    };
+
+    double timeWidth() const { return std::ceil(textWidth("-00:00:00", textStyle(302).font)); }
+
     void seekAt(double x)
     {
-        const Rect bar = barRect();
-        const double f = std::clamp((x - bar.x - 2) / std::max(1.0, bar.w - 4), 0.0, 1.0);
+        const Rect bar = scrubberRect();
+        const double f = std::clamp((x - bar.x - 2 - 4) / std::max(1.0, bar.w - 4 - 8), 0.0, 1.0);
         if (onSeek)
             onSeek(f * duration);
     }
 
-    // LCDStaticTextView: centred when it fits; else scrolling left, twice with a 10 point gap, a frame
-    // every 1/15 s after 1.5 s (FUN_0004ecf6)
-    void drawLine(cairo_t *cr, int n, const std::string &text, const Rect &r, const iTunes::TextStyle &style)
+    // the second line's next kind from `from`, the empty ones skipped (kinds 1 artist, 2 album; 3 to 5,
+    // a stream's, never here)
+    int nextKind(int from, bool advance) const
     {
-        AK::TextStyle t;
-        t.font = style.font;
-        t.color = style.color;
-        t.elide = false;
-        const double w = textWidth(text, style.font);
-        m_width[n] = w;
-        m_room[n] = r.w;
-        if (w <= r.w) {
-            t.align = Align::Center;
-            drawText(cr, text, r, t);
-            return;
+        const int start = (from < 1 || from > 2) ? 1 : from;
+        for (int i = advance ? 1 : 0; i < (advance ? 3 : 2); ++i) {
+            const int k = (start - 1 + i) % 2 + 1;
+            if (!m_fields[k].empty())
+                return k;
         }
-        cairo_save(cr);
-        cairo_rectangle(cr, r.x, r.y, r.w, r.h);
-        cairo_clip(cr);
-        t.align = Align::Left;
-        const double x = r.x - m_scroll[n];
-        drawText(cr, text, Rect{x, r.y, w + 2, r.h}, t);
-        drawText(cr, text, Rect{x + w + 10, r.y, w + 2, r.h}, t);
-        cairo_restore(cr);
+        return start;
     }
 
     void tick()
     {
         if (!showing)
             return;
+        const double lineH = std::ceil(lineHeight(textStyle(302).font));
         bool moved = false;
-        if (++m_wait < 22)   // 1.5 s
-            return;
-        for (int n = 0; n < 2; ++n)
-            if (m_width[n] > m_room[n]) {
-                m_scroll[n] += 1;
-                if (m_scroll[n] >= m_width[n] + 10)
-                    m_scroll[n] = 0;
+        for (Line &l : m_lines)
+            moved |= l.tick(lineH);
+        // every 10 s the second line goes to the next field (FUN_00051dfe), sliding
+        if (++m_cycle >= 150) {
+            m_cycle = 0;
+            const int k = nextKind(m_kind, true);
+            if (k != m_kind) {
+                m_kind = k;
+                m_lines[1].set(m_fields[k], true);
                 moved = true;
             }
+        }
         if (moved)
             setNeedsDisplay();
     }
 
-    int m_timer = 0, m_wait = 0;
-    double m_scroll[2] = {0, 0}, m_width[2] = {0, 0}, m_room[2] = {0, 0};
+    int m_timer = 0, m_cycle = 0, m_kind = 1;
+    bool m_seeking = false;
+    std::string m_name, m_fields[3];
+    Line m_lines[2];
 };
 
 // ---- the bands
@@ -791,6 +920,8 @@ private:
         m_volume->setValue(Settings("itunes").integer("Volume", 100) / 100.0);
         m_player.setVolume(m_volume->value);
         m_lcd = m_top->add<LCD>();
+        m_lcd->showTotal = Settings("itunes").integer("stim", 1) == 2;
+        m_lcd->onToggleTime = [this] { Settings("itunes").set("stim", m_lcd->showTotal ? 2 : 1); };
         m_lcd->onSeek = [this](double s) {
             m_player.seek(s);
             refreshLCD();
@@ -1180,7 +1311,7 @@ private:
         m_lcd->showing = active;
         if (active) {
             const Track &t = *m_library.track(m_current);
-            m_lcd->setLines(t.name, t.artist.empty() ? t.album : t.artist);
+            m_lcd->setTrack(t.name, t.artist, t.album);
             m_lcd->position = m_player.position();
             m_lcd->duration = m_player.duration() > 0 ? m_player.duration() : t.totalTime / 1000.0;
         }

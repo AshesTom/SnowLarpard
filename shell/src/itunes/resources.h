@@ -42,6 +42,10 @@ std::string tr(const std::string &key);
 // A PNG resource as an image (cached); null when missing
 AK::Image picture(int id);
 
+// A PSLD slider's art (FUN_0027a97a): its PICT picture through its PICT mask (white: nothing) — the
+// slider in its rect, the thumbs beside it
+AK::Image slider(int psld);
+
 // The picture table's entry (FUN_0000ebe4): its grid of states and its fixed sides
 struct PictureInfo {
     int columns = 1, rows = 1;
