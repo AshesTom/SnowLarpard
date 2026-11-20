@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "iconview.h"
+#include "labels.h"
 
 #include "controls.h"
 #include "foundation.h"
@@ -21,6 +22,10 @@ namespace {
 // FXLabelHorizontalPad, FXLabelVerticalPad, FXMaximumLabelLines, FXTightLabelLines below a grid
 // spacing of 26)
 constexpr int GridCharCount = 17, MinCharCount = 4, LabelHPad = 1, LabelVPad = 2, LabelLines = 2, TightLabelLines = 1;
+// ImageKit's browser in the Finder's windows: 4 between cells; the first cell 5 in from the view's
+// left (measured on a 10.6.8 Finder: ImageKit's own margin for the browser's style 1 is 10, the view's
+// origin there not traced)
+constexpr double CellSpacing = 4, CellMargin = 5;
 
 double even(double v)
 {
@@ -84,7 +89,21 @@ IconView::Metrics IconView::metrics() const
     m.lines = (labelOnBottom || iconSize > 16) ? (gridSpacing < 26 ? TightLabelLines : LabelLines) : 1;
     m.labelHeight = std::floor(m.lines * m.lineHeight + (showItemInfo ? m.lineHeight : 0) + 2);
     if (labelOnBottom) {
-        m.grid = {even(m.labelWidth + LabelHPad), even(m.box + m.labelHeight + LabelVPad + 4)};
+        // A window's icon view is ImageKit's (TIconViewController currentGridSize → +[IKIconCell
+        // anchoredBoundsForSettings:]): +[IKIconCell cellSizeForIconSize:maxIconSize:gridSpacing:...]
+        // the cell max(5c, icon) + 16 + (20c − max(5c, icon)) × spacing / 100 wide (c: "0"'s width,
+        // past 128 points 20c − 128), icon + 2 × the selection radius (ceil(min(icon/128, 1) × 8)) + the
+        // label high, the label two text lines and 2, and 2 more (labelHeightForAttributes:...); the text
+        // line 17 at 12 points (sizeWithAttributes:'s height, measured on a 10.6.8 Finder); 4 between
+        // cells both ways. A 10.6.8 Finder at 64 points: 136 × 114 between icons
+        const double c = cw;
+        const double least = std::max(5 * c, double(iconSize));
+        const double room = iconSize > 128 ? 20 * c - 128 : std::max(0.0, 20 * c - least);
+        m.cellWidth = std::ceil(least + 16 + room * (gridSpacing / 100.0));
+        const double text = m.lineHeight + 2;
+        const double label = (m.lines > 1 ? 2 * text + 2 : text) + (showItemInfo ? text : 0) + 2;
+        const double radius = std::ceil(std::min(iconSize / 128.0, 1.0) * 8);
+        m.grid = {m.cellWidth + CellSpacing, std::ceil(iconSize + 2 * radius + label) + CellSpacing};
     } else {
         // the label at the icon's right: the cell as wide as both, as high as the taller and some
         double h = std::max(m.labelHeight, m.box);
@@ -97,10 +116,38 @@ IconView::Metrics IconView::metrics() const
     return m;
 }
 
-int IconView::columns() const
+int IconView::columns() const { return columnsFor(frame().w, metrics()); }
+
+int IconView::columnsFor(double width, const Metrics &m) const
 {
-    // TLayoutGrid's -calculateGridDimensions: the frame's width in whole cells
-    return std::max(1, int(frame().w / metrics().grid.w));
+    // labels at the bottom: IKImageBrowserLayoutManager computeColumnCount, (spacing + width − 2 ×
+    // margin) / (spacing + cell); at the right: TLayoutGrid's -calculateGridDimensions, whole cells
+    if (labelOnBottom)
+        return std::max(1, int((CellSpacing + width - 2 * CellMargin) / m.grid.w));
+    return std::max(1, int(width / m.grid.w));
+}
+
+Point IconView::spotFor(int cell, int cols, const Metrics &m) const
+{
+    // labels at the bottom: the cell's centre across (the margin, the cells before it), the icon box 4
+    // under the cell's top; at the right: the icon box 4 in from the cell's left, the cell's middle down
+    // (anchoredIconMaxBounds)
+    const double top = (cell / cols) * m.grid.h;
+    if (labelOnBottom)
+        return Point{std::round(CellMargin + (cell % cols) * m.grid.w + m.cellWidth / 2), std::round(top + 4 + m.box / 2)};
+    const double left = (cell % cols) * m.grid.w;
+    return Point{std::round(left + 4 + m.box / 2), std::round(top + m.grid.h / 2 + 4)};
+}
+
+std::vector<Point> IconView::gridSpots(size_t count) const
+{
+    // the grid's spots in reading order (as place() lays them out)
+    const Metrics m = metrics();
+    const int cols = columnsFor(frame().w, m);
+    std::vector<Point> out;
+    for (size_t cell = 0; cell < count; ++cell)
+        out.push_back(spotFor(int(cell), cols, m));
+    return out;
 }
 
 std::vector<Point> IconView::place(double width) const
@@ -110,15 +157,8 @@ std::vector<Point> IconView::place(double width) const
     // -anchorAtGridLocation: the cell's centre, 4 to the right; the icon box's centre 4 under the
     // cell's top
     const Metrics m = metrics();
-    const int cols = std::max(1, int(width / m.grid.w));
-    // labels at the bottom: the cell's centre across, the icon box 4 under the cell's top; at the right:
-    // the icon box 4 in from the cell's left, the cell's middle down (anchoredIconMaxBounds)
-    auto spot = [&](int cell) {
-        const double left = (cell % cols) * m.grid.w, top = (cell / cols) * m.grid.h;
-        if (labelOnBottom)
-            return Point{std::round(left + m.grid.w / 2 + 4), std::round(top + 4 + m.box / 2)};
-        return Point{std::round(left + 4 + m.box / 2), std::round(top + m.grid.h / 2 + 4)};
-    };
+    const int cols = columnsFor(width, m);
+    auto spot = [&](int cell) { return spotFor(cell, cols, m); };
     auto cellOf = [&](Point a) {
         const Point first = spot(0);
         const int col = int(std::lround((a.x - first.x) / m.grid.w)), row = int(std::lround((a.y - first.y) / m.grid.h));
@@ -342,8 +382,22 @@ void IconView::draw(cairo_t *cr)
         t.font = font;
         t.align = labelOnBottom ? Align::Center : Align::Left;
         t.elide = false;
+        const int label = Labels::get(m_items[size_t(i)].path);
         for (size_t n = 0; n < lines.size(); ++n) {
             const Rect line{lr.x, lr.y + 1 + n * m.lineHeight, lr.w, m.lineHeight};
+            if (!selected && label) {
+                // a labelled item: its band in the label's colour (TDesktopIcon -drawSingleLineLabelBackground:...labelIndex:)
+                const double w = std::ceil(textWidth(lines[n], font)) + 10;
+                const Rect band{labelOnBottom ? std::round(line.x + (line.w - w) / 2) : line.x - 5, line.y, w, m.lineHeight};
+                const Color c = Labels::color(label);
+                cairo_pattern_t *g = cairo_pattern_create_linear(0, band.y, 0, band.bottom());
+                cairo_pattern_add_color_stop_rgb(g, 0, std::min(1.0, c.r + 0.15), std::min(1.0, c.g + 0.15), std::min(1.0, c.b + 0.15));
+                cairo_pattern_add_color_stop_rgb(g, 1, c.r, c.g, c.b);
+                roundedRect(cr, band, m.lineHeight / 2);
+                cairo_set_source(cr, g);
+                cairo_fill(cr);
+                cairo_pattern_destroy(g);
+            }
             if (selected) {
                 // the label's selection: a rounded band hugging the text, the selected text colour on it
                 const double w = std::ceil(textWidth(lines[n], font)) + 10;
@@ -425,12 +479,15 @@ void IconView::mouseDown(Event &e)
         window()->makeFirstResponder(this);
     const int i = itemAt(e.location);
     const bool extend = e.modifiers & (Command | Shift);
+    m_pressAt = e.location;
+    m_clickedName = -1;
     if (i >= 0) {
         if (e.clickCount == 2 && !extend) {
             if (onOpen)
                 onOpen(m_items[size_t(i)]);
             return;
         }
+        m_clickedName = !extend && e.clickCount == 1 && m_selection.size() == 1 && m_selection.count(i) && labelRect(i).contains(e.location) ? i : -1;
         if (extend || !m_selection.count(i))
             select(i, extend);
         // a drag moves the selected icons (not when the folder is kept arranged)
@@ -450,6 +507,8 @@ void IconView::mouseDown(Event &e)
 
 void IconView::mouseDragged(Event &e)
 {
+    if (std::abs(e.location.x - m_pressAt.x) > 3 || std::abs(e.location.y - m_pressAt.y) > 3)
+        m_clickedName = -1;
     if (m_moving) {
         m_moveBy = {e.location.x - m_moveFrom.x, e.location.y - m_moveFrom.y};
         setNeedsDisplay();
@@ -473,6 +532,12 @@ void IconView::mouseDragged(Event &e)
 
 void IconView::mouseUp(Event &e)
 {
+    if (m_clickedName >= 0 && size_t(m_clickedName) < m_items.size() && onClickName) {
+        const Item item = m_items[size_t(m_clickedName)];
+        m_clickedName = -1;
+        onClickName(item);
+    }
+    m_clickedName = -1;
     if (m_moving && std::abs(m_moveBy.x) + std::abs(m_moveBy.y) >= 3) {
         // dropped on a folder that isn't moving with it, or outside the view: the files move
         const int target = itemAt(e.location);
@@ -562,7 +627,10 @@ void IconView::keyDown(Event &e)
     case XKB_KEY_Down: to = from < 0 ? 0 : (from + cols < n ? from + cols : from); break;
     case XKB_KEY_Up: to = from < 0 ? 0 : (from - cols >= 0 ? from - cols : from); break;
     case XKB_KEY_Return:
-    case XKB_KEY_KP_Enter: return;   // rename: later
+    case XKB_KEY_KP_Enter:
+    case XKB_KEY_space:
+        View::keyDown(e);   // the window's: renaming, Quick Look
+        return;
     default:
         if (!e.text.empty() && static_cast<unsigned char>(e.text[0]) >= 0x20) {
             // type-select: the first item whose name starts with what was typed
@@ -581,6 +649,96 @@ void IconView::keyDown(Event &e)
         select(to, false);
         revealItem(to);
     }
+}
+
+void IconView::selectPaths(const std::vector<std::string> &paths)
+{
+    m_selection.clear();
+    int first = -1;
+    for (size_t i = 0; i < m_items.size(); ++i)
+        if (std::find(paths.begin(), paths.end(), m_items[i].path) != paths.end()) {
+            m_selection.insert(int(i));
+            if (first < 0)
+                first = int(i);
+        }
+    m_anchor = first;
+    if (first >= 0)
+        revealItem(first);
+    setNeedsDisplay();
+    if (onSelectionChanged)
+        onSelectionChanged();
+}
+
+Rect IconView::nameRectInWindow(const std::string &path) const
+{
+    for (size_t i = 0; i < m_items.size(); ++i)
+        if (m_items[i].path == path) {
+            const Rect r = labelRect(int(i));
+            const Metrics m = metrics();
+            const Point o = toWindow({r.x, r.y});
+            return {o.x, o.y, r.w, m.lineHeight + 4};
+        }
+    return {};
+}
+
+void IconView::rightMouseDown(Event &e)
+{
+    // the item under the pointer joins the selection (alone, unless it was selected already)
+    const int i = itemAt(e.location);
+    if (i >= 0 && !m_selection.count(i))
+        select(i, false);
+    else if (i < 0 && !m_selection.empty())
+        select(-1, false);
+    if (onContextMenu)
+        onContextMenu(toWindow(e.location), i >= 0);
+}
+
+std::vector<std::pair<std::string, Point>> IconView::cleanUp(bool selectionOnly) const
+{
+    // TIconViewController -cmdCleanUp: each icon to the nearest free place of the grid
+    const std::vector<Point> grid = gridSpots(m_items.size() * 2 + 64);
+    std::vector<std::pair<std::string, Point>> out;
+    std::vector<bool> taken(grid.size(), false);
+    auto nearest = [&](Point p) {
+        int best = -1;
+        double bestD = 1e18;
+        for (size_t g = 0; g < grid.size(); ++g) {
+            if (taken[g])
+                continue;
+            const double dx = grid[g].x - p.x, dy = grid[g].y - p.y, d = dx * dx + dy * dy;
+            if (d < bestD) {
+                bestD = d;
+                best = int(g);
+            }
+        }
+        return best;
+    };
+    for (size_t i = 0; i < m_items.size(); ++i) {
+        if (selectionOnly && !m_selection.count(int(i)))
+            continue;
+        const int g = nearest(anchor(int(i)));
+        if (g < 0)
+            continue;
+        taken[size_t(g)] = true;
+        out.push_back({m_items[i].name, grid[size_t(g)]});
+    }
+    return out;
+}
+
+std::vector<std::pair<std::string, Point>> IconView::arrangedPlaces(const std::string &by) const
+{
+    std::vector<int> order(m_items.size());
+    for (size_t i = 0; i < order.size(); ++i)
+        order[i] = int(i);
+    IconView sorter;
+    sorter.arrangeBy = by;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return sorter.arrangedBefore(m_items[size_t(a)], m_items[size_t(b)]); });
+    const std::vector<Point> grid = gridSpots(m_items.size());
+    std::vector<std::pair<std::string, Point>> out;
+    for (size_t k = 0; k < order.size() && k < grid.size(); ++k)
+        out.push_back({m_items[size_t(order[k])].name, grid[k]});
+    return out;
 }
 
 } // namespace Finder

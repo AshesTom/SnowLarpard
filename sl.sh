@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Snow Leopard in a window of your current desktop, without touching anything on your system.
+# Snow Leopard in a window of your current desktop, on your own home.
 #
 #   ./sl.sh /path/to/SnowLeopard.iso [WxH]    the first time: takes the DVD's files, builds, runs
 #   ./sl.sh -- [WxH]                          later runs
@@ -27,4 +27,4 @@ server=$!
 trap 'kill $server 2>/dev/null' EXIT
 for _ in $(seq 100); do [[ -e /tmp/.X11-unix/X${display#:} ]] && break; sleep 0.05; done
 # In a window: Restart and Shut Down don't touch the computer (SNOWLEOPARD_POWER unset).
-DISPLAY=$display WAYLAND_DISPLAY= "$root/session/snowleopard-session"
+env DISPLAY=$display WAYLAND_DISPLAY= "$root/session/snowleopard-session"

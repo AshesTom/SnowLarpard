@@ -16,7 +16,10 @@ namespace {
 
 std::string uriOf(const std::string &path)
 {
-    gchar *uri = g_filename_to_uri(path.c_str(), nullptr, nullptr);
+    // a URI needs the whole path: one given from the working directory (Preview file.pdf) is completed
+    gchar *whole = g_canonicalize_filename(path.c_str(), nullptr);
+    gchar *uri = g_filename_to_uri(whole, nullptr, nullptr);
+    g_free(whole);
     std::string out = uri ? uri : "";
     g_free(uri);
     return out;

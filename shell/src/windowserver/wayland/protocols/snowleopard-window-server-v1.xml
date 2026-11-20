@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="snowleopard_window_server_v1">
+  <copyright>
+    SPDX-License-Identifier: LGPL-2.1-or-later
+  </copyright>
+
+  <description summary="the window server's private calls, for the shell">
+    What the Dock, SystemUIServer, the Finder, loginwindow and screencapture ask the Mac's window
+    server through CoreGraphics' private CGS calls (CGSGetWindowList, CGSOrderWindow,
+    CGSSetSymbolicHotKey, CGSHWCaptureWindowList, CGSSetMagicMirror...), here between the shell's
+    programs and the Wayland WindowServer. The X11 session has the same through properties of the
+    root window (_NET_CLIENT_LIST, _SNOWLEOPARD_FRONT_APP, _SNOWLEOPARD_HOTKEY...).
+
+    Windows are named by a number of the server's, never 0, the same on every connection: the
+    applications' windows (xdg toplevels and Xwayland's), not the shell's layers or menus.
+  </description>
+
+  <interface name="sl_window_server_v1" version="1">
+    <description summary="the window server">
+      Bound, it sends every window (window), their order, the active one, the work area and the
+      application in front, then done; afterwards each change, then done.
+    </description>
+
+    <enum name="window_flags" bitfield="true">
+      <entry name="minimized" value="1" summary="in the Dock"/>
+      <entry name="hidden" value="2" summary="hidden by Hide (⌘H): not in the Dock"/>
+      <entry name="utility" value="4" summary="a utility window (a floating panel)"/>
+      <entry name="dialog" value="8" summary="a dialog or a sheet (it has a parent)"/>
+      <entry name="skip_taskbar" value="16" summary="not one of the application's windows for the Dock"/>
+      <entry name="fullscreen" value="32"/>
+      <entry name="zoomed" value="64"/>
+      <entry name="x11" value="128" summary="an X11 window, through Xwayland"/>
+      <entry name="above" value="256" summary="kept over the other windows"/>
+    </enum>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="activate">
+      <description summary="the window brought forward and made key (unminimized, shown)"/>
+      <arg name="window" type="uint"/>
+    </request>
+    <request name="close">
+      <description summary="the application asked to close it (xdg_toplevel.close, WM_DELETE_WINDOW)"/>
+      <arg name="window" type="uint"/>
+    </request>
+    <request name="minimize">
+      <arg name="window" type="uint"/>
+    </request>
+    <request name="hide">
+      <description summary="Hide (⌘H): out of sight, without a tile in the Dock"/>
+      <arg name="window" type="uint"/>
+    </request>
+    <request name="set_icon_geometry">
+      <description summary="where the Dock shows the window (its tile), for the genie"/>
+      <arg name="window" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="set_front_app">
+      <description summary="this application in front without a window">
+        A Mac application keeps the menu bar with no window open: this connection's application
+        (pid) is in front until a window is activated or it asks again with 0. While it is, the
+        keys go to it (key event) when no window has the keyboard.
+      </description>
+      <arg name="pid" type="uint"/>
+    </request>
+
+    <request name="register_hot_keys">
+      <description summary="CGSSetSymbolicHotKey: the symbolic hot keys this connection answers">
+        28 ⇧⌘3, 29 ⌃⇧⌘3, 30 ⇧⌘4, 31 ⌃⇧⌘4 (an array of uint32): the server takes them and sends
+        hot_key.
+      </description>
+      <arg name="hot_keys" type="array"/>
+    </request>
+
+    <request name="set_key_equivalents">
+      <description summary="the Command keys this application's menus answer">
+        Keysyms (an array of uint32) that WindowServer then leaves to this connection's application
+        with Command (⌘W, ⌘Q, ⌘M, ⌘H...), as the X11 server reads _SNOWLEOPARD_KEY_EQUIVALENTS.
+      </description>
+      <arg name="keysyms" type="array"/>
+    </request>
+
+    <request name="set_magic_mirror">
+      <description summary="CGSSetMagicMirror: what is beside a layer, drawn turned over under it">
+        For the layer surface whose namespace is `layer` (the Dock's): direction 1 bottom, 2 top,
+        3 left, 4 right, 0 none; the quadrangle (four points, x then y, int32) in the layer's
+        coordinates.
+      </description>
+      <arg name="layer" type="string"/>
+      <arg name="direction" type="uint"/>
+      <arg name="quad" type="array"/>
+    </request>
+
+    <request name="capture_window">
+      <description summary="CGSHWCaptureWindowList: a window's picture">
+        The window as it is drawn (its title bar included), a minimized one as it was; with
+        shadow 1 over its shadow, the shadow's room around it transparent. Written to fd as a PNG;
+        the capture's done event follows.
+      </description>
+      <arg name="id" type="new_id" interface="sl_capture_v1"/>
+      <arg name="window" type="uint"/>
+      <arg name="shadow" type="uint"/>
+      <arg name="fd" type="fd"/>
+    </request>
+    <request name="capture_screen">
+      <description summary="the screen as it is drawn, this rectangle of it, as a PNG to fd"/>
+      <arg name="id" type="new_id" interface="sl_capture_v1"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="fd" type="fd"/>
+    </request>
+
+    <request name="pick_window">
+      <description summary="the window at this point of the screen (screencapture's window mode)">
+        The capture's done event says which (its x: the window, 0 for none).
+      </description>
+      <arg name="id" type="new_id" interface="sl_capture_v1"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </request>
+
+    <event name="window">
+      <description summary="a window, new or changed">
+        Its frame (title bar included) on the screen, the application's pid and app_id (X11:
+        WM_CLASS's class), its title, the flags, and the D-Bus menu of the application (the
+        org_kde_kwin_appmenu or _KDE_NET_WM_APPMENU address, empty when none).
+      </description>
+      <arg name="window" type="uint"/>
+      <arg name="pid" type="uint"/>
+      <arg name="app_id" type="string"/>
+      <arg name="title" type="string"/>
+      <arg name="flags" type="uint" enum="window_flags"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="menu_service" type="string"/>
+      <arg name="menu_path" type="string"/>
+    </event>
+    <event name="window_removed">
+      <arg name="window" type="uint"/>
+    </event>
+    <event name="order">
+      <description summary="the windows, bottom to top (an array of uint32)"/>
+      <arg name="windows" type="array"/>
+    </event>
+    <event name="active">
+      <description summary="the key window, 0 when none (the desktop, a shell layer)"/>
+      <arg name="window" type="uint"/>
+    </event>
+    <event name="front_app">
+      <description summary="the application in front without a window (set_front_app), pid 0 for none">
+        The serial changes each time one asks, so that the menu bar can tell a new request from
+        an old one.
+      </description>
+      <arg name="pid" type="uint"/>
+      <arg name="serial" type="uint"/>
+    </event>
+    <event name="work_area">
+      <description summary="the screen less the menu bar and the Dock (their exclusive zones)"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+    <event name="screen">
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+    <event name="hot_key">
+      <description summary="a symbolic hot key this connection registered was pressed"/>
+      <arg name="hot_key" type="uint"/>
+    </event>
+    <event name="key">
+      <description summary="a key for the application in front without a window">
+        Pressed while this connection's set_front_app holds and no window has the keyboard: the
+        keysym, the text it types, the modifiers (1 shift, 4 control, 8 alt, 64 command).
+      </description>
+      <arg name="keysym" type="uint"/>
+      <arg name="text" type="string"/>
+      <arg name="modifiers" type="uint"/>
+    </event>
+    <event name="done">
+      <description summary="the changes sent so far are a whole"/>
+    </event>
+  </interface>
+
+  <interface name="sl_capture_v1" version="1">
+    <request name="destroy" type="destructor"/>
+    <event name="done">
+      <description summary="the capture's result">
+        ok 1 when the PNG was written; x and y: where the window's frame is in the picture (the
+        shadow's room), or the window picked.
+      </description>
+      <arg name="ok" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </event>
+  </interface>
+</protocol>

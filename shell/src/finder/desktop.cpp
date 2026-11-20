@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "desktop.h"
+#include "desktopicons.h"
 
 #include "aqua.h"
 #include "assets.h"
@@ -44,6 +45,13 @@ DesktopWindow::DesktopWindow(QScreen *screen) : QWidget(nullptr, Qt::FramelessWi
     m_change.setSingleShot(false);
     connect(&m_change, &QTimer::timeout, this, &DesktopWindow::nextPicture);
     reload();
+    // the icons: on the main screen
+    if (screen == QGuiApplication::primaryScreen()) {
+        m_icons = new DesktopIcons(this);
+        setFocusPolicy(Qt::StrongFocus);
+        setMouseTracking(false);
+        connect(watch, &QFileSystemWatcher::directoryChanged, m_icons, &DesktopIcons::reload);
+    }
     // The screen saver: after the idle time Desktop & Screen Saver sets (screensaver.conf), its slideshow
     auto *idle = new QTimer(this);
     connect(idle, &QTimer::timeout, this, [] {
@@ -117,12 +125,56 @@ void DesktopWindow::paintEvent(QPaintEvent *e)
     QPainter p(this);
     p.drawImage(e->rect(), m_picture, QRectF(QPointF(e->rect().topLeft()) * devicePixelRatioF(),
                                               QSizeF(e->rect().size()) * devicePixelRatioF()));
+    if (m_icons)
+        m_icons->paint(p, e->rect());
+}
+
+void DesktopWindow::mouseDoubleClickEvent(QMouseEvent *e)
+{
+    if (m_icons && e->button() == Qt::LeftButton)
+        m_icons->mousePress(e->position().toPoint(), e->button(), e->modifiers(), 2);
+}
+
+void DesktopWindow::mouseMoveEvent(QMouseEvent *e)
+{
+    if (m_icons)
+        m_icons->mouseMove(e->position().toPoint());
+}
+
+void DesktopWindow::mouseReleaseEvent(QMouseEvent *e)
+{
+    if (m_icons && e->button() == Qt::LeftButton)
+        m_icons->mouseRelease(e->position().toPoint(), e->modifiers());
+}
+
+void DesktopWindow::keyPressEvent(QKeyEvent *e)
+{
+    if (!m_icons || !m_icons->keyPress(e->key(), e->modifiers(), e->text()))
+        QWidget::keyPressEvent(e);
+}
+
+void DesktopWindow::focusInEvent(QFocusEvent *)
+{
+    if (m_icons)
+        m_icons->setActive(true);
+}
+
+void DesktopWindow::focusOutEvent(QFocusEvent *)
+{
+    if (m_icons)
+        m_icons->setActive(false);
 }
 
 void DesktopWindow::mousePressEvent(QMouseEvent *e)
 {
     // Clicking the desktop makes the Finder the active application, as on the Mac
     X11::activate(xcb_window_t(winId()));
+    setFocus();
+    if (m_icons) {
+        m_icons->setActive(true);
+        m_icons->mousePress(e->position().toPoint(), e->button(), e->modifiers(), 1);
+        return;
+    }
     if (e->button() == Qt::RightButton || (e->button() == Qt::LeftButton && e->modifiers() & Qt::ControlModifier))
         showMenu(e->globalPosition().toPoint());
 }

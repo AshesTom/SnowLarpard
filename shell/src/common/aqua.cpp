@@ -21,7 +21,9 @@ namespace Aqua {
 
 void preinit()
 {
-    qputenv("QT_QPA_PLATFORM", "xcb");
+    // the session's window server: the Wayland one's (WindowServer-wayland says so to its session)
+    // or the X11 one's
+    qputenv("QT_QPA_PLATFORM", qgetenv("SNOWLEOPARD_WINDOW_SERVER") == "wayland" ? "wayland" : "xcb");
     qputenv("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1");
     // the shell's programs belong to the Snow Leopard session, not to the desktop they are started
     // from: without this, KDE's session manager saves them and starts them again at the next login

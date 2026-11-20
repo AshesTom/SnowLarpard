@@ -30,6 +30,136 @@
 static const QString dockRes = QStringLiteral("/System/Library/CoreServices/Dock.app/Contents/Resources/");
 static const QString coreTypes = QStringLiteral("/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/");
 
+// The Dock's measures with the glass floor, at the bottom (FUN_100064dff): the icons' line stands
+// (int)(6 + tile × 0.2) over the screen's edge (f58), the floor layer is that, a tile and 6 more
+// deep (f58 + f7c + f5c, f5c = ceil(6)), which the Dock also keeps of the screen; the tiles are
+// inset by 1 (DAT_10019dc62)
+static int iconLine(int tile) { return int(6 + tile * 0.2); }
+static int floorDepth(int tile) { return iconLine(tile) + tile + 6; }
+// The floor layer turned 0.9666 rad about x under a perspective of 1/1500 about its centre
+// (DOCKGlassFloorLayer): how far its back edge stands over its front, and how much it shrinks
+constexpr qreal FloorTilt = 0.966643893412244, FloorPerspective = 1.0 / 1500;
+static qreal floorShrink(int tile) { return 1 + floorDepth(tile) * std::sin(FloorTilt) * FloorPerspective; }
+static qreal floorSeen(int tile)
+{
+    const qreal d = floorDepth(tile);
+    return d / 2 + (d * std::cos(FloorTilt) - d / 2) / floorShrink(tile);
+}
+
+// A tile's shadow (DOCKTileShadowLayer setImage:): an alpha bitmap 32 wider and 16 taller than the
+// icon, where the icon is drawn just over the top with a shadow offset by the bitmap's height
+// (CGContextSetShadowWithColor: blur 10, black at 0.2), so only its shadow lands, the icon's own
+// place at the bottom left; the blur spreads right and up, what goes left or down is cut off.
+// Quartz's blur 10 is taken as a Gaussian of deviation 5 (three box passes).
+static QImage tileShadow(const QImage &icon)
+{
+    static QHash<qint64, QImage> cache;
+    if (auto it = cache.constFind(icon.cacheKey()); it != cache.constEnd())
+        return *it;
+    const int n = icon.width(), m = icon.height(), W = n + 32, Hh = m + 16;
+    QImage silhouette(W, Hh, QImage::Format_ARGB32_Premultiplied);
+    silhouette.fill(Qt::transparent);
+    {
+        QPainter sp(&silhouette);
+        sp.drawImage(QRect(0, 16, n, m), icon);
+    }
+    std::vector<float> a(size_t(W) * Hh), tmp(a.size());
+    for (int y = 0; y < Hh; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(silhouette.constScanLine(y));
+        for (int x = 0; x < W; ++x)
+            a[size_t(y) * W + x] = qAlpha(line[x]) / 255.0f;
+    }
+    // blur 10 at the bitmap's scale: three boxes of radius 5 make a deviation of about 5
+    const int r = 5;
+    auto pass = [&](bool across) {
+        const int len = across ? W : Hh, lines = across ? Hh : W;
+        for (int l = 0; l < lines; ++l) {
+            auto at = [&](int i) -> float & { return across ? a[size_t(l) * W + i] : a[size_t(i) * W + l]; };
+            auto out = [&](int i) -> float & { return across ? tmp[size_t(l) * W + i] : tmp[size_t(i) * W + l]; };
+            float sum = 0;
+            for (int i = -r; i <= r; ++i)
+                if (i >= 0 && i < len)
+                    sum += at(i);
+            for (int i = 0; i < len; ++i) {
+                out(i) = sum / (2 * r + 1);
+                if (i + r + 1 < len)
+                    sum += at(i + r + 1);
+                if (i - r >= 0)
+                    sum -= at(i - r);
+            }
+        }
+        a.swap(tmp);
+    };
+    for (int k = 0; k < 3; ++k) {
+        pass(true);
+        pass(false);
+    }
+    QImage shadow(W, Hh, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < Hh; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(shadow.scanLine(y));
+        for (int x = 0; x < W; ++x)
+            line[x] = qPremultiply(qRgba(0, 0, 0, qBound(0, int(std::lround(a[size_t(y) * W + x] * 0.2f * 255)), 255)));
+    }
+    if (cache.size() > 256)
+        cache.clear();
+    cache.insert(icon.cacheKey(), shadow);
+    return shadow;
+}
+
+// A label's text shadow (CGContextSetShadowWithColor: offset 0, −1, blur 2, black): the text in black
+// one down, through a Gaussian of deviation 1 (Quartz's blur taken as twice the deviation, as above).
+// Drawn with its baseline's start at labelShadowOrigin().
+static constexpr int LabelShadowMargin = 4;
+static QPointF labelShadowOrigin() { return QPointF(LabelShadowMargin, LabelShadowMargin + QFontMetricsF(Assets::uiFont(14)).ascent()); }
+
+static QImage labelShadow(const QString &text, const QFont &font)
+{
+    static QHash<QString, QImage> cache;
+    if (auto it = cache.constFind(text); it != cache.constEnd())
+        return *it;
+    const QFontMetricsF fm(font);
+    const int W = int(std::ceil(fm.horizontalAdvance(text))) + 2 * LabelShadowMargin,
+              H = int(std::ceil(fm.ascent() + fm.descent())) + 2 * LabelShadowMargin;
+    QImage glyphs(W, H, QImage::Format_ARGB32_Premultiplied);
+    glyphs.fill(Qt::transparent);
+    {
+        QPainter gp(&glyphs);
+        gp.setFont(font);
+        gp.setPen(Qt::black);
+        gp.drawText(labelShadowOrigin() + QPointF(0, 1), text);
+    }
+    static const float k[] = {0.006f, 0.061f, 0.242f, 0.383f, 0.242f, 0.061f, 0.006f};
+    std::vector<float> a(size_t(W) * H), tmp(a.size(), 0.0f);
+    for (int y = 0; y < H; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(glyphs.constScanLine(y));
+        for (int x = 0; x < W; ++x)
+            a[size_t(y) * W + x] = qAlpha(line[x]) / 255.0f;
+    }
+    for (bool across : {true, false}) {
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                float s = 0;
+                for (int i = -3; i <= 3; ++i) {
+                    const int xx = across ? x + i : x, yy = across ? y : y + i;
+                    if (xx >= 0 && xx < W && yy >= 0 && yy < H)
+                        s += k[i + 3] * a[size_t(yy) * W + xx];
+                }
+                tmp[size_t(y) * W + x] = s;
+            }
+        a.swap(tmp);
+    }
+    QImage shadow(W, H, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < H; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(shadow.scanLine(y));
+        for (int x = 0; x < W; ++x)
+            line[x] = qPremultiply(qRgba(0, 0, 0, qBound(0, int(std::lround(a[size_t(y) * W + x] * 255)), 255)));
+    }
+    if (cache.size() > 256)
+        cache.clear();
+    cache.insert(text, shadow);
+    return shadow;
+}
+
 static QString configFile()
 {
     return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/dock.conf";
@@ -118,6 +248,7 @@ void Dock::loadSettings()
     m_tileSize = qBound(16, s.value("tilesize", 64).toInt(), 128);
     m_largeSize = qBound(m_tileSize, s.value("largesize", 96).toInt(), 128);
     m_magnify = s.value("magnification", false).toBool();
+    m_minimizeToApp = s.value("minimize-to-application", false).toBool();
     bool autohide = s.value("autohide", false).toBool();
     if (autohide != m_autohide) {
         m_autohide = autohide;
@@ -142,6 +273,18 @@ void Dock::loadSettings()
         m_kept.removeAll("mac:/Applications/Dashboard.app");   // Dashboard is for later
         saveApps();
     }
+    // Safari isn't ported: its place goes to the web browser, as itself (Firefox's name and icon),
+    // once; Safari's tile comes back by itself the day it stands for something
+    const QString safari = QStringLiteral("mac:/Applications/Safari.app");
+    if (const int at = int(m_kept.indexOf(safari)); at >= 0 && !Apps::forMacBundle(safari.mid(4)).valid()) {
+        const App browser = Apps::webBrowser();
+        const QString entry = "app:" + browser.id;
+        if (browser.valid() && !m_kept.contains(entry))
+            m_kept[at] = entry;
+        else
+            m_kept.removeAt(at);
+        saveApps();
+    }
     m_iconCache.clear();
 }
 
@@ -162,18 +305,64 @@ static App appForEntry(const QString &entry)
     return {};
 }
 
+// A window of a Foreground application, as LaunchServices would type its process: not a panel or a
+// toolbox alone (utility and toolbar windows, the Linux side's LSUIElement), not a shell component's
+static bool foreground(xcb_window_t w, const App &a)
+{
+    if (a.uiElement)
+        return false;
+    return !X11::isPanel(w);
+}
+
 void Dock::refreshWindows()
 {
-    // Who runs: the windows, by application
+    // Who runs: the windows, by application. 10.6's Dock (FUN_1000117f1) makes a tile only for a
+    // process whose LaunchServices type is Foreground: LSUIElement and LSBackgroundOnly ones have none.
+    // An application with a panel among its windows still has its tile, by its other windows.
     QHash<QString, QVector<xcb_window_t>> windows;
     QHash<QString, App> running;
+    QHash<xcb_window_t, App> minimized;   // those with a tile of their own
     QStringList order;
+    QSet<QString> foregroundApps;
+    QVector<QPair<xcb_window_t, App>> clients;
     for (xcb_window_t w : X11::clientWindows()) {
-        App a = Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w));
+        const App a = Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w));
+        clients.append({w, a});
+        if (foreground(w, a))
+            foregroundApps.insert(a.id);
+    }
+    for (const auto &[w, a] : std::as_const(clients)) {
+        if (!foregroundApps.contains(a.id))
+            continue;
         if (!running.contains(a.id))
             order << a.id;
         running.insert(a.id, a);
         windows[a.id].append(w);
+        if (!m_minimizeToApp && X11::minimized(w) && !X11::hidden(w))
+            minimized.insert(w, a);
+    }
+    // the minimized windows keep their places, a new one comes last (by the Trash); a window back
+    // out of the Dock takes its picture with it
+    for (int i = m_minimized.size() - 1; i >= 0; --i)
+        if (!minimized.contains(m_minimized[i])) {
+            const QString prefix = "win:" + QString::number(m_minimized[i]) + ':';
+            for (auto it = m_iconCache.begin(); it != m_iconCache.end();)
+                it = it.key().startsWith(prefix) ? m_iconCache.erase(it) : std::next(it);
+            m_minimized.removeAt(i);
+        }
+    for (xcb_window_t w : X11::clientWindows())
+        if (minimized.contains(w) && !m_minimized.contains(w))
+            m_minimized.append(w);
+    // the shell's applications that run without a window (Preview launched alone): a Mac application
+    // keeps its light with no window open
+    QSet<QString> windowless;
+    for (const auto &[pid, a] : Apps::aquaKitApps()) {
+        Q_UNUSED(pid);
+        if (running.contains(a.id) || a.uiElement)
+            continue;
+        order << a.id;
+        running.insert(a.id, a);
+        windowless.insert(a.id);
     }
     QHash<QString, qint64> bouncing;
     for (const Tile &t : m_tiles)
@@ -184,7 +373,8 @@ void Dock::refreshWindows()
     QSet<QString> shown;
     auto add = [&](Tile t) {
         t.windows = windows.value(t.app.id);
-        t.bounceStart = bouncing.value(t.app.id, -1);
+        t.running = !t.windows.isEmpty() || windowless.contains(t.app.id);
+        t.bounceStart = t.running && t.windows.isEmpty() ? -1 : bouncing.value(t.app.id, -1);
         t.label = t.app.name;
         shown.insert(t.app.id);
         tiles.append(t);
@@ -227,6 +417,14 @@ void Dock::refreshWindows()
             m_stackCounts[dir] = int(QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size());
         }
     }
+    for (xcb_window_t w : std::as_const(m_minimized)) {
+        Tile m;
+        m.kind = Tile::Window;
+        m.window = w;
+        m.app = minimized.value(w);
+        m.label = X11::title(w);
+        tiles.append(m);
+    }
     Tile trash;
     trash.kind = Tile::Trash;
     trash.label = "Trash";
@@ -238,7 +436,34 @@ void Dock::refreshWindows()
     if (changedCount)
         placeWindow();
     layoutTiles();
+    publishIconGeometry();
     update();
+}
+
+// A tile's icon on the screen, as laid out now
+QRect Dock::tileRect(const Tile &t) const
+{
+    const qreal baseline = height() - iconLine(m_tileSize);
+    const QPoint topLeft = mapToGlobal(QPoint(qRound(t.x - t.size / 2), qRound(baseline - t.size)));
+    return QRect(topLeft, QSize(qRound(t.size), qRound(t.size)));
+}
+
+// Where each window goes when it's minimized and comes from when it's back (_NET_WM_ICON_GEOMETRY,
+// read by WindowServer for the genie): its own tile, or its application's. Written every time the
+// tiles change, even unchanged: the genie waits for it
+void Dock::publishIconGeometry()
+{
+    QHash<xcb_window_t, QRect> where;
+    for (const Tile &t : std::as_const(m_tiles))
+        if (t.kind == Tile::Application)
+            for (xcb_window_t w : t.windows)
+                where.insert(w, tileRect(t));
+    for (const Tile &t : std::as_const(m_tiles))   // a minimized one's own tile over its application's
+        if (t.kind == Tile::Window)
+            where.insert(t.window, tileRect(t));
+    for (auto it = where.cbegin(); it != where.cend(); ++it)
+        X11::setIconGeometry(it.key(), it.value());
+    X11::flush();
 }
 
 bool Dock::trashFull() const
@@ -254,6 +479,7 @@ QImage Dock::iconFor(const Tile &t, int size)
     case Tile::Application: key = "app:" + t.app.id; break;
     case Tile::Folder: key = "folder:" + t.folder + ':' + QString::number(m_stackStamp); break;
     case Tile::Trash: key = trashFull() ? "trash:full" : "trash:empty"; break;
+    case Tile::Window: key = "win:" + QString::number(t.window); break;
     case Tile::Separator: return {};
     }
     key += ':' + QString::number(size);
@@ -263,6 +489,22 @@ QImage Dock::iconFor(const Tile &t, int size)
     QImage img;
     if (t.kind == Tile::Application) {
         img = Apps::icon(t.app, size);
+    } else if (t.kind == Tile::Window) {
+        // 10.6's DOCKWindowTile: the window's picture in the tile, its application's icon over its
+        // bottom right corner, 48 of the tile's 128, 2 from the edges
+        img = QImage(size, size, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
+        QPainter p(&img);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+        const QImage shot = X11::preview(t.window);
+        if (!shot.isNull()) {
+            const QSizeF fit = QSizeF(shot.size()).scaled(size, size, Qt::KeepAspectRatio);
+            p.drawImage(QRectF((size - fit.width()) / 2, (size - fit.height()) / 2, fit.width(), fit.height()), shot);
+        }
+        const int badge = int(std::ceil(size * 48 / 128.0)), margin = qMax(1, size * 2 / 128);
+        const QImage icon = Apps::icon(t.app, badge);
+        if (!icon.isNull())
+            p.drawImage(QRect(size - badge - margin, size - badge - margin, badge, badge), icon);
     } else if (t.kind == Tile::Trash) {
         img = Assets::image(dockRes + (key.startsWith("trash:full") ? "trashfull.png" : "trashempty.png"), QSize(size, size));
     } else {
@@ -331,13 +573,13 @@ void Dock::placeWindow()
     setGeometry(screen.x(), screen.bottom() - h + 1, screen.width(), h);
     layoutTiles();
     winId();
-    int floorH = qRound(m_tileSize * 0.82);
-    X11::setDock(this, 0, m_autohide ? 0 : m_tileSize + floorH / 3 + 4);
+    const int floorH = qCeil(floorSeen(m_tileSize));
+    X11::setDock(this, 0, m_autohide ? 0 : floorDepth(m_tileSize));
     // Clicks go through the empty part, unless the pointer is in (names, magnification)
     if (m_tiles.isEmpty())
         return;
     qreal left = m_tiles.first().x - m_tiles.first().size - floorH, right = m_tiles.last().x + m_tiles.last().size + floorH;
-    int band = m_tileSize + floorH / 3 + 4;
+    int band = floorDepth(m_tileSize);
     const QRegion strip(0, h - 2, width(), 2), shelf(int(left), h - band - 4, int(right - left), band + 4);
     if (!m_wallpaper.isNull()) {
         // no compositor: the paint shapes the window to the Dock (what isn't drawn shows the windows
@@ -374,6 +616,19 @@ void Dock::paintEvent(QPaintEvent *)
     QPainter p(this);
     const QPoint origin = geometry().topLeft() - QGuiApplication::primaryScreen()->geometry().topLeft();
     p.drawImage(QPoint(0, 0), m_wallpaper, QRect(origin, size()));
+    // the magic mirror, as the window server would draw it: the desktop picture over the floor,
+    // turned over its back edge
+    if (m_floorQuad.size() == 4 && m_hideOffset < 0.99) {
+        const qreal top = m_floorQuad.boundingRect().top();
+        p.save();
+        QPainterPath clip;
+        clip.addPolygon(m_floorQuad);
+        p.setClipPath(clip);
+        p.translate(0, 2 * top);
+        p.scale(1, -1);
+        p.drawImage(QPoint(0, 0), m_wallpaper, QRect(origin, size()));
+        p.restore();
+    }
     p.drawImage(QPoint(0, 0), content);
 }
 
@@ -387,19 +642,89 @@ void Dock::paintDock(QPainter &p)
     p.translate(0, shift);
 
     const qreal H = height();
-    // Proportions measured on 10.6's Dock: the floor is 0.82 of an icon deep, its back edge a tenth of an
-    // icon past the outer icons, its front edge three quarters of its depth further out.
-    const qreal floorH = qRound(m_tileSize * 0.82);
+    // The floor (DOCKGlassFloorLayer): the scurve layer, anchored at its bottom's middle, turned
+    // about x (setOrientation:) under the floor's perspective (initWithOrientation:'s
+    // sublayerTransform, m34): its back edge stands floorSeen() over the front and shrinks towards
+    // the middle by floorShrink(). The back edge a tenth of an icon past the outer icons is measured.
+    const qreal floorH = floorSeen(m_tileSize);
+    const qreal w = floorShrink(m_tileSize);
     const qreal margin = m_tileSize * 0.1;
-    const qreal inset = floorH * 0.75;
-    qreal backLeft = m_tiles.first().x - m_tiles.first().size / 2 - margin;
-    qreal backRight = m_tiles.last().x + m_tiles.last().size / 2 + margin;
-    qreal left = backLeft - inset, right = backRight + inset;
+    const qreal backLeft = m_tiles.first().x - m_tiles.first().size / 2 - margin;
+    const qreal backRight = m_tiles.last().x + m_tiles.last().size / 2 + margin;
+    const qreal mid = (backLeft + backRight) / 2, half = (backRight - backLeft) / 2 * w;
+    const qreal left = mid - half, right = mid + half;
     QPolygonF floor({QPointF(backLeft, H - floorH), QPointF(backRight, H - floorH), QPointF(right, H), QPointF(left, H)});
     m_floor = floor.boundingRect();
+    // Quartz's magic mirror under the glass (the Dock's CGSSetMagicMirror on the floor's quadrangle,
+    // position 1 at the bottom): the window server shows there what is over the floor, turned over
+    {
+        m_floorQuad = p.transform().map(floor);
+        QPolygon quad;
+        for (const QPointF &pt : floor)
+            quad << (p.transform().map(pt) * dpr).toPoint();
+        X11::setMagicMirror(this, m_hideOffset > 0.99 ? 0 : 1, quad);
+    }
 
-    // The glass floor: the DVD's scurve texture mapped on the trapezoid
-    QString texture = m_tileSize <= 40 ? "scurve-sm.png" : m_tileSize <= 64 ? "scurve-m.png" : m_tileSize <= 96 ? "scurve-l.png" : "scurve-xl.png";
+    const qreal baseline = H - iconLine(m_tileSize);   // where the tiles stand
+    static QImage separator = Assets::image(dockRes + "separator.png");
+
+    // The tiles' shadows, under everything (inserted at index 0, Tile setGlobalFrame:): the shadow
+    // bitmap on the tile (inset by 1) raised by 3 (1 under 24 points, 2 under 36), grown by 32 and 16
+    // of the bitmap's points right and up
+    for (int i = 0; i < m_tiles.size(); ++i) {
+        Tile &t = m_tiles[i];
+        if (t.kind == Tile::Separator)
+            continue;
+        QImage icon = iconFor(t, qMax(m_largeSize, m_tileSize) * int(std::ceil(dpr)));
+        if (icon.isNull())
+            continue;
+        qreal bounce = 0;
+        if (t.bounceStart >= 0)
+            bounce = std::abs(std::sin((m_clock.elapsed() - t.bounceStart) / 600.0 * M_PI)) * m_tileSize * 0.6;
+        const QRectF ir = QRectF(t.x - t.size / 2, baseline - t.size - bounce, t.size, t.size).adjusted(1, 1, -1, -1);
+        const qreal raise = ir.width() < 24 ? 1 : ir.width() < 36 ? 2 : 3, s = ir.width() / icon.width();
+        const QImage shadow = tileShadow(icon);
+        p.setOpacity(i == m_dragging ? 0.5 : 1);
+        p.drawImage(QRectF(ir.left(), ir.bottom() - raise - ir.height() - std::round(16 * s), ir.width() + std::round(32 * s),
+                           ir.height() + std::round(16 * s)),
+                    shadow);
+        p.setOpacity(1);
+    }
+
+    // The reflections, under the floor (inserted below the floor layer). DOCKReflectionLayer: the
+    // icon turned over (a rotation of π about x) through a multiply gradient from white at 0.8 by the
+    // icon's foot to white at 0 at its top; placed (0x100063811) six points over the icons' line less
+    // the icon's lift, the icon's height down: mirrored about three points over its foot.
+    for (int i = 0; i < m_tiles.size(); ++i) {
+        Tile &t = m_tiles[i];
+        if (t.kind == Tile::Separator)
+            continue;
+        qreal bounce = 0;
+        if (t.bounceStart >= 0) {
+            qreal phase = (m_clock.elapsed() - t.bounceStart) / 600.0;
+            bounce = std::abs(std::sin(phase * M_PI)) * m_tileSize * 0.6;
+        }
+        QImage icon = iconFor(t, qMax(m_largeSize, m_tileSize) * int(std::ceil(dpr)));
+        if (icon.isNull())
+            continue;
+        QImage refl = icon.convertToFormat(QImage::Format_ARGB32_Premultiplied).mirrored(false, true);
+        {
+            QPainter rp(&refl);
+            rp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            QLinearGradient g(0, 0, 0, refl.height());
+            g.setColorAt(0, QColor(255, 255, 255, 204));
+            g.setColorAt(1, QColor(255, 255, 255, 0));
+            rp.fillRect(refl.rect(), g);
+        }
+        p.setOpacity(i == m_dragging ? 0.5 : 1);
+        p.drawImage(QRectF(t.x - t.size / 2 + 1, baseline - 5 + bounce, t.size - 2, t.size - 2), refl);
+        p.setOpacity(1);
+    }
+
+    // The glass: the scurve texture (by the screen's width: past 1680 xl, 1280 l, 900 m) on the
+    // turned plane, the front line along its front edge, two points in from each end
+    const int screenWidth = QGuiApplication::primaryScreen()->geometry().width();
+    QString texture = screenWidth > 1680 ? "scurve-xl.png" : screenWidth > 1280 ? "scurve-l.png" : screenWidth > 900 ? "scurve-m.png" : "scurve-sm.png";
     static QHash<QString, QImage> textures;
     if (!textures.contains(texture))
         textures.insert(texture, Assets::image(dockRes + texture));
@@ -420,23 +745,15 @@ void Dock::paintDock(QPainter &p)
         p.setBrush(g);
         p.drawPolygon(floor);
     }
-    // its edges: a bright back rim, the front line
-    p.setPen(QPen(QColor(255, 255, 255, 150), 1));
-    p.drawLine(floor[0], floor[1]);
-    p.setPen(QPen(QColor(255, 255, 255, 70), 1));
-    p.drawLine(floor[1], floor[2]);
-    p.drawLine(floor[3], floor[0]);
     static QImage front = Assets::image(dockRes + "frontline.png");
     if (!front.isNull())
-        p.drawImage(QRectF(left, H - 3, right - left, 3), front);
+        p.drawImage(QRectF(left + 2, H - front.height(), right - left - 4, front.height()), front);
     else
-        p.fillRect(QRectF(left, H - 2, right - left, 2), QColor(255, 255, 255, 120));
+        p.fillRect(QRectF(left + 2, H - 2, right - left - 4, 2), QColor(255, 255, 255, 120));
 
-    const qreal baseline = H - floorH * 0.32;   // where the icons stand
-    static QImage indicator = Assets::image(dockRes + "indicator_medium.png");
     static QImage indicatorSmall = Assets::image(dockRes + "indicator_small.png");
+    static QImage indicator = Assets::image(dockRes + "indicator_medium.png");
     static QImage indicatorLarge = Assets::image(dockRes + "indicator_large.png");
-    static QImage separator = Assets::image(dockRes + "separator.png");
     for (int i = 0; i < m_tiles.size(); ++i) {
         Tile &t = m_tiles[i];
         if (t.kind == Tile::Separator) {
@@ -452,23 +769,16 @@ void Dock::paintDock(QPainter &p)
             qreal phase = (m_clock.elapsed() - t.bounceStart) / 600.0;
             bounce = std::abs(std::sin(phase * M_PI)) * m_tileSize * 0.6;
         }
-        int px = qCeil(t.size * dpr);
         QImage icon = iconFor(t, qMax(m_largeSize, m_tileSize) * int(std::ceil(dpr)));
-        QRectF ir(t.x - t.size / 2, baseline - t.size - bounce, t.size, t.size);
+        const QRectF ir = QRectF(t.x - t.size / 2, baseline - t.size - bounce, t.size, t.size).adjusted(1, 1, -1, -1);
         if (i == m_dragging)
             p.setOpacity(0.5);
-        if (!icon.isNull()) {
-            // the reflection on the floor, faded
-            p.save();
-            p.setClipRegion(QRegion(floor.toPolygon()));
-            p.setOpacity(0.22 * p.opacity());
-            p.translate(0, baseline * 2 + 2 * bounce);
-            p.scale(1, -1);
+        // its shadow on the floor (DOCKFloorShadowLayer, under the tile, over the glass): the same
+        // bitmap squeezed into the tile's width and half its height, from its foot up
+        if (!icon.isNull())
+            p.drawImage(QRectF(ir.left(), ir.bottom() - int(ir.height() / 2), ir.width(), int(ir.height() / 2)), tileShadow(icon));
+        if (!icon.isNull())
             p.drawImage(ir, icon);
-            p.restore();
-            p.drawImage(ir, icon);
-        }
-        Q_UNUSED(px);
         // pressed: darker
         if (i == m_pressed && m_dragging < 0 && !icon.isNull()) {
             QImage dark = icon.convertToFormat(QImage::Format_ARGB32_Premultiplied);
@@ -481,7 +791,7 @@ void Dock::paintDock(QPainter &p)
         p.setOpacity(1);
         // the light under running applications
         // (the Finder always runs on the Mac: its light is always on)
-        if (t.kind == Tile::Application && (!t.windows.isEmpty() || t.app.id == "finder")) {
+        if (t.kind == Tile::Application && (t.running || t.app.id == "finder")) {
             const QImage &ind = m_tileSize >= 60 ? indicatorLarge : m_tileSize >= 40 ? indicator : indicatorSmall;
             if (!ind.isNull()) {
                 QSizeF s = ind.size();
@@ -497,19 +807,22 @@ void Dock::paintDock(QPainter &p)
     // The name over the icon under the pointer
     if (m_hover >= 0 && m_dragging < 0 && m_pressed < 0 && m_hideOffset < 0.01) {
         const Tile &t = m_tiles[m_hover];
+        // DOCKLabelLayer (-update, -init, -drawLayer:inContext:): the text 20 wider and its ascent and
+        // descent 4 taller, rounded by 10, in (30, 30, 30) at 0.6; white, 10 in, the baseline its
+        // descent and 4 over the bottom, unsmoothed, with a black shadow one down, blurred by 2
         QFont f = Assets::uiFont(14);
         QFontMetricsF fm(f);
-        qreal w = fm.horizontalAdvance(t.label) + 24, h = fm.height() + 6;
-        QRectF label(t.x - w / 2, baseline - t.size - h - 10, w, h);
-        label.moveLeft(qBound(4.0, label.left(), width() - w - 4));
+        const int w = int(fm.horizontalAdvance(t.label) + 20), h = int(fm.ascent() + fm.descent() + 4);
+        QRectF label(std::round(t.x - w / 2.0), std::round(baseline - t.size - h - 10), w, h);
+        label.moveLeft(qBound(4.0, label.left(), width() - w - 4.0));
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0, 0, 0, 40));
-        p.drawRoundedRect(label.translated(0, 1.5), h / 2, h / 2);
-        p.setBrush(QColor(40, 40, 40, 200));
-        p.drawRoundedRect(label, h / 2, h / 2);
+        p.setBrush(QColor(30, 30, 30, 153));
+        p.drawRoundedRect(label, 10, 10);
+        const QPointF at(label.left() + 10, label.bottom() - fm.descent() - 4);
+        p.drawImage(at - labelShadowOrigin(), labelShadow(t.label, f));
         p.setFont(f);
         p.setPen(Qt::white);
-        Aqua::drawText(p, label, Qt::AlignCenter, t.label);
+        p.drawText(at, t.label);
     }
 }
 
@@ -633,6 +946,9 @@ void Dock::activate(Tile &t)
         return;
     case Tile::Separator:
         return;
+    case Tile::Window:   // out of the Dock
+        X11::activate(t.window);
+        return;
     case Tile::Application:
         break;
     }
@@ -641,6 +957,8 @@ void Dock::activate(Tile &t)
             Apps::launch(finder, {QDir::homePath()});
         else if (!Apps::launch(t.app))
             return;
+        if (t.running)
+            return;   // running without a window: launched again, it comes forward (no bounce)
         t.bounceStart = m_clock.elapsed();
         m_anim.start();
         return;
@@ -698,12 +1016,10 @@ void Dock::showStack(int index)
             }
         };
         (*fill)(menu, t.folder);
-        if (!t.folder.startsWith("applications:")) {
-            menu->addSeparator();
-            const QString folder = t.folder;
-            menu->addAction(Assets::tr("/System/Library/CoreServices/Dock.app", "Localizable", "SHOW_IN_FINDER", "Open in Finder"),
-                            [folder] { Apps::launch(Apps::finder(), {folder}); });
-        }
+        menu->addSeparator();
+        const QString folder = Stacks::finderFolder(t.folder);
+        menu->addAction(Assets::tr("/System/Library/CoreServices/Dock.app", "Localizable", "SHOW_IN_FINDER", "Open in Finder"),
+                        [folder] { Apps::launch(Apps::finder(), {folder}); });
         menu->popupAbove(centre.x(), top);
         return;
     }
@@ -753,9 +1069,8 @@ void Dock::stackMenu(DockMenu *menu, const Tile &t)
         a->setChecked(st.view == value);
     }
     menu->addSeparator();
-    if (!folder.startsWith("applications:"))
-        menu->addAction(menuText("OPEN_FILENAME", "Open \u201c%@\u201d").replace("%@", t.label),
-                        [folder] { Apps::launch(Apps::finder(), {folder}); });
+    menu->addAction(menuText("OPEN_FILENAME", "Open \u201c%@\u201d").replace("%@", t.label),
+                    [folder] { Apps::launch(Apps::finder(), {Stacks::finderFolder(folder)}); });
 }
 
 void Dock::foldersChanged(const QString &path)
@@ -779,6 +1094,13 @@ void Dock::showMenu(int index, const QPoint &global)
     if (index < 0 || index >= m_tiles.size())
         return;
     Tile t = m_tiles[index];
+    if (t.kind == Tile::Window) {
+        // a minimized window's tile: its application's menu (10.6's DOCKWindowTile createMenu:)
+        auto app = std::find_if(m_tiles.cbegin(), m_tiles.cend(), [&](const Tile &a) { return a.kind == Tile::Application && a.app.id == t.app.id; });
+        if (app == m_tiles.cend())
+            return;
+        t = *app;
+    }
     auto *menu = new DockMenu(m_wallpaper, this);
     App finder = Apps::finder();
     if (t.kind == Tile::Trash) {
@@ -788,8 +1110,16 @@ void Dock::showMenu(int index, const QPoint &global)
     } else if (t.kind == Tile::Folder) {
         stackMenu(menu, t);
     } else {
-        for (xcb_window_t w : t.windows)
-            menu->addAction(X11::title(w), [w] { X11::activate(w); });
+        // its windows: the active one checked, a diamond before the minimized ones (as 10.6)
+        const xcb_window_t active = X11::activeWindow();
+        for (xcb_window_t w : t.windows) {
+            const bool minimized = X11::minimized(w) && !X11::hidden(w);
+            QAction *a = menu->addAction((minimized ? QStringLiteral("\u25C6 ") : QString()) + X11::title(w), [w] { X11::activate(w); });
+            if (w == active) {
+                a->setCheckable(true);
+                a->setChecked(true);
+            }
+        }
         if (!t.windows.isEmpty())
             menu->addSeparator();
         if (t.app.id != "finder") {
@@ -824,9 +1154,8 @@ void Dock::showMenu(int index, const QPoint &global)
     }
     Q_UNUSED(global);
     const Tile &tile = m_tiles[index];
-    const qreal floorH = qRound(m_tileSize * 0.82);
     // the tip a dozen pixels over the icon, as on 10.6
-    int iconTop = int(height() - floorH * 0.32 - tile.size) - 12;
+    int iconTop = int(height() - iconLine(m_tileSize) - tile.size) - 12;
     menu->popupAbove(mapToGlobal(QPoint(int(tile.x), 0)).x(), mapToGlobal(QPoint(0, iconTop)).y());
 }
 

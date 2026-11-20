@@ -2,15 +2,22 @@
 #include "aqua.h"
 #include "windowserver.h"
 
+#include <xcb/xcb_cursor.h>
+
 #include "artfile.h"
 #include "assets.h"
+#include "session.h"
+#include "desktopsettings.h"
 #include "x11.h"
 
 #include <QCoreApplication>
+#include <cmath>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QPainter>
 #include <QScreen>
+#include <QSettings>
+#include <QStandardPaths>
 #include <cmath>
 #include <cstdlib>
 #include <xcb/shape.h>
@@ -18,14 +25,7 @@
 
 using X11::atom;
 
-// The buttons' places in the title bar: 14 x 16 pieces, 7 px apart, from 8 px in (measured by eye on 10.6)
-static constexpr int ButtonLeft = 8, ButtonPitch = 21, ButtonTop = 3, ButtonWidth = 14, ButtonHeight = 16;
-// The toolbar button (titlebarcontrols' "toolbar", 20 x 13) of a window with a toolbar: 7 px from the
-// right, centred on the other buttons (measured on a 10.6 screenshot)
-static constexpr int ToolbarButtonRight = 7, ToolbarButtonTop = 5, ToolbarButtonWidth = 20, ToolbarButtonHeight = 13;
-// The proxy icon: 16 x 16 before the title, 4 px from it, the two centred together
-static constexpr int ProxyIconSize = 16, ProxyIconGap = 4, ProxyIconTop = 3;
-static constexpr int GripSize = 15;   // the size box's corner, where dragging resizes
+using Frame::GripSize;
 static constexpr uint32_t ICCCM_WithdrawnState = 0, ICCCM_NormalState = 1, ICCCM_IconicState = 3;
 
 WindowServer::WindowServer() {}
@@ -53,6 +53,28 @@ bool WindowServer::start()
         return false;
     }
     QCoreApplication::instance()->installNativeEventFilter(this);
+    // the arrow over the desktop and the frames (which inherit the root's): the cursor theme's
+    // (XCURSOR_THEME, the session's Snow Leopard cursors from CoreGraphics and HIServices)
+    // the theme in the X resources (Xcursor.theme, Xcursor.size), where libxcb-cursor and the
+    // applications' toolkits look, as a session's xrdb would put it
+    if (const char *theme = std::getenv("XCURSOR_THEME")) {
+        const char *size = std::getenv("XCURSOR_SIZE");
+        QByteArray resources;
+        for (const QByteArray &line : X11::bytes(m_root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING).split('\n'))
+            if (!line.isEmpty() && !line.startsWith("Xcursor.theme:") && !line.startsWith("Xcursor.size:"))
+                resources += line + '\n';
+        resources += QByteArray("Xcursor.theme:\t") + theme + "\nXcursor.size:\t" + (size ? size : "24") + "\n";
+        xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, m_root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING, 8,
+                            uint32_t(resources.size()), resources.constData());
+        xcb_flush(m_conn);
+    }
+    xcb_cursor_context_t *cursors = nullptr;
+    if (xcb_cursor_context_new(m_conn, setup, &cursors) >= 0) {
+        const uint32_t arrow = xcb_cursor_load_cursor(cursors, "default");
+        if (arrow != XCB_CURSOR_NONE)
+            xcb_change_window_attributes(m_conn, m_root, XCB_CW_CURSOR, &arrow);
+        xcb_cursor_context_free(cursors);
+    }
 
     // The compositor: the windows' shadows. A frame's is the key window's or another window's, a
     // panel's the other style's; none in full screen. Without it (no Composite, or another
@@ -67,6 +89,10 @@ bool WindowServer::start()
             return int(Compositor::PanelShadow);
         return int(c == m_active ? Compositor::KeyShadow : Compositor::WindowShadow);
     });
+
+    // the desktop picture at once, where the session would otherwise be black until the Finder's
+    // desktop is up (as the Mac's login shows the picture before the menu bar and the Dock)
+    paintDesktopPicture();
 
     // EWMH: who we are, what we do
     m_check = xcb_generate_id(m_conn);
@@ -167,9 +193,8 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     if (hints.size() >= 4 * 7) {
         const auto *h = reinterpret_cast<const uint32_t *>(hints.constData());
         hasPosition = (h[0] & 5) != 0;   // USPosition (1) | PPosition (4)
-        if (h[0] & 16)                   // PMinSize
-            c->minimum = QSize(int(h[5]), int(h[6]));
     }
+    readSizeHints(c);
     if (!existing)
         place(c, hasPosition && !c->geometry.topLeft().isNull());
     else
@@ -235,6 +260,7 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     }
 
     applyGeometry(c);
+    m_compositor.setOpacity(c->frame, c->opacity);
     xcb_map_window(m_conn, w);
     xcb_map_window(m_conn, c->grip);
     xcb_map_window(m_conn, c->frame);
@@ -245,6 +271,33 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     updateClientLists();
 }
 
+void WindowServer::paintDesktopPicture()
+{
+    if (m_screen.isEmpty())
+        return;
+    QImage img = Desktop::render(Desktop::load(), m_screen.size()).convertToFormat(QImage::Format_RGB32);
+    if (img.size() != m_screen.size())
+        return;
+    const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+    xcb_create_pixmap(m_conn, m_depth, pixmap, m_root, uint16_t(img.width()), uint16_t(img.height()));
+    const xcb_gcontext_t gc = xcb_generate_id(m_conn);
+    xcb_create_gc(m_conn, gc, pixmap, 0, nullptr);
+    const uint32_t maxBytes = xcb_get_maximum_request_length(m_conn) * 4 - 64;
+    const int rowsPerRequest = qMax(1, int(maxBytes / uint32_t(img.bytesPerLine())));
+    for (int y = 0; y < img.height(); y += rowsPerRequest) {
+        const int rows = qMin(rowsPerRequest, img.height() - y);
+        xcb_put_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, gc, uint16_t(img.width()), uint16_t(rows), 0, int16_t(y), 0,
+                      m_depth, uint32_t(img.bytesPerLine() * rows), img.constScanLine(y));
+    }
+    xcb_free_gc(m_conn, gc);
+    // the root's background (without the compositor, or before it draws), and the compositor's
+    xcb_change_window_attributes(m_conn, m_root, XCB_CW_BACK_PIXMAP, &pixmap);
+    xcb_clear_area(m_conn, 0, m_root, 0, 0, 0, 0);
+    m_compositor.setBackground(pixmap);
+    xcb_free_pixmap(m_conn, pixmap);   // the root and the picture keep it
+    xcb_flush(m_conn);
+}
+
 void WindowServer::unmanage(Client *c, bool destroyed)
 {
     if (!destroyed) {
@@ -253,6 +306,7 @@ void WindowServer::unmanage(Client *c, bool destroyed)
         xcb_change_save_set(m_conn, XCB_SET_MODE_DELETE, c->window);
         setWmState(c, ICCCM_WithdrawnState);
     }
+    m_compositor.dropSnapshot(c->window);
     xcb_destroy_window(m_conn, c->frame);   // and the grip with it
     m_byWindow.remove(c->window);
     m_byWindow.remove(c->frame);
@@ -277,6 +331,19 @@ void WindowServer::unmanage(Client *c, bool destroyed)
     updateClientLists();
 }
 
+void WindowServer::readSizeHints(Client *c)
+{
+    const QByteArray hints = X11::bytes(c->window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS);
+    c->minimum = c->maximum = QSize();
+    if (hints.size() < 4 * 9)
+        return;
+    const auto *h = reinterpret_cast<const uint32_t *>(hints.constData());
+    if (h[0] & 16)   // PMinSize
+        c->minimum = QSize(int(h[5]), int(h[6]));
+    if (h[0] & 32)   // PMaxSize
+        c->maximum = QSize(int(h[7]), int(h[8]));
+}
+
 void WindowServer::readProperties(Client *c)
 {
     QByteArray name = X11::bytes(c->window, atom("_NET_WM_NAME"), atom("UTF8_STRING"));
@@ -294,6 +361,10 @@ void WindowServer::readProperties(Client *c)
     // _MOTIF_WM_HINTS: flags, functions, decorations; decorations 0 means the program draws its own
     QVector<uint32_t> motif = X11::cardinals(c->window, atom("_MOTIF_WM_HINTS"), atom("_MOTIF_WM_HINTS"));
     c->decorated = !(motif.size() >= 3 && (motif[0] & 2) && motif[2] == 0);
+    // functions without MWM_FUNC_ALL (1), MWM_FUNC_MINIMIZE (8), MWM_FUNC_MAXIMIZE (16) nor
+    // MWM_FUNC_CLOSE (32): a titled window without buttons (AppKit hides the three then)
+    c->buttons = !(motif.size() >= 2 && (motif[0] & 1) && !(motif[1] & (1 | 8 | 16 | 32)));
+    c->utility = hasType(c->window, {"_NET_WM_WINDOW_TYPE_UTILITY"});
     QVector<uint32_t> unified = X11::cardinals(c->window, atom("_SNOWLEOPARD_UNIFIED_TOOLBAR"), XCB_ATOM_CARDINAL);
     c->unifiedToolbar = unified.isEmpty() ? 0 : int(unified[0]);
     c->hasToolbar = unified.size() > 1 ? unified[1] != 0 : c->unifiedToolbar > 0;
@@ -307,8 +378,13 @@ void WindowServer::readProperties(Client *c)
                 icon.setPixel(x, y, proxy[2 + y * icon.width() + x]);
         c->proxyIcon = icon;
     }
+    QVector<uint32_t> edited = X11::cardinals(c->window, atom("_SNOWLEOPARD_DOCUMENT_EDITED"), XCB_ATOM_CARDINAL);
+    c->documentEdited = !edited.isEmpty() && edited[0];
     QVector<uint32_t> rounded = X11::cardinals(c->window, atom("_SNOWLEOPARD_ROUNDED_BOTTOM"), XCB_ATOM_CARDINAL);
     c->roundedBottom = !rounded.isEmpty() && rounded[0];
+    c->outlined = !rounded.isEmpty();
+    QVector<uint32_t> opacity = X11::cardinals(c->window, atom("_NET_WM_WINDOW_OPACITY"), XCB_ATOM_CARDINAL);
+    c->opacity = opacity.isEmpty() ? 1.0 : opacity[0] / double(0xffffffffu);
     QVector<uint32_t> transient = X11::cardinals(c->window, XCB_ATOM_WM_TRANSIENT_FOR, XCB_ATOM_WINDOW);
     c->transientFor = transient.isEmpty() ? 0 : transient[0];
 }
@@ -357,14 +433,15 @@ void WindowServer::applyGeometry(Client *c)
 }
 
 // The frame's outline (CoreUI's CreateWindowPath): its top corners rounded, radius 4, its bottom ones
-// too for a textured window; whole pixels, those whose centre is in the corner's circle. The shadows
+// too for a textured window; whole pixels, those whose centre is in the corner's circle. An undecorated
+// window drawing its own frame (iTunes') has it when it says which bottom corners it has. The shadows
 // (AppKit's __NSSetWindowShadow) are the compositor's (compositor.cpp); AquaKit draws them on Wayland
 void WindowServer::applyShape(Client *c)
 {
     const QRect &g = c->geometry;
     const int w = qMax(1, g.width()), h = qMax(1, g.height() + c->titleHeight());
     QVector<xcb_rectangle_t> rects;
-    if (!c->decorated || c->fullscreen) {
+    if ((!c->decorated && !c->outlined) || c->fullscreen) {
         rects.append({0, 0, uint16_t(w), uint16_t(h)});
     } else {
         constexpr double r = 4;
@@ -397,32 +474,32 @@ void WindowServer::sendConfigureNotify(Client *c)
     xcb_send_event(m_conn, 0, c->window, XCB_EVENT_MASK_STRUCTURE_NOTIFY, reinterpret_cast<const char *>(&ev));
 }
 
-// ---- the title bar
+// ---- the title bar (frame.cpp's, as the Wayland server draws it)
 
-QImage WindowServer::buttonImage(const Client *c, int button) const
+Frame::TitleBar WindowServer::titleBar(const Client *c) const
 {
-    static const char *names[] = {"close", "minimize", "zoom", "toolbar"};
-    QStringList path = {"titlebarcontrols", names[button], button == ToolbarButton ? "colorsrgb" : "colorsryg", "regularwin"};
-    if (c != m_active)
-        path << "inactive";
-    else if (c->pressed == button)
-        path << "pressed";
-    else if (c->overButtons && button != ToolbarButton)
-        path << "rollover";   // the three show their glyphs together, as on the Mac
-    return ArtFile::element(path).single();
+    Frame::TitleBar t;
+    t.width = c->geometry.width();
+    t.title = c->title;
+    t.active = c == m_active;
+    t.utility = c->utility;
+    t.buttons = c->buttons;
+    t.hasToolbar = c->hasToolbar;
+    t.unifiedToolbar = c->unifiedToolbar;
+    t.proxyIcon = c->proxyIcon;
+    t.documentEdited = c->documentEdited;
+    t.pressed = c->pressed;
+    t.overButtons = c->overButtons;
+    return t;
 }
+
+QRect WindowServer::buttonRect(const Client *c, int b) const { return Frame::buttonRect(titleBar(c), b); }
 
 int WindowServer::buttonAt(const Client *c, QPoint p) const
 {
     if (!c->titleHeight())
         return None;
-    for (int b = Close; b <= Zoom; ++b)
-        if (QRect(ButtonLeft + b * ButtonPitch, ButtonTop, ButtonWidth, ButtonHeight).contains(p))
-            return b;
-    if (c->hasToolbar &&
-        QRect(c->geometry.width() - ToolbarButtonRight - ToolbarButtonWidth, ToolbarButtonTop, ToolbarButtonWidth, ToolbarButtonHeight).contains(p))
-        return ToolbarButton;
-    return None;
+    return Frame::buttonAt(titleBar(c), p);
 }
 
 void WindowServer::paintTitle(Client *c)
@@ -431,67 +508,7 @@ void WindowServer::paintTitle(Client *c)
     const int w = c->geometry.width();
     if (!th || w <= 0)
         return;
-    QImage img(w, th, QImage::Format_RGB32);
-    {
-        QPainter p(&img);
-        const bool active = c == m_active;
-        // Measured on 10.6 (Software Update's window): a white first row, then 239 down to 217, then a 153
-        // line over the content. The inactive bar: lighter, estimated.
-        if (c->unifiedToolbar > 0) {
-            // a unified window: the title bar's rows of the gradient its toolbar goes on with, no line under
-            for (int y = 0; y < th; ++y)
-                p.fillRect(0, y, w, 1, X11::unifiedToolbarColor(y, th + c->unifiedToolbar, active));
-        } else {
-            p.fillRect(0, 0, w, 1, QColor(255, 255, 255));
-            QLinearGradient g(0, 1, 0, th - 1);
-            g.setColorAt(0, active ? QColor(239, 239, 239) : QColor(246, 246, 246));
-            g.setColorAt(1, active ? QColor(217, 217, 217) : QColor(236, 236, 236));
-            p.fillRect(0, 1, w, th - 2, g);
-            p.fillRect(0, th - 1, w, 1, active ? QColor(153, 153, 153) : QColor(186, 186, 186));
-        }
-
-        for (int b = Close; b <= Zoom; ++b) {
-            QImage button = buttonImage(c, b);
-            if (!button.isNull())
-                p.drawImage(ButtonLeft + b * ButtonPitch, ButtonTop, button);
-            else {
-                static const QColor colors[] = {QColor(0xE0, 0x44, 0x3E), QColor(0xDE, 0xA1, 0x23), QColor(0x5E, 0xB5, 0x34)};
-                p.setRenderHint(QPainter::Antialiasing);
-                p.setBrush(active ? colors[b] : QColor(190, 190, 190));
-                p.setPen(Qt::NoPen);
-                p.drawEllipse(QRectF(ButtonLeft + b * ButtonPitch + 0.5, ButtonTop + 1.5, 13, 13));
-            }
-        }
-
-        // a window with a toolbar: the button that shows and hides it, at the right
-        if (c->hasToolbar) {
-            QImage button = buttonImage(c, ToolbarButton);
-            if (!button.isNull())
-                p.drawImage(w - ToolbarButtonRight - ToolbarButtonWidth, ToolbarButtonTop, button);
-        }
-
-        // the title, centred on the window, in Lucida Grande 13, engraved; the proxy icon before it
-        QFont font = Assets::uiFont(13);
-        p.setFont(font);
-        const int left = ButtonLeft + 3 * ButtonPitch + 6;
-        const bool proxy = !c->proxyIcon.isNull();
-        const int iconRoom = proxy ? ProxyIconSize + ProxyIconGap : 0;
-        const int room = w - 2 * left - iconRoom;
-        const QFontMetrics fm(font);
-        QString text = fm.elidedText(c->title, Qt::ElideMiddle, qMax(0, room));
-        const int groupWidth = iconRoom + fm.horizontalAdvance(text);
-        const int x = (w - groupWidth) / 2;
-        if (proxy) {
-            p.setOpacity(active ? 1 : 0.5);
-            p.drawImage(QRect(x, ProxyIconTop, ProxyIconSize, ProxyIconSize), c->proxyIcon);
-            p.setOpacity(1);
-        }
-        QRect r(x + iconRoom, 0, w - x - iconRoom, th - 1);
-        p.setPen(QColor(255, 255, 255, 120));
-        Aqua::drawText(p, r.translated(0, 1), Qt::AlignLeft | Qt::AlignVCenter, text);
-        p.setPen(active ? QColor(0x26, 0x26, 0x26) : QColor(0x7F, 0x7F, 0x7F));
-        Aqua::drawText(p, r, Qt::AlignLeft | Qt::AlignVCenter, text);
-    }
+    const QImage img = Frame::paintTitleBar(titleBar(c));
     // to the frame, a band of rows at a time within the request's limit
     const uint32_t maxBytes = xcb_get_maximum_request_length(m_conn) * 4 - 64;
     const int rowsPerRequest = qMax(1, int(maxBytes / uint32_t(img.bytesPerLine())));
@@ -586,11 +603,103 @@ void WindowServer::setNetState(Client *c)
     xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, c->window, atom("_NET_WM_STATE"), XCB_ATOM_ATOM, 32, states.size(), states.constData());
 }
 
-void WindowServer::minimize(Client *c)
+QRect WindowServer::frameRect(const Client *c) const
+{
+    const int th = c->titleHeight();
+    return QRect(c->geometry.x(), c->geometry.y() - th, c->geometry.width(), c->geometry.height() + th);
+}
+
+// Where the Dock shows the window (_NET_WM_ICON_GEOMETRY, which the Dock keeps on every window: its
+// minimized tile, or its application's), inset by 4 as 10.6's Dock does; the Dock's middle otherwise
+QRect WindowServer::iconGeometry(const Client *c) const
+{
+    const QVector<uint32_t> g = X11::cardinals(c->window, atom("_NET_WM_ICON_GEOMETRY"), XCB_ATOM_CARDINAL);
+    if (g.size() >= 4 && g[2] > 8 && g[3] > 8)
+        return QRect(int(g[0]), int(g[1]), int(g[2]), int(g[3])).adjusted(4, 4, -4, -4);
+    return QRect(m_screen.center().x() - 24, m_screen.bottom() - 56, 48, 48);
+}
+
+// The Dock's settings (dock.conf, com.apple.dock's keys): mineffect genie or scale. 10.6's Dock
+// takes genie-speed (0.5 s) for the genie, 0.25 s for the scale, ten times longer with Shift.
+Compositor::Effect WindowServer::minimizeEffect(double *seconds) const
+{
+    const QSettings dock(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/dock.conf",
+                         QSettings::IniFormat);
+    const bool scale = dock.value("mineffect", "genie").toString() == "scale";
+    *seconds = scale ? 0.25 : qBound(0.05, dock.value("genie-speed", 0.5).toDouble(), 5.0);
+    if (auto *r = xcb_query_pointer_reply(m_conn, xcb_query_pointer(m_conn, m_root), nullptr)) {
+        if (r->mask & XCB_MOD_MASK_SHIFT)
+            *seconds *= 10;
+        free(r);
+    }
+    return scale ? Compositor::Scale : Compositor::Genie;
+}
+
+// The window's picture for its tile in the Dock (_SNOWLEOPARD_WINDOW_PREVIEW: width, height, ARGB
+// pixels, as _NET_WM_ICON), 256 pixels at most each way
+void WindowServer::publishPreview(Client *c, QImage image)
+{
+    if (image.isNull()) {
+        // nothing composites: what the server shows of the frame
+        const QRect f = frameRect(c);
+        if (auto *r = xcb_get_image_reply(m_conn, xcb_get_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, c->frame, 0, 0, uint16_t(f.width()),
+                                                                uint16_t(f.height()), ~0u),
+                                          nullptr)) {
+            if (r->depth >= 24 && xcb_get_image_data_length(r) >= f.width() * f.height() * 4)
+                image = QImage(xcb_get_image_data(r), f.width(), f.height(), f.width() * 4,
+                               r->depth == 32 ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32).copy();
+            free(r);
+        }
+    }
+    if (image.isNull())
+        return;
+    if (image.width() > 256 || image.height() > 256)
+        image = image.scaled(256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    image = image.convertToFormat(QImage::Format_ARGB32);
+    QVector<uint32_t> data{uint32_t(image.width()), uint32_t(image.height())};
+    data.reserve(2 + image.width() * image.height());
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *line = reinterpret_cast<const uint32_t *>(image.constScanLine(y));
+        data.append(QVector<uint32_t>(line, line + image.width()));
+    }
+    xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, c->window, atom("_SNOWLEOPARD_WINDOW_PREVIEW"), XCB_ATOM_CARDINAL, 32,
+                        uint32_t(data.size()), data.constData());
+}
+
+void WindowServer::publishCapture(Client *c, bool shadow, xcb_window_t requestor)
+{
+    if (!requestor)
+        return;
+    QPoint offset;
+    const QImage image = m_compositor.capture(c->frame, shadow, &offset).convertToFormat(QImage::Format_ARGB32);
+    // width, height, the frame's place in it, then the pixels; appended in pieces (a request's longest)
+    const uint32_t head[4] = {uint32_t(image.width()), uint32_t(image.height()), uint32_t(offset.x()), uint32_t(offset.y())};
+    const xcb_atom_t prop = atom("_SNOWLEOPARD_WINDOW_CAPTURE");
+    xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, requestor, prop, XCB_ATOM_CARDINAL, 32, 4, head);
+    const int rowsAtOnce = qMax(1, 65536 / qMax(1, image.width()));
+    for (int y = 0; y < image.height(); y += rowsAtOnce) {
+        const int n = qMin(rowsAtOnce, image.height() - y);
+        xcb_change_property(m_conn, XCB_PROP_MODE_APPEND, requestor, prop, XCB_ATOM_CARDINAL, 32, uint32_t(image.width() * n),
+                            image.constScanLine(y));
+    }
+    // the end: a last empty append the requestor waits for (_SNOWLEOPARD_WINDOW_CAPTURE_DONE)
+    const uint32_t done = 1;
+    xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, requestor, atom("_SNOWLEOPARD_WINDOW_CAPTURE_DONE"), XCB_ATOM_CARDINAL, 32, 1,
+                        &done);
+}
+
+void WindowServer::minimize(Client *c, bool hide)
 {
     if (c->minimized)
         return;
     c->minimized = true;
+    c->hidden = hide;
+    if (hide) {   // hidden (⌘H): gone at once, no tile in the Dock
+        const uint32_t one = 1;
+        xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, c->window, atom("_SNOWLEOPARD_HIDDEN"), XCB_ATOM_CARDINAL, 32, 1, &one);
+    } else {      // its picture first, while it's shown: for the Dock's tile and the genie
+        publishPreview(c, m_compositor.snapshot(c->window, c->frame));
+    }
     xcb_unmap_window(m_conn, c->frame);   // the client stays mapped inside: no UnmapNotify from it
     setWmState(c, ICCCM_IconicState);
     setNetState(c);
@@ -605,6 +714,12 @@ void WindowServer::minimize(Client *c)
             setActiveProperty(0);
     }
     updateClientLists();
+    if (hide)
+        return;
+    // into the tile the Dock makes for it: the animation waits for the Dock to say where
+    double seconds = 0.5;
+    const Compositor::Effect effect = minimizeEffect(&seconds);
+    m_compositor.animate(c->window, c->frame, frameRect(c), iconGeometry(c), effect, true, seconds, true);
 }
 
 void WindowServer::unminimize(Client *c)
@@ -612,9 +727,19 @@ void WindowServer::unminimize(Client *c)
     if (!c->minimized)
         return;
     c->minimized = false;
+    if (c->hidden) {
+        c->hidden = false;
+        xcb_delete_property(m_conn, c->window, atom("_SNOWLEOPARD_HIDDEN"));
+    } else {   // out of its tile
+        double seconds = 0.5;
+        const Compositor::Effect effect = minimizeEffect(&seconds);
+        m_compositor.animate(c->window, c->frame, frameRect(c), iconGeometry(c), effect, false, seconds, false);
+    }
     xcb_map_window(m_conn, c->frame);
     setWmState(c, ICCCM_NormalState);
     setNetState(c);
+    xcb_delete_property(m_conn, c->window, atom("_SNOWLEOPARD_WINDOW_PREVIEW"));
+    updateClientLists();   // the Dock takes its tile away
 }
 
 void WindowServer::toggleZoom(Client *c)
@@ -700,27 +825,86 @@ void WindowServer::updateWorkArea()
 
 // ---- Command (Super) keys, as on the Mac: W closes, M minimizes, H hides, Q quits, Tab goes round
 
-static const xcb_keysym_t keyW = 0x77, keyM = 0x6d, keyH = 0x68, keyQ = 0x71, keyTab = 0xff09;
+static const xcb_keysym_t keyW = 0x77, keyM = 0x6d, keyH = 0x68, keyQ = 0x71, keyTab = 0xff09, key3 = 0x33, key4 = 0x34;
+
+// The symbolic hot keys (CGSSetSymbolicHotKey) the window server keeps for whoever registered them:
+// 28 ⇧⌘3, 29 ⌃⇧⌘3, 30 ⇧⌘4, 31 ⌃⇧⌘4, the screen shots' (SystemUIServer's ScreenCapture). A program
+// registers by the root's _SNOWLEOPARD_SYMBOLIC_HOTKEYS (pairs: hot key, window); the key pressed, its
+// window gets a _SNOWLEOPARD_HOTKEY message with the hot key's number, as the Mac's server sends the
+// registering connection its hot key event
+static int symbolicHotKey(xcb_keysym_t sym, uint16_t state)
+{
+    if (!(state & XCB_MOD_MASK_SHIFT) || (sym != key3 && sym != key4))
+        return -1;
+    return (sym == key3 ? 28 : 30) + ((state & XCB_MOD_MASK_CONTROL) ? 1 : 0);
+}
 
 void WindowServer::grabKeys()
 {
     if (!m_keySymbols)
         return;
-    for (xcb_keysym_t sym : {keyW, keyM, keyH, keyQ, keyTab}) {
+    for (xcb_keysym_t sym : {keyW, keyM, keyH, keyQ, keyTab, key3, key4}) {
         xcb_keycode_t *codes = xcb_key_symbols_get_keycode(m_keySymbols, sym);
         if (!codes)
             continue;
         for (xcb_keycode_t *k = codes; *k; ++k)
             // with and without Caps Lock and Num Lock
             for (uint16_t extra : {uint16_t(0), uint16_t(XCB_MOD_MASK_LOCK), uint16_t(XCB_MOD_MASK_2), uint16_t(XCB_MOD_MASK_LOCK | XCB_MOD_MASK_2)})
+            {
+                if (sym == key3 || sym == key4) {   // the screen shots' hot keys only
+                    for (uint16_t shot : {uint16_t(XCB_MOD_MASK_SHIFT), uint16_t(XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL)})
+                        xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | shot | extra), *k, XCB_GRAB_MODE_ASYNC,
+                                     XCB_GRAB_MODE_ASYNC);
+                    continue;
+                }
                 xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | extra), *k, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+                // ⇧⌘Q Log Out, ⌥⇧⌘Q at once (the Apple menu's: loginwindow's hot keys on the Mac)
+                if (sym == keyQ)
+                    for (uint16_t log : {uint16_t(XCB_MOD_MASK_SHIFT), uint16_t(XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_1)})
+                        xcb_grab_key(m_conn, 1, m_root, uint16_t(XCB_MOD_MASK_4 | log | extra), *k, XCB_GRAB_MODE_ASYNC,
+                                     XCB_GRAB_MODE_ASYNC);
+            }
         free(codes);
     }
+}
+
+xcb_window_t WindowServer::frontAppKeyboard()
+{
+    const QVector<uint32_t> front = X11::cardinals(m_root, atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
+    if (front.size() < 3 || !front[2])
+        return 0;
+    xcb_window_t focused = 0;
+    if (auto *r = xcb_get_input_focus_reply(m_conn, xcb_get_input_focus(m_conn), nullptr)) {
+        focused = r->focus;
+        free(r);
+    }
+    return focused == front[2] ? front[2] : 0;
 }
 
 void WindowServer::handleKey(xcb_key_press_event_t *e)
 {
     xcb_keysym_t sym = xcb_key_symbols_get_keysym(m_keySymbols, e->detail, 0);
+    if (const int hotKey = symbolicHotKey(sym, e->state); hotKey >= 0) {
+        const QVector<uint32_t> owners = X11::cardinals(m_root, atom("_SNOWLEOPARD_SYMBOLIC_HOTKEYS"), XCB_ATOM_CARDINAL);
+        for (int i = 0; i + 1 < owners.size(); i += 2)
+            if (int(owners[i]) == hotKey) {
+                xcb_client_message_event_t ev = {};
+                ev.response_type = XCB_CLIENT_MESSAGE;
+                ev.format = 32;
+                ev.window = owners[i + 1];
+                ev.type = atom("_SNOWLEOPARD_HOTKEY");
+                ev.data.data32[0] = uint32_t(hotKey);
+                ev.data.data32[1] = e->time;
+                xcb_send_event(m_conn, 0, owners[i + 1], XCB_EVENT_MASK_NO_EVENT, reinterpret_cast<const char *>(&ev));
+                xcb_flush(m_conn);
+                break;
+            }
+        return;
+    }
+    if (sym == keyQ && (e->state & XCB_MOD_MASK_SHIFT)) {
+        Session::logOut(!(e->state & XCB_MOD_MASK_1));
+        return;
+    }
     Client *c = m_active;
     auto sameApplication = [](Client *a, Client *b) { return X11::wmClass(a->window) == X11::wmClass(b->window); };
     if (sym == keyTab) {
@@ -734,8 +918,29 @@ void WindowServer::handleKey(xcb_key_press_event_t *e)
             }
         return;
     }
+    // an application in front without a window has the keyboard (its window off the screen, the root's
+    // _SNOWLEOPARD_FRONT_APP's third value): ⌘Q, ⌘H... are its menus'
+    if (const xcb_window_t keys = frontAppKeyboard()) {
+        xcb_key_press_event_t k = *e;
+        k.event = keys;
+        k.child = XCB_NONE;
+        k.same_screen = 1;
+        xcb_send_event(m_conn, 0, keys, XCB_EVENT_MASK_KEY_PRESS, reinterpret_cast<const char *>(&k));
+        xcb_flush(m_conn);
+        return;
+    }
     if (!c)
         return;
+    // a key the application's own menus answer (_SNOWLEOPARD_KEY_EQUIVALENTS): given to its window
+    if (X11::cardinals(c->window, atom("_SNOWLEOPARD_KEY_EQUIVALENTS"), XCB_ATOM_CARDINAL).contains(sym)) {
+        xcb_key_press_event_t k = *e;
+        k.event = c->window;
+        k.child = XCB_NONE;
+        k.same_screen = 1;
+        xcb_send_event(m_conn, 0, c->window, XCB_EVENT_MASK_KEY_PRESS, reinterpret_cast<const char *>(&k));
+        xcb_flush(m_conn);
+        return;
+    }
     if (sym == keyW)
         close(c);
     else if (sym == keyM)
@@ -743,7 +948,7 @@ void WindowServer::handleKey(xcb_key_press_event_t *e)
     else if (sym == keyH) {
         for (Client *o : QVector<Client *>(m_clients))
             if (sameApplication(o, c))
-                minimize(o);
+                minimize(o, true);
     } else if (sym == keyQ) {
         for (Client *o : QVector<Client *>(m_clients))
             if (sameApplication(o, c))
@@ -800,18 +1005,35 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
     }
     case XCB_PROPERTY_NOTIFY: {
         auto *e = reinterpret_cast<xcb_property_notify_event_t *>(ev);
+        // an application came in front without a window and took the keyboard: no window is key
+        if (e->window == m_root && e->atom == atom("_SNOWLEOPARD_FRONT_APP") && m_active && frontAppKeyboard()) {
+            Client *old = m_active;
+            m_active = nullptr;
+            setActiveProperty(0);
+            paintTitle(old);
+            m_compositor.damageAll();
+            xcb_flush(m_conn);
+        }
         if (Client *c = find(e->window); c && e->window == c->window) {
             if (e->atom == XCB_ATOM_WM_NAME || e->atom == atom("_NET_WM_NAME")) {
                 readProperties(c);
                 paintTitle(c);
-            } else if (e->atom == atom("_SNOWLEOPARD_UNIFIED_TOOLBAR") || e->atom == atom("_SNOWLEOPARD_PROXY_ICON")) {
+            } else if (e->atom == atom("_SNOWLEOPARD_UNIFIED_TOOLBAR") || e->atom == atom("_SNOWLEOPARD_PROXY_ICON") ||
+                       e->atom == atom("_SNOWLEOPARD_DOCUMENT_EDITED")) {
                 readProperties(c);
                 paintTitle(c);
             } else if (e->atom == atom("_SNOWLEOPARD_ROUNDED_BOTTOM")) {
                 readProperties(c);
                 applyShape(c);
+            } else if (e->atom == XCB_ATOM_WM_NORMAL_HINTS) {
+                readSizeHints(c);   // a window whose limits change (iTunes' mini player)
             } else if (e->atom == atom("WM_PROTOCOLS") || e->atom == XCB_ATOM_WM_HINTS) {
                 readProperties(c);
+            } else if (e->atom == atom("_NET_WM_WINDOW_OPACITY")) {
+                readProperties(c);
+                m_compositor.setOpacity(c->frame, c->opacity);
+            } else if (e->atom == atom("_NET_WM_ICON_GEOMETRY") && c->minimized) {
+                m_compositor.retarget(c->window, iconGeometry(c));   // the Dock made its tile
             }
         } else if (m_docks.contains(e->window) && (e->atom == atom("_NET_WM_STRUT_PARTIAL") || e->atom == atom("_NET_WM_STRUT"))) {
             updateWorkArea();
@@ -952,7 +1174,7 @@ void WindowServer::motion(xcb_motion_notify_event_t *e)
         // the buttons' glyphs while the pointer is over them
         Client *c = find(e->event);
         if (c && e->event == c->frame) {
-            bool over = QRect(ButtonLeft, ButtonTop, 2 * ButtonPitch + ButtonWidth, ButtonHeight).contains(e->event_x, e->event_y);
+            bool over = buttonRect(c, Close).united(buttonRect(c, Zoom)).contains(e->event_x, e->event_y);
             if (over != c->overButtons) {
                 c->overButtons = over;
                 paintTitle(c);
@@ -973,9 +1195,11 @@ void WindowServer::motion(xcb_motion_notify_event_t *e)
         sendConfigureNotify(c);
         xcb_flush(m_conn);
     } else if (m_drag == Resizing) {
-        QSize minimum = c->minimum.expandedTo(QSize(3 * ButtonPitch + 40, 40));
-        c->geometry.setSize(QSize(qMax(minimum.width(), m_dragGeometry.width() + delta.x()),
-                                  qMax(minimum.height(), m_dragGeometry.height() + delta.y())));
+        QSize minimum = c->minimum.expandedTo(QSize(Frame::MinimumWidth, 40));
+        QSize size(qMax(minimum.width(), m_dragGeometry.width() + delta.x()), qMax(minimum.height(), m_dragGeometry.height() + delta.y()));
+        if (!c->maximum.isEmpty())
+            size = size.boundedTo(c->maximum.expandedTo(minimum));
+        c->geometry.setSize(size);
         c->zoomed = false;
         applyGeometry(c);
         paintTitle(c);
@@ -1043,8 +1267,14 @@ void WindowServer::clientMessage(xcb_client_message_event_t *e)
         return;
     } else if (e->type == atom("_NET_CLOSE_WINDOW")) {
         close(c);
+    } else if (e->type == atom("_SNOWLEOPARD_CAPTURE_WINDOW")) {
+        // screencapture's window mode (CGSHWCaptureWindowList): data 0, 1 its shadow too; data 1, the
+        // window that wants the picture, in its _SNOWLEOPARD_WINDOW_CAPTURE
+        publishCapture(c, e->data.data32[0] & 1, e->data.data32[1]);
     } else if (e->type == atom("WM_CHANGE_STATE") && e->data.data32[0] == ICCCM_IconicState) {
         minimize(c);
+    } else if (e->type == atom("_SNOWLEOPARD_HIDE")) {
+        minimize(c, true);
     } else if (e->type == atom("_NET_WM_STATE")) {
         // data: action (0 remove, 1 add, 2 toggle), two properties
         const uint32_t action = e->data.data32[0];
@@ -1058,6 +1288,18 @@ void WindowServer::clientMessage(xcb_client_message_event_t *e)
                     toggleZoom(c);
             } else if (prop == atom("_NET_WM_STATE_HIDDEN") && action == 1) {
                 minimize(c);
+            } else if (prop == atom("_NET_WM_STATE_ABOVE")) {
+                // -[NSWindow setLevel:] to the floating level and back (a Stickies note's Floating Window)
+                const bool want = action == 2 ? !c->floating : action == 1;
+                c->floating = want;
+                c->keptStates.removeAll(prop);
+                if (want)
+                    c->keptStates << prop;
+                setNetState(c);
+                if (want)
+                    raise(c);
+                else
+                    restackLayers();
             }
         }
     }

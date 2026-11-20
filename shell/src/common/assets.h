@@ -22,6 +22,11 @@ bool exists(const QString &macPath);
 // size keeps the file's own.
 QImage image(const QString &macPath, const QSize &size = {});
 QPixmap pixmap(const QString &macPath, const QSize &size, qreal dpr);
+// Every picture is matched to the screen as ColorSync does on 10.6: one tagged with a profile
+// (Generic RGB, gamma 1.8; a PNG gAMA of 0.55) is converted to sRGB, lighter in its middle tones
+QImage matched(QImage img);
+// (the Dock's art too: Core Animation matches a layer's contents to its context's colour space,
+// CA::Render::create_image → create_image_by_rendering, "needs color matching")
 
 // A bundle's icon (CFBundleIconFile of its Info.plist), e.g. "/Applications/Safari.app".
 QString bundleIcon(const QString &bundlePath);

@@ -7,6 +7,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -258,7 +260,15 @@ bool Operation::copyFile(const std::string &from, const std::string &to)
             break;
         bytesDone += n;
     }
-    // the dates kept, as the Finder keeps them
+    // the extended attributes (the FinderInfo, its label) and the dates kept, as the Finder keeps them
+    char names[4096];
+    const ssize_t len = flistxattr(in, names, sizeof names);
+    for (ssize_t at = 0; at < len; at += ssize_t(std::strlen(names + at)) + 1) {
+        char value[65536];
+        const ssize_t vn = fgetxattr(in, names + at, value, sizeof value);
+        if (vn >= 0)
+            fsetxattr(out, names + at, value, size_t(vn), 0);
+    }
     const struct timespec times[2] = {st.st_atim, st.st_mtim};
     futimens(out, times);
     close(in);
@@ -337,6 +347,40 @@ bool Operation::moveItem(const std::string &from, const std::string &to)
     return copyItem(from, to) && !cancelled && removeItem(from);
 }
 
+// Secure Empty Trash: every file under the path written over with zeros, then synced, before it goes
+void Operation::overwrite(const std::string &path)
+{
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0)
+        return;
+    if (S_ISDIR(st.st_mode)) {
+        if (DIR *d = opendir(path.c_str())) {
+            std::vector<std::string> names;
+            while (dirent *e = readdir(d))
+                if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, ".."))
+                    names.push_back(e->d_name);
+            closedir(d);
+            for (const std::string &n : names)
+                overwrite(join(path, n));
+        }
+        return;
+    }
+    if (!S_ISREG(st.st_mode))
+        return;
+    const int fd = open(path.c_str(), O_WRONLY);
+    if (fd < 0)
+        return;
+    static const char zeros[65536] = {};
+    for (off_t left = st.st_size; left > 0 && !cancelled;) {
+        const ssize_t n = write(fd, zeros, size_t(std::min<off_t>(left, sizeof zeros)));
+        if (n <= 0)
+            break;
+        left -= n;
+    }
+    fsync(fd);
+    close(fd);
+}
+
 bool Operation::trashItem(const std::string &path)
 {
     // files/ the item under a name of its own there, info/<name>.trashinfo where it came from
@@ -357,15 +401,45 @@ bool Operation::trashItem(const std::string &path)
         std::ofstream out(info + "/" + name + ".trashinfo");
         out << "[Trash Info]\nPath=" << percentEncoded(path) << "\nDeletionDate=" << date << "\n";
     }
-    if (moveItem(path, join(files, name)))
+    if (moveItem(path, join(files, name))) {
+        std::lock_guard<std::mutex> l(m_lock);
+        m_results.push_back(join(files, name));
         return true;
+    }
     std::remove((info + "/" + name + ".trashinfo").c_str());
     return false;
 }
 
+std::string Operation::freeName(const std::string &folder, const std::string &name, bool isFolder) { return uniqueName(folder, name, isFolder); }
+
+std::string Operation::trashOrigin(const std::string &trashed)
+{
+    const std::string info = dirName(trashFiles()) + "/info/" + fileName(trashed) + ".trashinfo";
+    std::ifstream in(info);
+    std::string line;
+    while (std::getline(in, line))
+        if (line.rfind("Path=", 0) == 0) {
+            // percent-decoded
+            std::string p, enc = line.substr(5);
+            for (size_t i = 0; i < enc.size(); ++i)
+                if (enc[i] == '%' && i + 2 < enc.size()) {
+                    p += char(std::stoi(enc.substr(i + 1, 2), nullptr, 16));
+                    i += 2;
+                } else {
+                    p += enc[i];
+                }
+            if (!p.empty() && p[0] != '/')
+                p = dirName(dirName(dirName(trashFiles()))) + "/" + p;   // relative to the Trash's volume
+            return p;
+        }
+    return {};
+}
+
 void Operation::run()
 {
-    if (m_kind != Trash && m_kind != Move)
+    if (m_kind == PutBack || m_kind == Compress)
+        itemsLeft = int(m_sources.size());
+    else if (m_kind != Trash && m_kind != Move)
         for (const std::string &s : m_sources)
             count(s);
     else
@@ -445,6 +519,89 @@ void Operation::run()
             --itemsLeft;
         }
         break;
+    case PutBack:
+        // each item to its .trashinfo's place (its folder made again if it went)
+        for (const std::string &src : m_sources) {
+            if (cancelled)
+                break;
+            {
+                std::lock_guard<std::mutex> l(m_lock);
+                m_current = fileName(src);
+            }
+            const std::string origin = trashOrigin(src);
+            if (origin.empty()) {
+                --itemsLeft;
+                continue;
+            }
+            makePath(dirName(origin).empty() ? "/" : dirName(origin));
+            std::string to = origin;
+            if (exists(to)) {
+                struct stat st;
+                lstat(src.c_str(), &st);
+                to = join(dirName(origin), uniqueName(dirName(origin), fileName(origin), S_ISDIR(st.st_mode)));
+            }
+            if (moveItem(src, to)) {
+                std::remove((dirName(trashFiles()) + "/info/" + fileName(src) + ".trashinfo").c_str());
+                std::lock_guard<std::mutex> l(m_lock);
+                m_results.push_back(to);
+            }
+            --itemsLeft;
+        }
+        break;
+    case Compress: {
+        // Archive Utility's names: "<item>.zip" for one, "Archive.zip" for several (AR40), made free
+        const std::string folder = m_destination;
+        const std::string base = m_sources.size() == 1 ? fileName(m_sources.front()) : tr("AR40", "Archive");
+        const std::string zip = join(folder, uniqueName(folder, base + ".zip", false));
+        // zip(1), else libarchive's bsdtar writing a zip
+        auto inPath = [](const char *prog) {
+            const char *path = std::getenv("PATH");
+            std::string all = path ? path : "/usr/bin:/bin";
+            for (size_t start = 0; start <= all.size();) {
+                const size_t end = all.find(':', start);
+                const std::string dir = all.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                if (!dir.empty() && access((dir + "/" + prog).c_str(), X_OK) == 0)
+                    return true;
+                if (end == std::string::npos)
+                    break;
+                start = end + 1;
+            }
+            return false;
+        };
+        std::vector<std::string> args = inPath("zip") ? std::vector<std::string>{"zip", "-r", "-y", "-q", zip}
+                                                      : std::vector<std::string>{"bsdtar", "--format", "zip", "-cf", zip};
+        for (const std::string &src : m_sources)
+            args.push_back(fileName(src));
+        {
+            std::lock_guard<std::mutex> l(m_lock);
+            m_current = base;
+        }
+        const pid_t pid = fork();
+        if (pid == 0) {
+            if (chdir(folder.c_str()) != 0)
+                _exit(126);
+            std::vector<char *> argv;
+            for (std::string &a : args)
+                argv.push_back(a.data());
+            argv.push_back(nullptr);
+            execvp(argv[0], argv.data());
+            _exit(127);
+        }
+        int status = 0;
+        if (pid > 0)
+            waitpid(pid, &status, 0);
+        if (pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            std::lock_guard<std::mutex> l(m_lock);
+            m_results.push_back(zip);
+        } else {
+            std::remove(zip.c_str());
+            fail(WIFEXITED(status) && WEXITSTATUS(status) == 127 ? tr("AR22", "A resource can’t be created for compressing.")
+                                                                  : tr("AR24", "An error occurred while compressing a file."));
+        }
+        itemsLeft = 0;
+        break;
+    }
+    case SecureEmptyTrash:
     case EmptyTrash: {
         const std::string files = trashFiles(), info = dirName(files) + "/info";
         DIR *d = opendir(files.c_str());
@@ -468,6 +625,8 @@ void Operation::run()
             struct stat st;
             if (lstat(join(files, n).c_str(), &st) == 0 && S_ISREG(st.st_mode))
                 bytesDone += st.st_size;
+            if (m_kind == SecureEmptyTrash)
+                overwrite(join(files, n));
             removeItem(join(files, n));
             std::remove((info + "/" + n + ".trashinfo").c_str());
             --itemsLeft;

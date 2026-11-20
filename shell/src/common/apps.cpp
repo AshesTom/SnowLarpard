@@ -2,6 +2,7 @@
 #include "apps.h"
 
 #include "assets.h"
+#include "x11.h"
 
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -12,10 +13,14 @@
 #include <QHash>
 #include <QIcon>
 #include <QProcess>
+#include <QRegularExpression>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QUrl>
+
+#include <signal.h>
 
 namespace {
 
@@ -28,9 +33,6 @@ struct MacApp {
 const QVector<MacApp> &macApps()
 {
     static const QVector<MacApp> table = {
-        {"/Applications/Safari.app", "Safari",
-         {"firefox", "org.mozilla.firefox", "chromium", "google-chrome", "brave-browser", "org.gnome.Epiphany", "librewolf",
-          "vivaldi-stable", "zen", "zen-browser"}},
         {"/Applications/Mail.app", "Mail",
          {"org.mozilla.Thunderbird", "thunderbird", "net.thunderbird.Thunderbird", "org.kde.kmail2", "org.gnome.Evolution",
           "org.gnome.Geary", "betterbird"}},
@@ -48,6 +50,7 @@ const QVector<MacApp> &macApps()
         {"/Applications/DVD Player.app", "DVD Player", {"vlc"}},
         {"/Applications/TextEdit.app", "TextEdit", {"org.kde.kwrite", "org.gnome.TextEditor", "org.xfce.mousepad", "gedit"}},
         {"/Applications/Calculator.app", "Calculator", {"org.kde.kcalc", "org.gnome.Calculator", "qalculate-gtk"}},
+        {"/Applications/Stickies.app", "Stickies", {"org.kde.knotes", "xpad"}},
         {"/Applications/Dictionary.app", "Dictionary", {"org.gnome.Dictionary"}},
         {"/Applications/Font Book.app", "Font Book", {"org.gnome.font-viewer", "org.kde.kfontview"}},
         {"/Applications/Image Capture.app", "Image Capture", {"org.kde.skanlite", "simple-scan", "org.gnome.SimpleScan"}},
@@ -63,6 +66,64 @@ const QVector<MacApp> &macApps()
         {"/Applications/Utilities/Grab.app", "Grab", {"org.kde.spectacle", "org.gnome.Screenshot"}},
     };
     return table;
+}
+
+// The web browsers, first found first, when xdg-settings names none installed
+const QStringList &webBrowsers()
+{
+    static const QStringList list = {"firefox", "org.mozilla.firefox", "chromium", "google-chrome", "brave-browser",
+                                     "org.gnome.Epiphany", "librewolf", "vivaldi-stable", "zen", "zen-browser"};
+    return list;
+}
+
+// This desktop's names (XDG_CURRENT_DESKTOP, "SnowLeopard" in the session)
+const QStringList &currentDesktops()
+{
+    static const QStringList list = QString::fromLocal8Bit(qgetenv("XDG_CURRENT_DESKTOP")).split(':', Qt::SkipEmptyParts);
+    return list;
+}
+
+bool meantHere(const QStringList &onlyShowIn, const QStringList &notShowIn)
+{
+    for (const QString &d : currentDesktops())
+        if (notShowIn.contains(d, Qt::CaseInsensitive))
+            return false;
+    if (onlyShowIn.isEmpty())
+        return true;
+    for (const QString &d : currentDesktops())
+        if (onlyShowIn.contains(d, Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
+// LSUIElement or LSBackgroundOnly in an Info.plist (XML): "1", <true/>, or a non-zero integer
+bool uiElementIn(const QString &infoPlist)
+{
+    QFile f(infoPlist);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    static const QRegularExpression key(
+        QStringLiteral("<key>\\s*LS(UIElement|BackgroundOnly)\\s*</key>\\s*(<true\\s*/>|<string>\\s*(1|true|YES)\\s*</string>|<integer>\\s*[1-9]\\d*\\s*</integer>)"),
+        QRegularExpression::CaseInsensitiveOption);
+    return key.match(QString::fromUtf8(f.readAll())).hasMatch();
+}
+
+// A [Desktop Entry] list key ("Categories=a;b;") read from the file itself
+QStringList rawList(const QString &file, const char *key)
+{
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return {};
+    const QByteArray prefix = QByteArray(key) + '=';
+    bool entry = false;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (line.startsWith('['))
+            entry = line == "[Desktop Entry]";
+        else if (entry && line.startsWith(prefix))
+            return QString::fromUtf8(line.mid(prefix.size())).split(';', Qt::SkipEmptyParts);
+    }
+    return {};
 }
 
 const QStringList &fileManagers()
@@ -141,6 +202,11 @@ Catalog load()
             a.name = text("Name");
             a.exec = splitExec(text("Exec"));
             a.iconName = text("Icon");
+            // the lists (a;b;) as written: QSettings' INI reading takes ';' for a comment
+            auto list = [&](const char *key) { return rawList(file, key); };
+            a.categories = list("Categories");
+            a.shown = text("NoDisplay") != "true" && text("Terminal") != "true" &&
+                      meantHere(list("OnlyShowIn"), list("NotShowIn"));
             a.wmClass = text("StartupWMClass");
             if (a.wmClass.isEmpty() && !a.exec.isEmpty())
                 a.wmClass = QFileInfo(a.exec.first()).fileName();
@@ -175,6 +241,7 @@ App ownApp(const QString &bundle)
             a.macBundle = bundle;
             a.exec = {exe};
             a.wmClass = name;   // AquaKit's WM_CLASS (and Wayland app_id): the program's name
+            a.uiElement = uiElementIn(dir.filePath(name + ".app/Contents/Info.plist"));
             return a;
         }
         if (!dir.cdUp())
@@ -186,7 +253,20 @@ App ownApp(const QString &bundle)
 const QStringList &ownBundles()
 {
     static const QStringList list = {"/Applications/System Preferences.app", "/Applications/Preview.app",
-                                     "/Applications/Mail.app"};
+                                     "/Applications/Mail.app", "/Applications/Photo Booth.app",
+                                     "/Applications/Calculator.app", "/Applications/Stickies.app", "/Applications/iTunes.app",
+                                     "/Applications/TextEdit.app", "/Applications/Utilities/Grab.app",
+                                     "/Applications/Utilities/Activity Monitor.app",
+                                     "/System/Library/CoreServices/Software Update.app"};
+    return list;
+}
+
+// The shell's components that are no applications of their own (LSUIElement in their Info.plist):
+// their windows are theirs, never a stranger's tile in the Dock
+const QStringList &coreServices()
+{
+    static const QStringList list = {"/System/Library/CoreServices/Dock.app", "/System/Library/CoreServices/SystemUIServer.app",
+                                     "/System/Library/CoreServices/loginwindow.app", "/System/Library/CoreServices/HelpViewer.app"};
     return list;
 }
 
@@ -230,6 +310,38 @@ App forMacBundle(const QString &bundle)
     return {};
 }
 
+App webBrowser()
+{
+    QProcess xdg;
+    xdg.start(QStringLiteral("xdg-settings"), {QStringLiteral("get"), QStringLiteral("default-web-browser")});
+    if (xdg.waitForFinished(2000) && xdg.exitStatus() == QProcess::NormalExit && xdg.exitCode() == 0) {
+        QString id = QString::fromLocal8Bit(xdg.readAllStandardOutput()).trimmed();
+        if (id.endsWith(".desktop"))
+            id.chop(8);
+        // the http handler isn't always a browser (a web app's entry can take it)
+        if (App a = byId(id); a.valid() && a.categories.contains("WebBrowser"))
+            return a;
+    }
+    for (const QString &id : webBrowsers())
+        if (App a = byId(id); a.valid())
+            return a;
+    return {};
+}
+
+bool doesMacJob(const App &app)
+{
+    for (const MacApp &mac : macApps())
+        if (mac.candidates.contains(app.id) && Assets::exists(QString::fromUtf8(mac.bundle)) &&
+            forMacBundle(QString::fromUtf8(mac.bundle)).valid())
+            return true;
+    return false;
+}
+
+bool isUtility(const App &app)
+{
+    return app.categories.contains("System") || app.categories.contains("Settings");
+}
+
 App finder()
 {
     App f;
@@ -269,7 +381,7 @@ App forWindow(const QString &wmClass, const QString &instance, uint32_t pid)
     // the Finder's own windows (FinderWindows names them "Finder")
     if (same(wmClass, "Finder") || same(instance, "Finder"))
         return finder();
-    for (const QString &bundle : ownBundles()) {
+    for (const QString &bundle : ownBundles() + coreServices()) {
         const QString name = QFileInfo(bundle).completeBaseName();
         if (same(name, wmClass) || same(name, instance)) {
             App own = ownApp(bundle);
@@ -336,7 +448,7 @@ bool launch(const App &app, const QStringList &files)
 
 bool openFile(const QString &path)
 {
-    // PDFs and pictures are Preview's (LaunchServices' default on 10.6): ours once built, else the
+    // PDFs and pictures are Preview's, songs iTunes' (LaunchServices' defaults on 10.6): ours once built, else the
     // Linux viewer standing for it; the rest goes to the desktop's own choice
     static const QStringList preview = {"pdf", "png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "icns"};
     if (preview.contains(QFileInfo(path).suffix().toLower())) {
@@ -344,7 +456,57 @@ bool openFile(const QString &path)
         if (a.valid() && launch(a, {path}))
             return true;
     }
+    // songs are iTunes'
+    static const QStringList music = {"mp3", "m4a", "m4p", "aac", "aif", "aiff", "wav", "flac", "ogg", "oga", "opus"};
+    if (music.contains(QFileInfo(path).suffix().toLower())) {
+        const App a = forMacBundle("/Applications/iTunes.app");
+        if (a.valid() && launch(a, {path}))
+            return true;
+    }
     return QDesktopServices::openUrl(QUrl::fromLocalFile(path));
 }
+
+QVector<QPair<uint32_t, App>> aquaKitApps()
+{
+    // the abstract sockets' names in /proc/net/unix ("@snowleopard-menus-<pid>"), the processes of
+    // this display
+    QVector<QPair<uint32_t, App>> out;
+    QFile f(QStringLiteral("/proc/net/unix"));
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    const QByteArray display = qgetenv("DISPLAY");
+    QSet<uint32_t> seen;
+    for (const QByteArray &line : f.readAll().split('\n')) {
+        const int at = line.indexOf("@snowleopard-menus-");
+        if (at < 0)
+            continue;
+        const uint32_t pid = line.mid(at + 19).trimmed().toUInt();
+        if (!pid || seen.contains(pid) || kill(pid_t(pid), 0) != 0)
+            continue;
+        seen.insert(pid);
+        QFile env(QStringLiteral("/proc/%1/environ").arg(pid));
+        if (!env.open(QIODevice::ReadOnly))
+            continue;
+        bool same = false;
+        for (const QByteArray &v : env.readAll().split('\0'))
+            if (v.startsWith("DISPLAY="))
+                same = v.mid(8) == display;
+        if (!same)
+            continue;
+        const App a = forPid(pid);
+        if (a.valid())
+            out.append({pid, a});
+    }
+    return out;
+}
+
+App forPid(uint32_t pid)
+{
+    // AquaKit names its windows by the executable (WM_CLASS): the same name finds the application
+    const QString exe = QFileInfo(QFile::symLinkTarget(QStringLiteral("/proc/%1/exe").arg(pid))).fileName();
+    return exe.isEmpty() ? App{} : forWindow(exe, exe, pid);
+}
+
+uint32_t frontWithoutWindows(uint32_t *serial) { return X11::frontApp(serial); }
 
 } // namespace Apps

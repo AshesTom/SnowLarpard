@@ -37,6 +37,7 @@ public:
 
 private:
     const AK::Image &thumbnail(int page);
+    void drawShadow(cairo_t *cr, const AK::Rect &picture);
     const Document *m_doc;
     std::map<int, AK::Image> m_cache;
     double m_cacheSize = 0;

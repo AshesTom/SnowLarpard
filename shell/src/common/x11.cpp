@@ -6,9 +6,19 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QHash>
+#include <QPointer>
 #include <QWidget>
 #include <QtGui/qguiapplication_platform.h>
+#include <QSocketNotifier>
+#include <QWindow>
 #include <cmath>
+#include <signal.h>
+
+#ifdef SNOWLEOPARD_WAYLAND
+#include "windowserverclient.h"
+#include <LayerShellQt/Window>
+namespace WS = WindowServerClient;
+#endif
 #include <cstdlib>
 #include <cstring>
 
@@ -29,8 +39,36 @@ xcb_window_t root()
     return r;
 }
 
+bool wayland()
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    static const bool w = [] {
+        if (QGuiApplication::platformName() != QLatin1String("wayland") || !WS::connect())
+            return false;
+        // its events, on Qt's loop
+        auto *n = new QSocketNotifier(WS::fd(), QSocketNotifier::Read, qApp);
+        QObject::connect(n, &QSocketNotifier::activated, qApp, [] { WS::dispatch(); });
+        return true;
+    }();
+    return w;
+#else
+    return false;
+#endif
+}
+
+void flush()
+{
+    if (conn())
+        xcb_flush(conn());
+#ifdef SNOWLEOPARD_WAYLAND
+    WS::flush();
+#endif
+}
+
 xcb_atom_t atom(const char *name)
 {
+    if (!conn())
+        return XCB_ATOM_NONE;
     static QHash<QByteArray, xcb_atom_t> cache;
     auto it = cache.constFind(name);
     if (it != cache.constEnd())
@@ -79,6 +117,8 @@ QByteArray bytes(xcb_window_t w, xcb_atom_t prop, xcb_atom_t type)
 
 bool hasWindowManager()
 {
+    if (wayland())
+        return true;
     auto check = cardinals(root(), atom("_NET_SUPPORTING_WM_CHECK"), XCB_ATOM_WINDOW);
     return !check.isEmpty() && check[0];
 }
@@ -114,6 +154,12 @@ void shapeToContent(QWidget *widget, const QImage &content, const QRegion &keep)
     if (last.isValid() && last.value<QRegion>() == shape)
         return;
     widget->setProperty("_snowleopard_shape", QVariant::fromValue(shape));
+    if (!conn()) {
+        // Wayland: where it takes the pointer (its input region; it draws its translucency itself)
+        if (QWindow *w = widget->windowHandle())
+            w->setMask(shape);
+        return;
+    }
     QVector<xcb_rectangle_t> xr;
     for (const QRect &r : shape)
         xr.append({int16_t(r.x()), int16_t(r.y()), uint16_t(r.width()), uint16_t(r.height())});
@@ -124,6 +170,8 @@ void shapeToContent(QWidget *widget, const QImage &content, const QRegion &keep)
 
 bool compositing()
 {
+    if (wayland())
+        return true;
     if (!conn())
         return false;
     auto cookie = xcb_get_selection_owner(conn(), atom("_NET_WM_CM_S0"));
@@ -152,9 +200,80 @@ static bool isOwnOrSpecial(xcb_window_t w)
     return false;
 }
 
+#ifdef SNOWLEOPARD_WAYLAND
+static const WS::WindowInfo *info(xcb_window_t w) { return wayland() ? WS::window(w) : nullptr; }
+#endif
+
+QVector<xcb_window_t> allClientWindows()
+{
+    QVector<xcb_window_t> out;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        for (const WS::WindowInfo &i : WS::windows())
+            out.append(i.id);
+        return out;
+    }
+#endif
+    for (uint32_t w : cardinals(root(), atom("_NET_CLIENT_LIST"), XCB_ATOM_WINDOW))
+        out.append(w);
+    return out;
+}
+
+bool isPanel(xcb_window_t w)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        const WS::WindowInfo *i = info(w);
+        return i && (i->flags & WS::Utility);
+    }
+#endif
+    const QVector<uint32_t> types = cardinals(w, atom("_NET_WM_WINDOW_TYPE"), XCB_ATOM_ATOM);
+    return !types.isEmpty() && (types.first() == atom("_NET_WM_WINDOW_TYPE_UTILITY") || types.first() == atom("_NET_WM_WINDOW_TYPE_TOOLBAR"));
+}
+
+uint32_t frontApp(uint32_t *serial)
+{
+    uint32_t pid = 0, s = 0;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        pid = WS::frontPid();
+        s = WS::frontSerial();
+    } else
+#endif
+    {
+        const QVector<uint32_t> v = cardinals(root(), atom("_SNOWLEOPARD_FRONT_APP"), XCB_ATOM_CARDINAL);
+        if (v.size() >= 2)
+            pid = v[0], s = v[1];
+    }
+    if (!pid || kill(pid_t(pid), 0) != 0)
+        return 0;
+    if (serial)
+        *serial = s;
+    return pid;
+}
+
+void setFrontApp(bool front)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        WS::setFrontApp(front ? uint32_t(QCoreApplication::applicationPid()) : 0);
+        return;
+    }
+#endif
+    Q_UNUSED(front)
+}
+
 QVector<xcb_window_t> clientWindows()
 {
     QVector<xcb_window_t> out;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        for (const WS::WindowInfo &i : WS::windows())
+            if (!(i.flags & WS::SkipTaskbar))
+                out.append(i.id);
+        return out;
+    }
+#endif
     if (!conn())
         return out;
     if (hasWindowManager()) {
@@ -187,6 +306,10 @@ QVector<xcb_window_t> clientWindows()
 
 xcb_window_t activeWindow()
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland())
+        return WS::active();
+#endif
     if (hasWindowManager()) {
         auto active = cardinals(root(), atom("_NET_ACTIVE_WINDOW"), XCB_ATOM_WINDOW);
         return active.isEmpty() ? 0 : active[0];
@@ -202,11 +325,41 @@ static QPair<QString, QString> classHint(xcb_window_t w)
     return {QString::fromLocal8Bit(parts.value(0)), QString::fromLocal8Bit(parts.value(1))};
 }
 
-QString wmClass(xcb_window_t w) { return classHint(w).second; }
-QString wmInstance(xcb_window_t w) { return classHint(w).first; }
+#ifdef SNOWLEOPARD_WAYLAND
+// a Wayland window's app_id: its .desktop file's name ("org.kde.kcalc"), or an X11 window's class
+static QString appId(xcb_window_t w)
+{
+    const WS::WindowInfo *i = info(w);
+    return i ? QString::fromStdString(i->appId) : QString();
+}
+#endif
+
+QString wmClass(xcb_window_t w)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland())
+        return appId(w);
+#endif
+    return classHint(w).second;
+}
+
+QString wmInstance(xcb_window_t w)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland())
+        return appId(w);
+#endif
+    return classHint(w).first;
+}
 
 QString title(xcb_window_t w)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        const WS::WindowInfo *i = info(w);
+        return i ? QString::fromStdString(i->title) : QString();
+    }
+#endif
     QByteArray name = bytes(w, atom("_NET_WM_NAME"), atom("UTF8_STRING"));
     if (name.isEmpty())
         return QString::fromLocal8Bit(bytes(w, XCB_ATOM_WM_NAME, XCB_ATOM_STRING));
@@ -237,12 +390,24 @@ QImage icon(xcb_window_t w, int size)
 
 uint32_t pid(xcb_window_t w)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        const WS::WindowInfo *i = info(w);
+        return i ? i->pid : 0;
+    }
+#endif
     auto p = cardinals(w, atom("_NET_WM_PID"), XCB_ATOM_CARDINAL);
     return p.isEmpty() ? 0 : p[0];
 }
 
 bool minimized(xcb_window_t w)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        const WS::WindowInfo *i = info(w);
+        return i && (i->flags & (WS::Minimized | WS::Hidden));
+    }
+#endif
     for (uint32_t state : cardinals(w, atom("_NET_WM_STATE"), XCB_ATOM_ATOM))
         if (state == atom("_NET_WM_STATE_HIDDEN"))
             return true;
@@ -266,6 +431,16 @@ static void clientMessage(xcb_window_t w, xcb_atom_t type, std::initializer_list
 
 void activate(xcb_window_t w)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        // one of its own windows (the Finder's desktop): the application in front, without a window
+        if (info(w))
+            WS::activate(w);
+        else
+            setFrontApp(true);
+        return;
+    }
+#endif
     if (!conn() || !w)
         return;
     if (hasWindowManager()) {
@@ -281,6 +456,12 @@ void activate(xcb_window_t w)
 
 void close(xcb_window_t w)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        WS::close(w);
+        return;
+    }
+#endif
     if (!conn() || !w)
         return;
     if (hasWindowManager()) {
@@ -300,6 +481,12 @@ void close(xcb_window_t w)
 
 void minimize(xcb_window_t w)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        WS::minimize(w);
+        return;
+    }
+#endif
     if (!conn() || !w)
         return;
     if (hasWindowManager())
@@ -307,6 +494,73 @@ void minimize(xcb_window_t w)
     else
         xcb_unmap_window(conn(), w);
     xcb_flush(conn());
+}
+
+void hide(xcb_window_t w)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        WS::hide(w);
+        return;
+    }
+#endif
+    if (!conn() || !w)
+        return;
+    if (hasWindowManager())
+        clientMessage(w, atom("_SNOWLEOPARD_HIDE"), {1});
+    else
+        xcb_unmap_window(conn(), w);
+    xcb_flush(conn());
+}
+
+bool hidden(xcb_window_t w)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        const WS::WindowInfo *i = info(w);
+        return i && (i->flags & WS::Hidden);
+    }
+#endif
+    const auto h = cardinals(w, atom("_SNOWLEOPARD_HIDDEN"), XCB_ATOM_CARDINAL);
+    return !h.isEmpty() && h[0];
+}
+
+QImage preview(xcb_window_t w)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        // the window server's picture of it (kept when it was minimized), 256 pixels at most each way
+        const std::string png = WS::captureWindow(w, false);
+        QImage img = QImage::fromData(reinterpret_cast<const uchar *>(png.data()), int(png.size()), "PNG");
+        if (img.width() > 256 || img.height() > 256)
+            img = img.scaled(256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        return img.convertToFormat(QImage::Format_ARGB32);
+    }
+#endif
+    const QVector<uint32_t> data = cardinals(w, atom("_SNOWLEOPARD_WINDOW_PREVIEW"), XCB_ATOM_CARDINAL);
+    if (data.size() < 2)
+        return {};
+    const int iw = int(data[0]), ih = int(data[1]);
+    if (iw <= 0 || ih <= 0 || data.size() < 2 + iw * ih)
+        return {};
+    QImage img(iw, ih, QImage::Format_ARGB32);
+    for (int y = 0; y < ih; ++y)
+        memcpy(img.scanLine(y), data.constData() + 2 + y * iw, size_t(iw) * 4);
+    return img;
+}
+
+void setIconGeometry(xcb_window_t w, const QRect &r)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        WS::setIconGeometry(w, r.x(), r.y(), r.width(), r.height());
+        return;
+    }
+#endif
+    if (!conn() || !w)
+        return;
+    const uint32_t g[4] = {uint32_t(r.x()), uint32_t(r.y()), uint32_t(r.width()), uint32_t(r.height())};
+    xcb_change_property(conn(), XCB_PROP_MODE_REPLACE, w, atom("_NET_WM_ICON_GEOMETRY"), XCB_ATOM_CARDINAL, 32, 4, g);
 }
 
 static void setAtoms(xcb_window_t w, const char *prop, std::initializer_list<const char *> names)
@@ -318,8 +572,39 @@ static void setAtoms(xcb_window_t w, const char *prop, std::initializer_list<con
                         atoms.constData());
 }
 
+#ifdef SNOWLEOPARD_WAYLAND
+// The layer shell's namespace of a shell program's surface: "com.apple.dock", the Mac's bundle
+// identifier (the window server's magic mirror finds the Dock's by it)
+static QString layerScope(const char *suffix = nullptr)
+{
+    QString scope = QStringLiteral("com.apple.") + QCoreApplication::applicationName().toLower();
+    if (suffix)
+        scope += QLatin1Char('.') + QLatin1String(suffix);
+    return scope;
+}
+#endif
+
 void setDock(QWidget *widget, int strutTop, int strutBottom)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        // a layer over the windows, along its edge, keeping its part of it out of their way
+        widget->winId();
+        QWindow *win = widget->windowHandle();
+        auto *lw = win ? LayerShellQt::Window::get(win) : nullptr;
+        if (!lw)
+            return;
+        lw->setScope(layerScope());
+        lw->setLayer(LayerShellQt::Window::LayerTop);
+        const bool top = strutTop > 0;
+        lw->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorLeft | LayerShellQt::Window::AnchorRight |
+                                                     (top ? LayerShellQt::Window::AnchorTop : LayerShellQt::Window::AnchorBottom)));
+        lw->setExclusiveZone(top ? strutTop : strutBottom);
+        lw->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+        lw->setDesiredSize(QSize(0, widget->height()));
+        return;
+    }
+#endif
     if (!conn())
         return;
     xcb_window_t w = xcb_window_t(widget->winId());
@@ -339,6 +624,23 @@ void setDock(QWidget *widget, int strutTop, int strutBottom)
 
 void setDesktop(QWidget *widget)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        // the background layer, the whole screen (under the menu bar and the Dock too)
+        widget->winId();
+        QWindow *win = widget->windowHandle();
+        auto *lw = win ? LayerShellQt::Window::get(win) : nullptr;
+        if (!lw)
+            return;
+        lw->setScope(layerScope("desktop"));
+        lw->setLayer(LayerShellQt::Window::LayerBackground);
+        lw->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorLeft | LayerShellQt::Window::AnchorRight |
+                                                     LayerShellQt::Window::AnchorTop | LayerShellQt::Window::AnchorBottom));
+        lw->setExclusiveZone(-1);
+        lw->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
+        return;
+    }
+#endif
     if (!conn())
         return;
     xcb_window_t w = xcb_window_t(widget->winId());
@@ -349,6 +651,46 @@ void setDesktop(QWidget *widget)
         const uint32_t below = XCB_STACK_MODE_BELOW;
         xcb_configure_window(conn(), w, XCB_CONFIG_WINDOW_STACK_MODE, &below);
     }
+    xcb_flush(conn());
+}
+
+void setMagicMirror(QWidget *widget, int direction, const QPolygon &quad)
+{
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        static QVector<int> last;
+        QVector<int> value{direction};
+        for (const QPoint &p : quad)
+            value << p.x() << p.y();
+        if (value == last)
+            return;
+        last = value;
+        std::vector<int> q;
+        for (const QPoint &p : quad)
+            q.push_back(p.x()), q.push_back(p.y());
+        WS::setMagicMirror(layerScope().toStdString(), quad.size() == 4 ? direction : 0, q);
+        Q_UNUSED(widget)
+        return;
+    }
+#endif
+    if (!conn())
+        return;
+    const xcb_window_t w = xcb_window_t(widget->winId());
+    static QHash<xcb_window_t, QVector<uint32_t>> set;
+    QVector<uint32_t> value;
+    if (direction > 0 && quad.size() == 4) {
+        value << uint32_t(direction);
+        for (const QPoint &p : quad)
+            value << uint32_t(p.x()) << uint32_t(p.y());
+    }
+    if (set.value(w) == value && set.contains(w))
+        return;
+    set.insert(w, value);
+    if (value.isEmpty())
+        xcb_delete_property(conn(), w, atom("_SNOWLEOPARD_MAGIC_MIRROR"));
+    else
+        xcb_change_property(conn(), XCB_PROP_MODE_REPLACE, w, atom("_SNOWLEOPARD_MAGIC_MIRROR"), XCB_ATOM_CARDINAL, 32,
+                            uint32_t(value.size()), value.constData());
     xcb_flush(conn());
 }
 
@@ -387,6 +729,16 @@ Watcher::Watcher(QObject *parent) : QObject(parent)
     m_coalesce.setSingleShot(true);
     m_coalesce.setInterval(40);
     connect(&m_coalesce, &QTimer::timeout, this, &Watcher::changed);
+#ifdef SNOWLEOPARD_WAYLAND
+    if (wayland()) {
+        QPointer<Watcher> self(this);
+        WS::onChange([self] {
+            if (self)
+                self->m_coalesce.start();
+        });
+        return;
+    }
+#endif
     if (!conn())
         return;
     // Keep what the root already listens to (Qt selects some), and add ours.
@@ -415,7 +767,7 @@ bool Watcher::nativeEventFilter(const QByteArray &type, void *message, qintptr *
     case XCB_PROPERTY_NOTIFY: {
         auto *p = reinterpret_cast<xcb_property_notify_event_t *>(ev);
         if (p->window == root() && (p->atom == atom("_NET_ACTIVE_WINDOW") || p->atom == atom("_NET_CLIENT_LIST") ||
-                                    p->atom == atom("_NET_CLIENT_LIST_STACKING")))
+                                    p->atom == atom("_NET_CLIENT_LIST_STACKING") || p->atom == atom("_SNOWLEOPARD_FRONT_APP")))
             m_coalesce.start();
         break;
     }

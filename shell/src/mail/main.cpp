@@ -49,6 +49,14 @@ std::string fullUserName()
     return {};
 }
 
+// The key's character, lowercased: from the keysym, AquaKit leaving the text empty under ⌘ and ⌃
+std::string keyChar(const Event &e)
+{
+    if (e.keysym >= 0x20 && e.keysym < 0x7f)
+        return std::string(1, char(std::tolower(int(e.keysym))));
+    return e.text.empty() ? std::string() : std::string(1, char(std::tolower((unsigned char)e.text[0])));
+}
+
 // "host" or "host:port"
 void splitHost(const std::string &in, std::string *host, int *port)
 {
@@ -750,7 +758,7 @@ private:
     void key(Event &e)
     {
         const bool cmd = e.modifiers & Command, shift = e.modifiers & Shift;
-        const std::string k = e.text.empty() ? std::string() : std::string(1, char(std::tolower((unsigned char)e.text[0])));
+        const std::string k = keyChar(e);
         if (cmd && shift && k == "n")
             refresh();                                  // Get New Mail ⇧⌘N
         else if (cmd && !shift && k == "n")
@@ -1240,7 +1248,7 @@ public:
         m_window->onResize = [this](Size) { layout(); };
         m_window->onClose = [this] { close(); };
         m_window->onUnhandledKey = [this](Event &e) {
-            const std::string k = e.text.empty() ? std::string() : std::string(1, char(std::tolower((unsigned char)e.text[0])));
+            const std::string k = keyChar(e);
             if ((e.modifiers & Command) && (e.modifiers & Shift) && k == "d")
                 sendNow();   // Send ⇧⌘D
             else if ((e.modifiers & Command) && k == "w")
@@ -1465,7 +1473,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "Mail: no display (Wayland or X11)\n");
         return 1;
     }
-    Assets::registerFonts();
+    FontManager::registerSystemFonts();
     MailApp mail(mailto);
     mail.start();
     return app.run();

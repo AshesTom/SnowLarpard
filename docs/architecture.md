@@ -10,14 +10,28 @@ partition map whose `Apple_HFS` partition is the installer. `tools/extract.py`:
 3. reads each flat package (xar: a zlib'd XML table of contents, then the heap) and streams its
    `Payload` (gzip'd cpio, odc format; the TOC sometimes says octet-stream: the gzip magic
    decides) through `cpio` with only the wanted paths;
-4. converts the plists and `.strings` files (UTF-16, OpenStep syntax) to JSON beside them.
+4. takes the pictures Photo Booth's effects use out of three compositions, then prunes what the
+   patterns took beyond the shell's needs (cpio's `*` crosses `/`): the other languages' `.lproj`,
+   Mach-O code, the `.qtz` files;
+5. optimizes the JPEGs' Huffman tables (`jpegtran -optimize`, when there: the same pixels, ~5% less);
+6. converts the plists and `.strings` files (UTF-16, OpenStep syntax) to JSON beside them.
+
+It builds a fresh tree beside `.local/assets` and swaps it in when complete, so a run never leaves
+files of an earlier one behind. Given `.local/media/MacOSX.hfs` (kept by the first run) instead of
+the DVD, it extracts again without it. The result is about 150 MiB, half of it the desktop pictures.
 
 | package | what the shell takes |
 |---|---|
-| BaseSystem | CoreTypes' icons, Lucida Grande, Helvetica Neue, DefaultDesktop.jpg, Utilities' icons |
-| Essentials | Dock.app's and Finder.app's resources, the Menu Extras' art, the applications' icons |
+| BaseSystem | CoreUI's `ArtFile.bin`/`SArtFile.bin` (the controls' art), HIToolbox's pictures, CoreTypes' and the disks' icons and the types' names, LaunchServices' strings, Lucida Grande, Helvetica Neue, the .dfont fonts and Menlo, DefaultDesktop.jpg, SystemVersion.plist, AirPort.menu's pictures, Apple80211's ClientDialogs panels and security types' names, Utilities' icons, Parental Controls' pane; QuartzCore's menu bar Apple (32 x 22 RGBA, out of the library) |
+| Essentials | Help Viewer's resources, the ported applications' help books; the shutter's Grab.aif, screencapture's selection cross (out of its __TEXT); Dock.app's, Finder.app's (nibs, canned searches), SystemUIServer's and the Menu Extras' resources; loginwindow's About This Mac; System Preferences' and its panes' and monitor panels' nibs, pictures and search terms; Preview's, Photo Booth's, Stickies' and TextEdit's resources; the fonts of /Library/Fonts (Stickies' notes); three compositions' embedded pictures; the User Template's PDFs; the applications' icons and Info.plist |
 | MediaFiles | the desktop pictures |
-| Safari, Mail, iTunes, iCal, AddressBook, iChat, DVDPlayer | their icons |
+| AdditionalEssentials | Mac Help (MacHelp.help), Activity Monitor's help; Grab's and Activity Monitor's resources (nibs, pictures, sounds, strings), the other Utilities' icons and Info.plist |
+| Mail | Mail.app's help book, its pictures, toolbars, English nibs and strings, its icon |
+| Safari, iTunes, iCal, AddressBook, iChat, DVDPlayer | their icons and Info.plist |
+
+Only English resources are kept. HIToolbox's `.rsrc`, CoreUI's `UI.bundle` recipes, the frameworks'
+code and everything else stay in the packages: for reverse engineering, take them out of the
+packages into `.local/media/re`, not from `.local/assets`.
 
 Everything lands in `.local/assets` at its Mac path, so the code names files as the Mac does
 (`Assets::image("/System/Library/CoreServices/Dock.app/Contents/Resources/scurve-m.png")`).
@@ -43,24 +57,61 @@ shell/src/common   aquashell, shared by every program
   x11              EWMH (or the root's children without a window manager), the shell's window types
   session          hide, quit, force quit, About This Mac, power, log out
   aqua             start-up: X11 platform, fonts, the menus' style
-shell/src/menubar  SystemUIServer.app: the menu bar, the menu extras
+shell/src/systemuiserver  SystemUIServer.app (AquaKit): the menu bar (the Apple menu, the applications'
+                   menus: the Finder's, AquaKit's, the global menu over D-Bus), NSMenuToolbar's extras as
+                   10.6.8 loads them (menuExtras and Autoload.plist), the Clock, Battery and Volume built
+                   in, Spotlight (Search.bundle). The session ends with it
+shell/src/systemuiplugin  SystemUIPlugin.framework (AquaKit): NSMenuExtra, NSMenuExtraView, a shared library
+                   (apps/PrivateFrameworks/SystemUIPlugin.framework)
+shell/src/menuextras  each .menu's Info.plist; AirPort and Bluetooth have code (apps/Menu Extras/<Name>.menu/
+                   Contents/MacOS/<Name>, a library SystemUIServer loads)
+shell/src/linux    Linux's glue, not a Mac framework: the session's windows (EWMH) and D-Bus (sd-bus) on
+                   Foundation's run loop; qtstyle: AquaStyle as a Qt 6 style plugin for the session's Linux
+                   applications (apps/Linux/qt6/styles/aquastyle.so)
+shell/src/privateframeworks  the private frameworks' programs: Apple80211's ClientDialogs.bundle (AirPort's
+                   panels, on AquaKit)
+
+Each component's source folder has its **Info.plist**: Apple's identifier and version of the bundle
+it reproduces, and two keys of ours, `SLReproducesSystem` (Mac OS X 10.6.8 (10K549)) and
+`SLReproducesBundle` (the Mac path). The build copies it where the Mac has it (`Dock.app/Contents`,
+`Menu Extras/AirPort.menu/Contents`, `Frameworks/AppKit.framework/Resources`...), so that each
+component can be brought to a later release (Lion, Mountain Lion…) on its own, and what each one is
+stays readable from the installed programs.
 shell/src/dock     Dock.app
 shell/src/finder   Finder.app: the desktop picture (Qt)
   browser          FinderWindows, on AquaKit: the Finder's windows (icon, list, column and Cover Flow views, sidebar, toolbar, status
                    bar), one process for all of them (a second launch hands its folders over an
                    abstract socket); their WM_CLASS "Finder", so the Dock and the menu bar take them
                    for the Finder's; Apps::finder() launches it
-shell/src/aquakit  AquaKit, for the Mac applications, without Qt: AppKit's skeleton on cairo and pango,
-                   CoreUI's renderer (coreui), text in Lucida Grande, the shell's settings files;
-                   on Wayland (xdg-shell, drawing 10.6's title bar itself) or X11 (platform_*.cpp);
-                   the unified toolbar (toolbar.cpp: Preview's and the Finder's), CoreUI's named images
+shell/src/frameworks  AquaKit: the Mac's frameworks without Qt, one reimplementation of each, shared
+                   by every program as on the Mac, each its own library (so each can follow macOS's
+                   releases on its own); `aquakit` is their umbrella, as Cocoa.framework is:
+  Foundation       Assets (the DVD's files), .strings, the shell's settings files, NSKeyedUnarchiver
+                   (archive) and NSUnarchiver's typedstream, NSRunLoop and NSTask (runloop)
+  CoreGraphics     images (PNG, JPEG, TIFF, icns, PDF as NSPDFImageRep: poppler) and their colour
+                   matching, template images tinted (graphics)
+  CoreText         text as Quartz draws it, in Lucida Grande (text); the DVD's fonts (FontManager,
+                   as CTFontManager)
+  CoreUI           CoreUI's renderer (coreui): the controls', menus' and windows' art, its named images
+  AppKit           windows, views, controls, the unified toolbar (Preview's and the Finder's), menus,
+                   nibs; NSTextView (textview) and NSAttributedString's RTF / RTFD (attributedstring),
+                   shared by Stickies and TextEdit; NSRulerView with the text ruler's accessory (rulerview); the standard panels (panels: NSOpenPanel and
+                   NSSavePanel by kdialog or zenity, NSAlert as a window or a sheet, one instance per
+                   application); on Wayland (xdg-shell, drawing 10.6's title bar itself) or X11 (platform_*.cpp)
 shell/src/prefs    System Preferences.app, on AquaKit: Show All, every pane from its nib (nib.cpp), their Linux side
 shell/src/loginwindow  loginwindow's About This Mac, on AquaKit: its nib, filled as AboutThisMacController does
 shell/src/preview  Preview.app, on AquaKit: PDFs (poppler) and pictures, the toolbar from CommonToolbar.proplist,
                    the sidebar; the Dock's stacks open their documents in it (Apps::openFile)
+shell/src/photobooth  Photo Booth.app, on AquaKit: the camera through Video4Linux (camera), the effects' compositions
+                   on the processor (effects), ~/Pictures/Photo Booth and its Recents.plist (library)
+shell/src/stickies  Stickies.app, on AquaKit: ~/Library/StickiesDatabase (NSArchiver's typedstream, database),
+                   the notes' own frames (their text is AppKit's NSTextView and RTFD)
+shell/src/textedit  TextEdit.app, on AquaKit: rich and plain text documents (RTF, RTFD, text in its
+                   encoding), DocumentWindow.nib, Edit.nib's menus, Preferences.nib, AppKit's Find panel;
+                   Wrap to Page through TextView's pages (MultiplePageView's geometry)
 shell/src/windowserver  WindowServer: the window manager, 10.6's title bars; its compositor (compositor.cpp:
                    Composite, Damage and Render), which puts the windows together over their shadows
-shell/src/menubar/appmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu
+shell/src/systemuiserver/dbusmenu  the global menu: com.canonical.AppMenu.Registrar and dbusmenu (sd-bus)
 session/           snowleopard-session: the X session
 ```
 
@@ -77,8 +128,8 @@ stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKARE
 
 ## Next steps
 
-1. **WindowServer's compositor** is there with the windows' shadows; next the genie and scale effects (the Dock's
-   `MINIMIZE_USING`), minimized windows in the Dock, sheets, the unified toolbars. The window
+1. **WindowServer's compositor** is there with the windows' shadows, the genie and scale effects and the
+   minimized windows' tiles in the Dock; next sheets, the unified toolbars. The window
    manager itself is there (docs/reverse-status.md, section 5).
 2. **The global menu** is there (section 6); GTK 4 and GNOME applications (org.gtk.Menus) are next.
 3. **The Finder**: its windows are there with their four views and `.DS_Store` (FinderWindows);
@@ -89,3 +140,34 @@ stop above the Dock: WindowServer publishes the struts' work area (`_NET_WORKARE
 5. **The applications**, each a program of its own on AquaKit (`System Preferences.app` and
    `Preview.app` are there; `TextEdit.app`... next).
 6. **loginwindow** as a display manager, Spaces, Exposé, Dashboard.
+
+SystemUIServer's move from Qt to AquaKit, stage by stage: [systemuiserver-port.md](systemuiserver-port.md).
+
+## The Wayland session (WindowServer-wayland)
+
+The default session ("Snow Leopard") is native Wayland: `session/snowleopard-wayland` runs KWin (or
+cage) only to hold the screen, the input devices and the seat, and `WindowServer-wayland` full screen
+on it; the shell (`snowleopard-session`) and the applications are clients of WindowServer-wayland.
+"Snow Leopard (X11)" keeps the X11 path: the X11 WindowServer on Xorg, or without Xorg
+(`session/snowleopard-x11`) a full-screen Xwayland on KWin. `install.sh` installs both entries.
+
+**Why Qt Wayland Compositor.** The shell is C++ and Qt; the X11 WindowServer already draws its title
+bars, shadows and genie with Qt (now shared in `windowserver/frame.cpp`). Qt Wayland Compositor gives
+surfaces, buffers (shared memory and dma-buf), seat, clipboard and output, and Qt Quick a scene where
+the genie is a mesh and the levels are items. wlroots would have given DRM, Xwayland and
+layer-shell for free, but in C with an API that changes each release and no Qt painting, and Smithay a
+second language. The price: Qt's xdg-shell refuses popups without a parent (a layer surface's menus),
+so the server has its own xdg-shell, xdg-decoration, wlr-layer-shell, KDE appmenu and an X window
+manager for its rootless Xwayland; and it runs as a client of KWin rather than on DRM itself.
+
+**The shell's private protocol.** `sl_window_server_v1`
+(`windowserver/wayland/protocols/snowleopard-window-server-v1.xml`) stands for the CGS calls the Mac's
+Dock and SystemUIServer make: window list and order, active window, minimize/hide/activate/close,
+the Dock tile's place (genie target), the application in front without a window and its keys, key
+equivalents, symbolic hot keys (⇧⌘3/⇧⌘4), magic mirror, window and screen captures.
+`src/linux/windowserverclient` is its client; `X11::` (Qt programs), `Windows::` (LinuxGlue) and
+AquaKit's Wayland platform use it when `SNOWLEOPARD_WINDOW_SERVER=wayland`. The Dock and the desktop
+are LayerShellQt surfaces, the menu bar an AquaKit layer surface.
+
+**Testing.** Nested in `kwin_wayland --virtual`; `SNOWLEOPARD_SCREENSHOT=file` + SIGUSR1 saves the
+scene, `SNOWLEOPARD_TEST_INPUT=fifo` takes "click X Y", "key M meta"... lines.

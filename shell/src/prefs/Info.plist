@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>System Preferences</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.apple.systempreferences</string>
+	<key>CFBundleName</key>
+	<string>System Preferences</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>7.0</string>
+	<key>CFBundleVersion</key>
+	<string>7.0</string>
+	<key>SLReproducesBundle</key>
+	<string>/Applications/System Preferences.app</string>
+	<key>SLReproducesSystem</key>
+	<string>Mac OS X 10.6.8 (10K549)</string>
+</dict>
+</plist>

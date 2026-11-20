@@ -180,6 +180,12 @@ QSize AquaStyle::sizeFromContents(ContentsType ct, const QStyleOption *opt, cons
         QFontMetrics fm(mi ? mi->font : QFont());
         int textW = mi ? fm.horizontalAdvance(mi->text.section('\t', 0, 0)) : size.width();
         int shortcutW = mi && mi->text.contains('\t') ? fm.horizontalAdvance(mi->text.section('\t', 1)) + 24 : 0;
+        if (mi && !mi->icon.isNull() && prop(w, "aquaTrailingIcons")) {
+            // AME_AirPortNetworkItemView's -idealMenuItemWidth: the title 21 in, then the icons (the
+            // lock's 19, the bars' 6 + 17) and 12 at the right
+            const QSize icon = mi->icon.availableSizes().value(0);
+            return QSize(21 + textW + icon.width() + 12, 21);
+        }
         return QSize(21 + textW + shortcutW + 22, 21);
     }
     case CT_PushButton:
@@ -260,6 +266,11 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
             // toolbar buttons: textured segments; side by side ones share their edges
             QString s = (opt->state & State_Sunken) ? "pressed" : windowState(opt);
             ArtFile::Element e = art({"segment", "clear", "fortexture", s, "regular"});
+            // no disabled art for a textured segment: its inactive bezel (the image says it's disabled)
+            if (e.isNull() && s == "disabled")
+                e = art({"segment", "clear", "fortexture", "inactive", "regular"});
+            if (e.isNull())
+                e = art({"segment", "clear", "fortexture", "active", "regular"});
             QString pos = w->property("aquaSegmentPosition").toString();
             p->save();
             p->setClipRect(opt->rect);
@@ -277,6 +288,15 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         }
         const bool isDefault = b && (b->features & QStyleOptionButton::DefaultButton) && (opt->state & State_Active);
         QString s = (opt->state & State_Sunken) ? "pressed" : windowState(opt);
+        // taller than the capsule (a Linux application's grid of keys): the square bevel button
+        // (kThemeBevelButton, NSRegularSquareBezelStyle), as Qt's own Mac style does
+        if (opt->rect.height() > 30) {
+            const ArtFile::Element bevel = art({"bevelbuttonsquare", s, "regular"});
+            if (!bevel.isNull()) {
+                drawElement(p, bevel, opt->rect);
+                return;
+            }
+        }
         drawElement(p, art({"pushbutton", isDefault && s == "active" ? "blue" : "clear", s, "regular"}), opt->rect);
         return;
     }
@@ -313,6 +333,14 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         Aqua::drawText(*p, r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextShowMnemonic, label);
         if (!shortcut.isEmpty())
             Aqua::drawText(*p, r.adjusted(21, 0, -20, 0), Qt::AlignVCenter | Qt::AlignRight, shortcut);
+        if (!mi->icon.isNull() && prop(w, "aquaTrailingIcons")) {
+            // the menu extras' pictures at the right of the title (the AirPort menu's lock and bars),
+            // their selected variant white
+            const QSize size = mi->icon.availableSizes().value(0);
+            const QPixmap px = mi->icon.pixmap(size, p->device() ? p->device()->devicePixelRatioF() : 1.0,
+                                               selected ? QIcon::Selected : QIcon::Normal);
+            p->drawPixmap(QPoint(r.right() + 1 - 12 - size.width(), r.top() + (r.height() - size.height()) / 2), px);
+        }
         if (mi->menuItemType == QStyleOptionMenuItem::SubMenu) {
             // the submenu's triangle
             p->save();
@@ -453,7 +481,12 @@ void AquaStyle::drawComplexControl(ComplexControl cc, const QStyleOptionComplex 
             const QRect groove = subControlRect(cc, opt, SC_ScrollBarGroove, w);
             const QRect slider = subControlRect(cc, opt, SC_ScrollBarSlider, w);
             if (slider.isEmpty()) {
-                drawElement(p, art({"scrollbars", "nothingtoscroll", "regular", "track", "vertical"}), opt->rect);
+                // one piece, the track's cross section: stretched along its length
+                const ArtFile::Element e = art({"scrollbars", "nothingtoscroll", "regular", "track", "vertical"});
+                if (e.pieces.size() == 1)
+                    p->drawImage(opt->rect, e.pieces[0]);
+                else
+                    drawElement(p, e, opt->rect);
                 return;
             }
             // the track, the arrows' block at the bottom (its top cap over the track's end), the thumb

@@ -19,6 +19,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
@@ -100,6 +101,31 @@ QVector<Item> items(const QString &folder, Sort sort)
             i.app = a;
             i.kind = "Application";
             out.append(i);
+        }
+        {
+            // the other Linux applications, beside the Mac ones (as the Mac's /Applications has the
+            // ones you installed), with the names and icons of their .desktop entries; the system's
+            // tools and settings in Utilities, where the Mac keeps its own. Only what would be an
+            // application bundle: no commands (Terminal=true), nothing meant for another desktop.
+            QSet<QString> all;
+            for (const QString &d : {QStringLiteral("/Applications"), QStringLiteral("/Applications/Utilities")})
+                for (const QString &bundle : QDir(Assets::path(d)).entryList({"*.app"}, QDir::Dirs))
+                    if (const App a = Apps::forMacBundle(d + '/' + bundle); a.valid())
+                        all.insert(a.id);
+            const App finder = Apps::finder();
+            all.insert(finder.id);
+            for (const App &a : Apps::all()) {
+                if (!a.shown || all.contains(a.id) || a.name.isEmpty() || Apps::doesMacJob(a) ||
+                    Apps::isUtility(a) != !sub.isEmpty())
+                    continue;
+                if (!finder.exec.isEmpty() && a.exec == finder.exec)   // the file manager standing for the Finder
+                    continue;
+                Item i;
+                i.name = a.name;
+                i.app = a;
+                i.kind = "Application";
+                out.append(i);
+            }
         }
         if (sub.isEmpty() && !items("applications:/Utilities", Name).isEmpty()) {
             Item u;
@@ -284,12 +310,17 @@ void installTemplate()
         q.setValue("stacks/template-installed", true);
 }
 
+QString finderFolder(const QString &folder)
+{
+    return folder.startsWith("applications:") ? QStringLiteral("/usr/share/applications") : folder;
+}
+
 void open(const Item &item)
 {
     if (item.app.valid())
         Apps::launch(item.app);
-    else if (item.folder && !item.path.startsWith("applications:"))
-        Apps::launch(Apps::finder(), {item.path});
+    else if (item.folder)
+        Apps::launch(Apps::finder(), {finderFolder(item.path)});
     else if (!item.path.isEmpty())
         Apps::openFile(item.path);
 }
@@ -431,7 +462,7 @@ void Popup::layoutGrid()
     m_body = QRectF((w - cols * CellW) / 2.0, Inset + Header, cols * CellW, bodyH);
     m_backButton = m_folder != m_root ? QRectF(Inset + 8, Inset + 4, 140, 22) : QRectF();
     // the Applications stack's folders aren't the Finder's (the Mac applications stand for Linux programs)
-    m_finderButton = m_folder.startsWith("applications:") ? QRectF() : QRectF(w - Inset - 162, m_body.bottom() + 2, 140, 22);   // clear of the corner
+    m_finderButton = QRectF(w - Inset - 162, m_body.bottom() + 2, 140, 22);   // clear of the corner
     for (int i = 0; i < m_items.size(); ++i) {
         Cell c;
         c.item = m_items[i];
@@ -645,7 +676,7 @@ void Popup::mouseReleaseEvent(QMouseEvent *e)
         return;
     }
     if (m_view == Grid && m_finderButton.contains(e->position())) {
-        open(Item{name(m_folder), m_folder.startsWith("applications:") ? QString() : m_folder, {}, true, {}, {}, {}, {}});
+        open(Item{name(m_folder), m_folder, {}, true, {}, {}, {}, {}});
         close();
         return;
     }
@@ -659,8 +690,7 @@ void Popup::mouseReleaseEvent(QMouseEvent *e)
     const Item item = m_cells[i].item;
     if (m_view == Fan && item.path.isEmpty() && !item.app.valid()) {
         // "N More in Finder"
-        if (!m_folder.startsWith("applications:"))
-            Apps::launch(Apps::finder(), {m_folder});
+        Apps::launch(Apps::finder(), {finderFolder(m_folder)});
         close();
         return;
     }

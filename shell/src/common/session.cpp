@@ -45,20 +45,21 @@ QVector<xcb_window_t> windowsOf(const App &app)
 void hideApp(const App &app)
 {
     for (xcb_window_t w : windowsOf(app))
-        X11::minimize(w);
+        if (!X11::minimized(w))
+            X11::hide(w);
 }
 
 void hideOthers(const App &app)
 {
     for (xcb_window_t w : X11::clientWindows())
-        if (Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w)).id != app.id)
-            X11::minimize(w);
+        if (Apps::forWindow(X11::wmClass(w), X11::wmInstance(w), X11::pid(w)).id != app.id && !X11::minimized(w))
+            X11::hide(w);
 }
 
 void showAll()
 {
     for (xcb_window_t w : X11::clientWindows())
-        if (X11::minimized(w))
+        if (X11::hidden(w))   // the hidden ones; the minimized stay in the Dock
             X11::activate(w);
 }
 
@@ -74,26 +75,44 @@ void quitApp(const App &app)
         X11::close(w);
 }
 
+namespace {
+
+// loginwindow, beside the shell's programs (apps/loginwindow.app/Contents/MacOS/loginwindow)
+QString loginWindow()
+{
+    QDir dir(QCoreApplication::applicationDirPath());
+    for (int i = 0; i < 5; ++i) {
+        const QString exe = dir.filePath("loginwindow.app/Contents/MacOS/loginwindow");
+        if (QFileInfo(exe).isExecutable())
+            return exe;
+        if (!dir.cdUp())
+            break;
+    }
+    return {};
+}
+
+} // namespace
+
+void logOut(bool ask)
+{
+    const QString exe = loginWindow();
+    if (!exe.isEmpty())
+        QProcess::startDetached(exe, {ask ? "--logout" : "--logout-now"}, QDir::homePath());
+}
+
 void aboutThisMac()
 {
     // loginwindow's panel (shell/src/loginwindow, its nib from the DVD): brought forward when it is
     // open, else started (apps/loginwindow.app/Contents/MacOS/loginwindow beside the shell's programs)
     // (the window manager's whole list: the panel is out of clientWindows(), being out of the Dock)
-    for (xcb_window_t w : X11::cardinals(X11::root(), X11::atom("_NET_CLIENT_LIST"), XCB_ATOM_WINDOW))
+    for (xcb_window_t w : X11::allClientWindows())
         if (X11::wmClass(w) == QLatin1String("loginwindow")) {
             X11::activate(w);
             return;
         }
-    QDir dir(QCoreApplication::applicationDirPath());
-    for (int i = 0; i < 5; ++i) {
-        const QString exe = dir.filePath("loginwindow.app/Contents/MacOS/loginwindow");
-        if (QFileInfo(exe).isExecutable()) {
-            QProcess::startDetached(exe, {"--about"}, QDir::homePath());
-            return;
-        }
-        if (!dir.cdUp())
-            break;
-    }
+    const QString exe = loginWindow();
+    if (!exe.isEmpty())
+        QProcess::startDetached(exe, {"--about"}, QDir::homePath());
 }
 
 void forceQuit()
@@ -166,29 +185,28 @@ void emptyTrash()
 void power(Power what)
 {
     bool real = qEnvironmentVariable("SNOWLEOPARD_POWER") == "1";
+    if (what == LogOut) {
+        logOut(true);
+        return;
+    }
     if (what == Sleep) {
         if (real)
             QProcess::startDetached("systemctl", {"suspend"});
         return;
     }
     static const char *titles[] = {"", "Are you sure you want to restart your computer now?",
-                                   "Are you sure you want to shut down your computer now?",
-                                   "Are you sure you want to quit all applications and log out now?"};
-    static const char *buttons[] = {"", "Restart", "Shut Down", "Log Out"};
+                                   "Are you sure you want to shut down your computer now?"};
+    static const char *buttons[] = {"", "Restart", "Shut Down"};
     QMessageBox box;
     box.setText(QString::fromUtf8(titles[what]));
-    box.setInformativeText(real || what == LogOut ? QString() : QString("This session runs in a window: only Log Out applies here."));
+    box.setInformativeText(real ? QString() : QString("This session runs in a window: only Log Out applies here."));
     QPushButton *ok = box.addButton(QString::fromUtf8(buttons[what]), QMessageBox::AcceptRole);
     box.addButton(QMessageBox::Cancel);
     box.setDefaultButton(ok);
     box.exec();
     if (box.clickedButton() != ok)
         return;
-    if (what == LogOut) {
-        // The session (session/snowleopard-session) ends when SystemUIServer does.
-        QProcess::startDetached("pkill", {"-u", QString::number(getuid()), "-x", "SystemUIServer"});
-        qApp->exit(0);
-    } else if (real) {
+    if (real) {
         QProcess::startDetached("systemctl", {what == Restart ? "reboot" : "poweroff"});
     }
 }

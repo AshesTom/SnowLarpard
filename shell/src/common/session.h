@@ -29,5 +29,8 @@ void emptyTrash();
 // Asks first, as the Mac does (Sleep doesn't). Restart and Shut Down only act when
 // $SNOWLEOPARD_POWER is 1 (a whole session, not a window of another desktop).
 void power(Power what);
+// Log Out: loginwindow's (its panel and countdown, then the applications asked to quit and the
+// session ended); without the panel when `ask` is false (⌥⇧⌘Q)
+void logOut(bool ask = true);
 
 } // namespace Session

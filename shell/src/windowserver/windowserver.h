@@ -3,10 +3,12 @@
 // gradient measured on 10.6, CoreUI's close, minimize and zoom buttons from ArtFile.bin); the Dock,
 // the menu bar and the Finder's desktop stay as they are, in their layers. EWMH for the shell's
 // programs: the client list, the active window, the struts' work area, minimizing, zooming, full
-// screen. Command (Super) + W, M, H, Q and Tab as on the Mac.
+// screen. Command (Super) + W, M, H, Q and Tab as on the Mac; ⇧⌘3 and ⇧⌘4 (with or without ⌃), the
+// screen shots' symbolic hot keys, for SystemUIServer.
 #pragma once
 
 #include "compositor.h"
+#include "frame.h"
 
 #include <QAbstractNativeEventFilter>
 #include <QElapsedTimer>
@@ -21,7 +23,8 @@
 class WindowServer : public QObject, public QAbstractNativeEventFilter {
     Q_OBJECT
 public:
-    static constexpr int TitleHeight = 22;
+    static constexpr int TitleHeight = Frame::TitleHeight;
+    static constexpr int UtilityTitleHeight = Frame::UtilityTitleHeight;
 
     WindowServer();
     // false when another window manager has the display
@@ -29,57 +32,72 @@ public:
     bool nativeEventFilter(const QByteArray &type, void *message, qintptr *result) override;
 
 private:
-    enum Button { None = -1, Close, Minimize, Zoom, ToolbarButton };
+    enum Button { None = Frame::None, Close = Frame::Close, Minimize = Frame::Minimize, Zoom = Frame::Zoom, ToolbarButton = Frame::ToolbarButton };
     struct Client {
         xcb_window_t window = 0, frame = 0, grip = 0;
         QRect geometry;          // the client's, in root coordinates (the title bar is above it)
         QString title;
-        bool decorated = true;   // false: the application draws its own (Motif hints, no decorations)
+        bool decorated = true;
+        bool buttons = true;     // the close, minimize and zoom buttons (Motif hints' functions)   // false: the application draws its own (Motif hints, no decorations)
         int unifiedToolbar = 0;  // a toolbar continuing the title bar (_SNOWLEOPARD_UNIFIED_TOOLBAR): its height
         bool hasToolbar = false; // its second value: the window has a toolbar, shown or not (the toolbar button)
         QImage proxyIcon;        // the represented file's icon before the title (_SNOWLEOPARD_PROXY_ICON)
+        bool documentEdited = false;  // the close button's dot (_SNOWLEOPARD_DOCUMENT_EDITED)
         bool roundedBottom = false;   // a textured window's bottom corners (_SNOWLEOPARD_ROUNDED_BOTTOM)
+        bool outlined = false;   // a frame's outline though undecorated (the property set: iTunes' own frame)
         bool minimized = false, fullscreen = false, zoomed = false;
+        bool hidden = false;     // minimized by Hide (⌘H): no tile in the Dock, no genie
+        bool utility = false;    // a utility window's small title bar (_NET_WM_WINDOW_TYPE_UTILITY)
         bool floating = false;   // a panel kept over the windows (_NET_WM_STATE_ABOVE, a utility window)
+        double opacity = 1;      // _NET_WM_WINDOW_OPACITY (a translucent Stickies note), given to the compositor
         QVector<uint32_t> keptStates;   // its own states WindowServer keeps (above, skip taskbar, sticky)
         QRect restore;           // before zooming or full screen
         bool deleteWindow = false, takeFocus = false, acceptsInput = true;
         int ignoreUnmaps = 0;
-        QSize minimum;
+        QSize minimum, maximum;   // WM_NORMAL_HINTS' PMinSize, PMaxSize (empty: none)
         xcb_window_t transientFor = 0;
         int hover = None, pressed = None;
         bool overButtons = false;
-        int titleHeight() const { return decorated && !fullscreen ? TitleHeight : 0; }
+        int titleHeight() const { return decorated && !fullscreen ? (utility ? UtilityTitleHeight : TitleHeight) : 0; }
     };
 
     void manage(xcb_window_t w, bool existing);
     void unmanage(Client *c, bool destroyed);
     Client *find(xcb_window_t w);
     void readProperties(Client *c);
+    void readSizeHints(Client *c);   // WM_NORMAL_HINTS' smallest and largest sizes
     void applyShape(Client *c);
     void place(Client *c, bool hasPosition);
     void applyGeometry(Client *c);
     void sendConfigureNotify(Client *c);
     void paintTitle(Client *c);
-    QImage buttonImage(const Client *c, int button) const;
+    Frame::TitleBar titleBar(const Client *c) const;
     int buttonAt(const Client *c, QPoint p) const;
+    QRect buttonRect(const Client *c, int button) const;
 
     void focus(Client *c);
     void raise(Client *c);
     void restackLayers();
-    void minimize(Client *c);
+    void minimize(Client *c, bool hide = false);
     void unminimize(Client *c);
     void toggleZoom(Client *c);
     void setFullscreen(Client *c, bool on);
     void close(Client *c);
     void setWmState(Client *c, uint32_t state);
+    QRect frameRect(const Client *c) const;
+    QRect iconGeometry(const Client *c) const;
+    Compositor::Effect minimizeEffect(double *seconds) const;
+    void publishPreview(Client *c, QImage image);
+    void publishCapture(Client *c, bool shadow, xcb_window_t requestor);
     void setNetState(Client *c);
 
     void updateClientLists();
     void updateWorkArea();
     void setActiveProperty(xcb_window_t w);
     void grabKeys();
+    void paintDesktopPicture();
     void handleKey(xcb_key_press_event_t *e);
+    xcb_window_t frontAppKeyboard();   // the window of the application in front without one, when it has the keyboard
 
     void buttonPress(xcb_button_press_event_t *e);
     void buttonRelease(xcb_button_release_event_t *e);

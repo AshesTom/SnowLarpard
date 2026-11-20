@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>ClientDialogs</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.apple.airport.clientdialogs</string>
+	<key>CFBundleName</key>
+	<string>ClientDialogs</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>6.2.2</string>
+	<key>CFBundleVersion</key>
+	<string>622.2</string>
+	<key>SLReproducesBundle</key>
+	<string>/System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle</string>
+	<key>SLReproducesSystem</key>
+	<string>Mac OS X 10.6.8 (10K549)</string>
+</dict>
+</plist>

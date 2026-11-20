@@ -1,0 +1,56 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# The Snow Leopard session from a Wayland login manager, natively on Wayland: KWin (or cage) only
+# holds the screen, the input devices and the seat, and runs WindowServer-wayland full screen, the
+# session's own compositor (10.6's title bars, shadows, genie; docs/architecture.md). The session
+# (snowleopard-session: the menu bar, the Finder, the Dock) runs on it, the applications too
+# (Firefox, Electron, GTK and Qt in Wayland; X11 ones through the Xwayland the window server starts
+# when one comes). The session ends with SystemUIServer (Log Out), then the window server and KWin.
+#
+#   snowleopard-wayland        what the login manager's "Snow Leopard" entry runs
+#
+# Without WindowServer-wayland (a build without Qt Wayland Compositor), the X11 session instead
+# (snowleopard-x11). Restart and Shut Down act on the computer here (SNOWLEOPARD_POWER=1).
+set -uo pipefail
+here=$(dirname -- "$(readlink -f -- "$0")")
+root=$(cd -- "$here/.." && pwd)
+if [[ -d $root/apps ]]; then
+    apps=${SNOWLEOPARD_APPS:-$root/apps}
+else
+    apps=${SNOWLEOPARD_APPS:-$root/.local/build/apps}
+fi
+server=$apps/WindowServer-wayland
+[[ -x $server ]] || exec "$here/snowleopard-x11" "$@"
+
+if [[ -z ${SNOWLEOPARD_IN_COMPOSITOR:-} ]]; then
+    export SNOWLEOPARD_IN_COMPOSITOR=1 XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=SnowLeopard XDG_SESSION_DESKTOP=SnowLeopard
+    # the keyboard the compositors give their clients: Plasma's layout (kxkbrc) or the system's
+    # (localectl's X11 one)
+    # shellcheck source=snowleopard-keyboard
+    source "$here/snowleopard-keyboard"
+    export_xkb_defaults
+    # 10.6's cursors over the compositor's own window too
+    assets=${SNOWLEOPARD_ASSETS:-$([[ -d $root/assets ]] && echo "$root/assets" || echo "$root/.local/assets")}
+    if [[ -d $assets/share/icons/SnowLeopard/cursors ]]; then
+        export XCURSOR_PATH="$assets/share/icons:${XCURSOR_PATH:-$HOME/.local/share/icons:$HOME/.icons:/usr/share/icons}"
+        export XCURSOR_THEME=SnowLeopard XCURSOR_SIZE=24
+    fi
+    # the compositor runs this script again inside it, and ends with it
+    if command -v kwin_wayland >/dev/null; then
+        # SNOWLEOPARD_KWIN_ARGS: more of KWin's options (--virtual --width 1280 --height 800 to try it
+        # without a screen)
+        # shellcheck disable=SC2086
+        exec kwin_wayland --no-lockscreen --no-global-shortcuts --no-kactivities ${SNOWLEOPARD_KWIN_ARGS:-} --exit-with-session "$0"
+    elif command -v cage >/dev/null; then
+        exec cage -- "$0"
+    fi
+    echo "snowleopard-wayland: no compositor (kwin_wayland or cage)" >&2
+    exit 1
+fi
+
+# Inside KWin: the window server, a client of it full screen, and the session on the window server
+# (WAYLAND_DISPLAY its socket, DISPLAY its Xwayland's, SNOWLEOPARD_WINDOW_SERVER=wayland)
+state=${XDG_STATE_HOME:-$HOME/.local/state}/snowleopard
+mkdir -p "$state"
+export SNOWLEOPARD_POWER=${SNOWLEOPARD_POWER:-1}
+QT_QPA_PLATFORM=wayland exec "$server" --session "$here/snowleopard-session" 2>"$state/WindowServer.log"

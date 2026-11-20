@@ -496,6 +496,33 @@ fall within 1–2 px. The first try showed two defects, now fixed: the paragraph
 still differs is AppKit's (approximated here): the title bar, the buttons' and fields' bezels, the
 help button, the window's grey, and text antialiasing.
 
+## 16. Our Mail.app (`shell/src/mail`)
+
+Built on AquaKit, from the sections above:
+
+| File | What it does |
+|---|---|
+| `main.cpp` | The Welcome assistant: `AssistantWindow.nib` and `AccountSetupAssistant.nib` instantiated by AquaKit's `Nib`, the stamp and veil of §15, the pages pushed and popped as `_pushTab:` / `_popTab` do. The automatic setup guesses the servers (the three domains of §15, else `imap.`/`smtp.` + the domain) and falls back to the manual pages with the error. Then the viewer (§4 toolbar, §9 sidebar and badges, §5 list, §11 headers at level 1), and the compose window (Send from `ComposeWindow_NewMessage.toolbar`). |
+| `store.cpp` | §7–8: the `.emlx` files (length line, message, plist with `flags`, `date-sent`, `remote-id`, `sender`, `subject`), the `<type>-<user>@<host>/<mailbox>.imapmbox/Messages/<uid>.emlx` layout, the flags from `_IMAPMessageFlagsTable`; the accounts in `~/.config/snowleopard/mail.conf`, the passwords in the keyring (libsecret, schema `org.snowleopard.Mail`). |
+| `net.cpp` | IMAP and SMTP with libcurl on a worker thread; the results come back on AquaKit's run loop. Fetching a message marks it read on the server, so `\Seen` is taken off again when it wasn't there; a sent message is appended to the server's Sent mailbox; Delete is `UID MOVE` to Trash (or COPY, `\Deleted`, EXPUNGE). TLS is required, except on localhost. |
+| `mime.cpp` | Headers (folded lines, RFC 2047 words), multipart, quoted-printable, base64, charsets by iconv, HTML made plain, attachments' names, dates. |
+| `textview.cpp` | The compose window's text: lines wrapped at words, the caret, typing and the arrows. |
+
+**Testing.** `tools/mail/fakemail.py` is a local IMAP4rev1 and SMTP server (what curl sends, in
+memory, seeded with plain, multipart quoted-printable and Latin-1 HTML messages). Mail was driven
+in Xvfb through XTEST with a throwaway HOME, end to end: the assistant (a wrong server, the manual
+pages, the right one), the sync (3 messages, `\Seen` kept as it was on the server), opening them
+(read on the server and here, the badge going down), sending (SMTP, then APPEND to Sent, the message
+coming back to the inbox), Delete (UID MOVE to Trash) and the shortcuts. Found and fixed on the way:
+- curl hands a custom command's untagged answers to the program only when they are named like the
+  command, and not FETCH's: the flags are read from curl's debug callback (`CURLINFO_HEADER_IN`);
+- AquaKit's `TextField` left its caret's timer running after it was destroyed: closing a window
+  while one of its fields had the keyboard crashed the program (all AquaKit programs);
+- AquaKit gives no text for a key with ⌘ or ⌃: the shortcuts read the keysym.
+
+Gaps found in AquaKit: no ⌘A (select all) in `TextField`, no attributed text in `TableView` (the
+unread column is a "●", not the bold rows of §10).
+
 ## Next
 
 | Item | Needs |

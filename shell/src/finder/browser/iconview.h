@@ -54,6 +54,20 @@ public:
         return out;
     }
 
+    // the items with these paths selected alone (a new folder, pasted items), the first one shown
+    void selectPaths(const std::vector<std::string> &paths);
+    // where an item's name is, in the window (the rename field's place); empty when it isn't shown
+    AK::Rect nameRectInWindow(const std::string &path) const;
+    // the right button or a Control-click (the item under it selected first): the contextual menu
+    std::function<void(AK::Point inWindow, bool onItem)> onContextMenu;
+    // a click on the name of the item already selected alone: renaming after a moment
+    std::function<void(const Item &)> onClickName;
+    void rightMouseDown(AK::Event &e) override;
+    // the folder kept arranged: Clean Up puts every icon on the grid's nearest free place;
+    // arrangeOnce sorts them once on the grid (Arrange By), both as places to keep
+    std::vector<std::pair<std::string, AK::Point>> cleanUp(bool selectionOnly) const;
+    std::vector<std::pair<std::string, AK::Point>> arrangedPlaces(const std::string &by) const;
+
     std::function<void(const Item &)> onOpen;       // double-click, Command-Down
     std::function<void()> onSelectionChanged;
     std::function<void()> onBack;                   // Command-Up: the enclosing folder
@@ -85,9 +99,12 @@ private:
         double pad, box, labelWidth, labelHeight, lineHeight;
         int lines;
         AK::Size grid;
+        double cellWidth = 0;   // labels at the bottom: ImageKit's cell, without the spacing
     };
     Metrics metrics() const;
     int columns() const;
+    int columnsFor(double width, const Metrics &m) const;
+    AK::Point spotFor(int cell, int cols, const Metrics &m) const;
     std::vector<AK::Point> place(double width) const;
     AK::Point anchor(int index) const;
     AK::Rect iconRect(int index) const;
@@ -109,6 +126,9 @@ private:
     mutable std::vector<AK::Point> m_anchors;   // where each item is, until the items or the width change
     bool m_moving = false;
     AK::Point m_moveFrom, m_moveBy;
+    int m_clickedName = -1;
+    AK::Point m_pressAt;
+    std::vector<AK::Point> gridSpots(size_t count) const;
 };
 
 } // namespace Finder

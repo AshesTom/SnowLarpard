@@ -19,16 +19,23 @@ namespace Finder {
 
 class Operation {
 public:
-    enum Kind { Copy, Move, Duplicate, Trash, EmptyTrash };
+    enum Kind { Copy, Move, Duplicate, Trash, EmptyTrash, PutBack, Compress, SecureEmptyTrash };
     enum Answer { None, Replace, Skip, Stop };
 
-    // sources: paths; destination: a folder (Duplicate: their own; Trash, EmptyTrash: none)
+    // sources: paths; destination: a folder (Duplicate: their own; Trash, EmptyTrash: none).
+    // PutBack: items of the Trash to where they were (their .trashinfo); Compress: the items into
+    // destination's "<name>.zip" or "Archive.zip" (Archive Utility's names, AR40), by zip(1);
+    // SecureEmptyTrash: each file written over before it goes
     static std::shared_ptr<Operation> start(Kind kind, std::vector<std::string> sources, std::string destination = {});
 
     Kind kind() const { return m_kind; }
     const std::vector<std::string> &sources() const { return m_sources; }
     const std::string &destination() const { return m_destination; }
-    std::vector<std::string> results() const;   // the new items' paths (Duplicate, Copy)
+    std::vector<std::string> results() const;   // the new items' paths (Duplicate, Copy, Move, Trash, PutBack, Compress)
+    // where an item of the Trash came from (its .trashinfo's Path), empty when unknown
+    static std::string trashOrigin(const std::string &trashed);
+    // a free name in the folder: "name 2", "name 3"... before the extension (TUniqueNamer)
+    static std::string freeName(const std::string &folder, const std::string &name, bool isFolder);
 
     // the progress (its thread writes, the window reads)
     std::atomic<long long> bytesDone{0}, bytesTotal{0};
@@ -63,6 +70,7 @@ private:
     bool moveItem(const std::string &from, const std::string &to);
     bool removeItem(const std::string &path);
     bool trashItem(const std::string &path);
+    void overwrite(const std::string &path);
     Answer ask(const std::string &target, const std::string &source);
     void fail(const std::string &message);
 

@@ -25,6 +25,7 @@ namespace Finder {
 // Finder's preferences, not the folder's), the view and whether the folder always opens in it
 struct ViewSettings {
     std::string folderName;
+    bool desktop = false;       // the desktop's (no "Always open", background or defaults)
     int view = 0;               // 0 icons, 1 list, 2 columns, 3 Cover Flow
     bool alwaysOpen = false;    // vstl
     int iconSize = 64, gridSpacing = 54, iconTextSize = 12;
