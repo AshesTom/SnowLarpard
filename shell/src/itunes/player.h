@@ -35,6 +35,13 @@ public:
     void setEqualizer(bool on, double preamp, const double bands[10]);
     // Sound Check: the songs' own loudness (their ReplayGain tags) evened out
     void setSoundCheck(bool on);
+    // The visualizer's sound: FFmpeg's astats and aspectralstats on what plays (af-metadata), read
+    // each frame: the level (RMS, dB), the spectrum's centroid and roll-off (Hz) and its flux
+    struct Levels {
+        double rms = -100, centroid = 0, rolloff = 0, flux = 0;
+    };
+    void setAnalysis(bool on);
+    Levels levels() const;
 
     std::function<void()> onEnd;
     std::function<void(const std::string &)> onError;
@@ -46,6 +53,9 @@ private:
     mpv_handle *m_mpv = nullptr;
     int m_fd = -1;
     double m_volume = 1;
+    std::string m_eq;          // the equalizer's filters
+    bool m_analysis = false;
+    void applyFilters();
 };
 
 } // namespace iTunes

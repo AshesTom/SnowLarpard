@@ -36,6 +36,9 @@
 #include "grid.h"
 #include "smartplaylist.h"
 #include "viewoptions.h"
+#include "visualizer.h"
+#include "miniplayer11.h"
+#include "upnext11.h"
 #include "preferences.h"
 #include "library.h"
 #include "player.h"
@@ -988,6 +991,66 @@ private:
     int m_pressed = -1;
 };
 
+// ---- 8.2.1's Store bar (MusicStoreBar.nib: a pane 448 × 28 on PBUT 612, stretched): Back (PBUT 600,
+//   27 × 19 at 7, 4, Msgb), Forward (602, 26 × 19 at 34, Msgf), Home (626, 32 × 19 at 67, Msgh), bound
+//   to the left; the breadcrumb (644, 3 points kept at each end, TXTS 600) 54 × 19 at 160 from the
+//   right, and the account button (606, 11 kept at each end, TXTS 600; Msvc) 146 × 19, 7 from the
+//   right, bound to the right. Each button three columns (kind 3: disabled, normal, pressed).
+class StoreBar : public View {
+public:
+    // FUN_000249e4 (the Store source, kind 2): the bar takes the main area's top 27 points (the nib's
+    // pane is 28, PBUT 612 27 high), the pages under it
+    static constexpr double Height = 27;
+    bool canBack = false, canForward = false;
+    std::string account = "Sign In";
+    std::function<void(const std::string &)> onCommand;   // Msgb, Msgf, Msgh, Msvc
+    void draw(cairo_t *cr) override
+    {
+        drawCell(cr, 612, 0, 0, bounds());
+        const struct { int pic; bool on; const char *cmd; } buttons[3] = {{600, canBack, "Msgb"}, {602, canForward, "Msgf"}, {626, true, "Msgh"}};
+        for (int i = 0; i < 3; ++i)
+            drawCell(cr, buttons[i].pic, stateColumn(3, !buttons[i].on ? 0 : m_pressed == i ? 2 : 1), 0, rectOf(i));
+        AK::TextStyle t;
+        t.font = textStyle(600).font;
+        t.color = Color::gray(0);
+        t.align = Align::Center;
+        drawCell(cr, 606, stateColumn(3, m_pressed == 3 ? 2 : 1), 0, rectOf(3));
+        drawText(cr, account, rectOf(3).translated(0, -1), t);
+    }
+    void mouseDown(Event &e) override
+    {
+        m_pressed = -1;
+        for (int i = 0; i < 4; ++i)
+            if (rectOf(i).contains(e.location))
+                m_pressed = i;
+        setNeedsDisplay();
+    }
+    void mouseUp(Event &e) override
+    {
+        static const char *const cmds[4] = {"Msgb", "Msgf", "Msgh", "Msvc"};
+        const int i = m_pressed;
+        m_pressed = -1;
+        setNeedsDisplay();
+        if (i >= 0 && rectOf(i).contains(e.location) && onCommand) {
+            if ((i == 0 && !canBack) || (i == 1 && !canForward))
+                return;
+            onCommand(cmds[i]);
+        }
+    }
+
+private:
+    Rect rectOf(int i) const
+    {
+        switch (i) {
+        case 0: return {7, 4, 27, 19};
+        case 1: return {34, 4, 26, 19};
+        case 2: return {67, 4, 32, 19};
+        default: return {frame().w - 7 - 146, 4, 146, 19};
+        }
+    }
+    int m_pressed = -1;
+};
+
 // ---- the browser (View ▸ Show Browser, ⌘B): BrowserWindow's layout (FUN_000249e4 at 0x25454–0x25640)
 //   puts three ColumnDisplays over the songs, as tall as the browser's height (+0x452: at first half the
 //   list's room less 10, FUN_000683fa's 0.5; at least 80, and the songs keep 120 below, FUN_0013cbbe),
@@ -1192,7 +1255,10 @@ private:
         m_window->onResize = [this](Size) { layout(); };
         m_window->onKeyChanged = [this](bool) { m_window->contentView()->setNeedsDisplay(); };
         m_window->onUnhandledKey = [this](Event &e) { m_menu.performKeyEquivalent(e); };
-        m_window->onClose = [] { App::shared().quit(); };
+        m_window->onClose = [this] {
+            if (!m_toMini11)   // 11.4: the main window goes for the MiniPlayer's, iTunes stays
+                App::shared().quit();
+        };
         View *c = m_window->contentView();
 
         m_top = c->add<TopBand>();
@@ -1310,6 +1376,25 @@ private:
         };
         m_flow->onPlay = m_grid->onPlay;
         m_viewMode = eleven() ? 0 : std::clamp(Settings("itunes").integer("ViewMode", 0), 0, 2);
+        // 8.2.1's iTunes Store, a source: the Store bar over the pages (iTunesStore's)
+        if (!eleven() && StoreView::available()) {
+            m_store = c->add<StoreView>();
+            m_store->setHidden(true);
+            m_storeBar = c->add<StoreBar>();
+            m_storeBar->setHidden(true);
+            m_storeBar->account = tr("137.080");
+            m_storeBar->onCommand = [this](const std::string &cmd) {
+                if (cmd == "Msvc")
+                    return;   // Sign In: no account here
+                m_store->command(cmd == "Msgb" ? "back" : cmd == "Msgf" ? "forward" : "home");
+            };
+            m_store->onNavigation = [this] {
+                m_storeBar->canBack = m_store->canGoBack();
+                m_storeBar->canForward = m_store->canGoForward();
+                m_storeBar->setNeedsDisplay();
+            };
+            m_store->onLibrary = [this] { m_sources->select(1, true); };
+        }
         m_splitter = c->add<BrowserSplitter>();
         m_splitter->setHidden(true);
         m_splitter->onPress = [this] { m_browserDragFrom = m_browse[1]->frame().h; };
@@ -1327,6 +1412,12 @@ private:
 
         if (eleven())
             buildNavAndStore(c);
+
+        // the visualizer over the body (View ▸ Show Visualizer): 8.2.1's Magnetosphere
+        if (!eleven()) {
+            m_visualizer = c->add<Visualizer>(m_player);
+            m_visualizer->setHidden(true);
+        }
 
         m_bottom = c->add<BottomBand>();
         m_newPlaylist = m_bottom->add<PictureButton>(431, 0);
@@ -1365,10 +1456,16 @@ private:
         // STR# 163: Songs, Albums, Artists, Genres, Playlists, Radio; iTunes Store, Library
         for (const char *k : {"163.099", "163.100", "163.101", "163.102", "163.104", "163.106"})
             m_nav->views.push_back(tr(k));
-        m_nav->viewEnabled = {true, false, false, false, false, false};   // the songs' list alone so far
+        // Songs, and Albums, Artists and Genres as grids (AlbumsGridViewController and the like)
+        m_nav->viewEnabled = {true, true, true, true, false, false};
         m_nav->storeTitle = tr("163.084");
         m_nav->libraryTitle = tr("163.092");
-        m_nav->onView = [this](int) { setStoreMode(false); };
+        m_nav->onView = [this](int v) {
+            m_view11 = v;
+            if (v >= 1 && v <= 3)
+                m_grid->setGrouping(GridView::Grouping(v - 1));
+            setStoreMode(false);
+        };
         m_nav->onStore = [this] { setStoreMode(true); };
         m_nav->onLibrary = [this] { setStoreMode(false); };
         if (!StoreView::available())
@@ -1415,11 +1512,13 @@ private:
     // The zoom button and Window ▸ Zoom: iTunes' mini player (FUN_00149a4a, the flag +0x172). Each mode
     // keeps its own size (+0x176 the full one, +0x180 the mini one, 200 wide at first: FUN_0000fe66 at
     // 0xff71); the limits are kEventWindowGetMinimum/MaximumSize's (FUN_001440ca): mini 65 high, 65 to
-    // 450 wide; full at least 700 x 400, unbounded. 11.4's mini player is a window of its own: not done.
+    // 450 wide; full at least 700 x 400, unbounded. 11.4's MiniPlayer is a window of its own (miniplayer11.cpp).
     void zoom()
     {
-        if (eleven())
+        if (eleven()) {
+            switchToMini11(!(m_mini11 && m_mini11->isShown()));
             return;
+        }
         const Size now = m_window->size();
         m_mini = !m_mini;
         if (m_mini) {
@@ -1438,9 +1537,79 @@ private:
         m_play->setPicture(m_mini ? 326 : 320);
         m_next->setPicture(m_mini ? 324 : 318);
         m_top->mini = m_mini;
+        if (m_mini && m_visualizerShown)
+            showVisualizer(false);
         // Advanced ▸ Keep MiniPlayer on top of all other windows
         m_window->setFloating(m_mini && Settings("itunes").boolean("MiniOnTop", false));
         layout();
+    }
+
+    // 11.4: Window ▸ Switch to MiniPlayer (`smin`, ⌥⌘M) hides the main window for the MiniPlayer's;
+    // its expand button and its close button bring the main window back
+    void switchToMini11(bool on)
+    {
+        if (!m_mini11) {
+            MiniPlayer11::Hooks h;
+            h.playPause = [this] { playPause(); };
+            h.next = [this] { advance(1, false); };
+            h.previous = [this] { previous(); };
+            h.expand = h.close = [this] { switchToMini11(false); };
+            h.setVolume = [this](double v) { setVolume(v); };
+            m_mini11 = std::make_unique<MiniPlayer11>(h);
+        }
+        if (on) {
+            m_mini11->show();
+            m_mini11->setFloating(Settings("itunes").boolean("MiniOnTop", false));
+            m_mini11->setVolume(m_volume->value);
+            m_toMini11 = true;
+            m_window->close();
+            m_toMini11 = false;
+            refreshLCD();
+        } else {
+            m_mini11->hide();
+            m_window->show();
+        }
+    }
+
+    // 11.4's Up Next: the queue's songs after the one playing (View ▸ Show Up Next, `PQsh`); a row's
+    // play button plays it, its remove button takes it out, Clear (`PQcl`) empties what is to come
+    void refreshUpNext()
+    {
+        if (!m_upNext || !m_upNext->isShown())
+            return;
+        std::vector<UpNext11::Song> songs;
+        for (size_t i = size_t(m_queuePos) + 1; i < m_queue.size() && songs.size() < 50; ++i)
+            if (const Track *t = m_library.track(m_queue[i]))
+                songs.push_back({t->name, t->artist, Image::fromData(artworkData(t->path), {40, 40})});
+        m_upNext->setSongs(std::move(songs));
+    }
+
+    void showUpNext()
+    {
+        if (!m_upNext) {
+            m_upNext = std::make_unique<UpNext11>();
+            m_upNext->onPlay = [this](size_t i) {
+                m_queuePos = int(std::min(m_queue.size() - 1, size_t(m_queuePos) + 1 + i));
+                playTrack(m_queue[size_t(m_queuePos)]);
+                refreshUpNext();
+            };
+            m_upNext->onRemove = [this](size_t i) {
+                const size_t at = size_t(m_queuePos) + 1 + i;
+                if (at < m_queue.size())
+                    m_queue.erase(m_queue.begin() + long(at));
+                refreshUpNext();
+            };
+            m_upNext->onClear = [this] { clearUpNext(); };
+        }
+        m_upNext->toggle();
+        refreshUpNext();
+    }
+
+    void clearUpNext()
+    {
+        if (size_t(m_queuePos) + 1 < m_queue.size())
+            m_queue.erase(m_queue.begin() + m_queuePos + 1, m_queue.end());
+        refreshUpNext();
     }
 
     void layout()
@@ -1509,6 +1678,8 @@ private:
         m_sourceScroll->setDocumentHeight(m_sources->frame().h);
         m_divider->setFrame({sourceW, bodyTop, 1, bodyH});
         layoutBrowser({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
+        if (m_visualizer)
+            m_visualizer->setFrame({0, bodyTop, W, bodyH});
 
         // the bottom band: its buttons 20 high, 4 above the bottom
         m_bottom->setFrame({0, H - BottomBandHeight, W, BottomBandHeight});
@@ -1525,6 +1696,18 @@ private:
     // The list's room: the browser over the songs when shown (FUN_000249e4, FUN_0013cbbe)
     void layoutBrowser(const Rect &area)
     {
+        if (m_store && !eleven()) {
+            const bool store = m_store8 && !m_mini;
+            m_store->setHidden(!store);
+            m_storeBar->setHidden(!store);
+            if (store) {
+                for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2]})
+                    v->setHidden(true);
+                m_storeBar->setFrame({area.x, area.y, area.w, StoreBar::Height});
+                m_store->setFrame({area.x, area.y + StoreBar::Height, area.w, std::max(0.0, area.h - StoreBar::Height)});
+                return;
+            }
+        }
         // the view buttons' row: the chosen one's second row
         for (int i = 0; i < 3; ++i)
             m_views[i]->setRow(i == m_viewMode ? 1 : 0);
@@ -1534,11 +1717,14 @@ private:
         m_flow->setHidden(!flow);
         m_list->setHidden(grid || m_mini);
         if (flow) {
-            // Cover Flow over the songs: the upper part (55% here, by eye), the songs under it
+            // Cover Flow over the songs (FUN_000249e4 with the view mode +0x152 = 2): its height the
+            // preference's (+0x593a; nothing kept: 0), at least 300, at most what leaves the songs their
+            // 120 (FUN_0013cbbe); the songs right under it (the browser's 10 between: not here)
             for (TrackList *b : m_browse)
                 b->setHidden(true);
             m_splitter->setHidden(true);
-            const double h = std::floor(area.h * 0.55);
+            const double kept = Settings("itunes").integer("CoverFlowHeight", 0);
+            const double h = std::max(0.0, std::min(std::max(kept, 300.0), area.h - 120));
             m_flow->setFrame({area.x, area.y, area.w, h});
             m_list->setFrame({area.x, area.y + h, area.w, area.h - h});
             return;
@@ -1673,6 +1859,12 @@ private:
         m_sourceScroll->setDocumentHeight(m_sources->frame().h);
         m_divider->setFrame({sourceW, bodyTop, 1, bodyH});
         m_list->setFrame({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
+        // Albums, Artists, Genres: the grid in the songs' place
+        const bool grid = m_view11 >= 1 && m_view11 <= 3 && !(m_nav && m_nav->store);
+        m_grid->setHidden(!grid);
+        m_list->setHidden(grid || (m_nav && m_nav->store));
+        if (grid)
+            m_grid->setFrame({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
         m_bottom->setFrame({0, H - BottomHeight11, W, BottomHeight11});
         m_window->contentView()->setNeedsDisplay();
     }
@@ -1703,7 +1895,7 @@ private:
         SourceRow store;
         store.title = tr("137.001");
         store.icon = 7;
-        store.selectable = false;
+        store.selectable = !eleven() && StoreView::available();   // 8.2.1: the Store in the window
         store.tag = -2;
         m_sources->rows.push_back(store);
         header(e ? "135.009" : "135.014");
@@ -1723,8 +1915,28 @@ private:
     }
 
     // The songs of the selected source, filtered by the search field, sorted by the column
+    bool storeShown() const { return m_nav ? m_nav->store : m_store8; }
+
     void loadSource()
     {
+        // 8.2.1: the iTunes Store source shows the Store in the songs' place
+        if (!eleven() && m_store) {
+            const int sel = m_sources->selected();
+            const bool store = sel >= 0 && size_t(sel) < m_sources->rows.size() && m_sources->rows[size_t(sel)].tag == -2;
+            if (store != m_store8) {
+                m_store8 = store;
+                layout();
+                if (store) {
+                    m_store->start();
+                    m_window->makeFirstResponder(m_store);
+                }
+            }
+            if (store) {
+                m_bottom->totals.clear();
+                m_bottom->setNeedsDisplay();
+                return;
+            }
+        }
         std::vector<int> ids;
         const int sel = m_sources->selected();
         const int tag = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
@@ -1746,7 +1958,7 @@ private:
                 continue;
             shown.push_back(id);
         }
-        if (m_viewMode == 1 && !eleven())
+        if ((m_viewMode == 1 && !eleven()) || eleven())   // 11.4: for its Albums, Artists, Genres
             m_grid->setSongs(shown);
         else if (m_showBrowser && !eleven() && m_viewMode == 0)
             shown = browse(shown);
@@ -1995,6 +2207,8 @@ private:
     {
         const bool active = !m_player.isStopped() && m_library.track(m_current);
         m_play->setRow(m_player.isPlaying() ? 1 : 0);
+        if (m_mini11)
+            m_mini11->setPlaying(m_player.isPlaying());
         if (m_list->playingPaused != m_player.isPaused()) {
             m_list->playingPaused = m_player.isPaused();
             m_list->body()->setNeedsDisplay();
@@ -2007,6 +2221,12 @@ private:
                 m_lcd->artwork = eleven() ? Image::fromData(artworkData(t.path), {128, 128}) : Image();
             }
             m_lcd->setTrack(t.name, t.artist, t.album);
+            if (m_upNext && t.path != m_upNextPath) {
+                m_upNextPath = t.path;
+                refreshUpNext();
+            }
+            if (m_mini11)
+                m_mini11->setSong(t.name, t.artist.empty() ? t.album : t.artist + " — " + t.album, m_lcd->artwork);
             m_lcd->position = m_player.position();
             m_lcd->duration = m_player.duration() > 0 ? m_player.duration() : t.totalTime / 1000.0;
         }
@@ -2183,6 +2403,41 @@ private:
         m_window->setFloating(m_mini && s.boolean("MiniOnTop", false));
     }
 
+    // View ▸ Full Screen (`full`, ⌘F) with the visualizer on: Magnetosphere over the whole screen, a
+    // click or a key back to the window
+    void fullScreenVisualizer()
+    {
+        if (m_fullVisualizer) {
+            App::shared().later([this] {
+                m_fullVisualizer->setRunning(false);
+                m_fullWindow.reset();
+                m_fullVisualizer = nullptr;
+                if (m_visualizerShown)
+                    m_visualizer->setRunning(true);
+            });
+            return;
+        }
+        const Rect screen = App::shared().screenFrame();
+        m_fullWindow = std::make_unique<Window>(Size{screen.w, screen.h}, "Visualizer", Window::FullScreen);
+        m_fullVisualizer = m_fullWindow->contentView()->add<Visualizer>(m_player);
+        m_fullVisualizer->setFrame({0, 0, screen.w, screen.h});
+        m_fullVisualizer->onDismiss = [this] { fullScreenVisualizer(); };
+        m_visualizer->setRunning(false);
+        m_fullVisualizer->setRunning(true);
+        m_fullWindow->makeFirstResponder(m_fullVisualizer);
+        m_fullWindow->show();
+    }
+
+    void showVisualizer(bool on)
+    {
+        if (!m_visualizer)
+            return;
+        m_visualizerShown = on && !m_mini;
+        m_visualizer->setHidden(!m_visualizerShown);
+        m_visualizer->setRunning(m_visualizerShown);
+        layout();
+    }
+
     void showInFinder()
     {
         if (m_list->selected < 0)
@@ -2274,13 +2529,13 @@ private:
         if (m_store && (a == "Msgh" || a == "Msrp"))   // 11.4's Store ▸ Home, Reload Page
             return true;
         if (m_store && a == "Msgb")
-            return m_nav->store && m_store->canGoBack();
+            return storeShown() && m_store->canGoBack();
         if (m_store && a == "Msgf")
-            return m_nav->store && m_store->canGoForward();
+            return storeShown() && m_store->canGoForward();
         if (a == "stop")   // 11.4's Controls ▸ Stop
             return !m_player.isStopped();
         if (a == "volu" || a == "vold" || a == "mute" || a == "TFnd" || a == "add " || a == "nply" || a == "minw" ||
-            a == "zoom" || a == "brwn" || a == "batf" || a == "abou" || a == "terminate:" || a == "hide:" ||
+            a == "zoom" || a == "smin" || a == "minp" || (eleven() && (a == "PQsh" || a == "PQcl")) || a == "brwn" || a == "batf" || a == "abou" || a == "terminate:" || a == "hide:" ||
             a == "hideOtherApplications:" || a == "unhideAllApplications:" || a == "clos" || a == "CLOS")
             return true;
         if (a == "eqwn")   // Window ▸ Equalizer: 8.2.1's EQWindow
@@ -2294,6 +2549,12 @@ private:
             return hasSel;
         if (a == "nspl")
             return !eleven();
+        if (a == "full")
+            return m_visualizer && m_visualizerShown && !eleven();
+        if (a == "vtog") {   // View ▸ Show / Hide Visualizer
+            v.title = tr(m_visualizerShown ? "kMenuItemHideVisualizer" : "kMenuItemShowVisualizer");
+            return m_visualizer && !m_mini;
+        }
         if (a == "pref")   // iTunes ▸ Preferences…: 8.2.1's
             return !eleven();
         if (a == "VOpt")
@@ -2339,8 +2600,10 @@ private:
         else if (a == "stop")
             stop();
         else if (m_store && (a == "Msgh" || a == "Msrp" || a == "Msgb" || a == "Msgf")) {
-            if (!m_nav->store)
+            if (m_nav && !m_nav->store)
                 setStoreMode(true);
+            else if (!m_nav && !m_store8)
+                m_sources->select(3, true);   // 8.2.1: the iTunes Store source
             m_store->command(a == "Msgh" ? "home" : a == "Msrp" ? "reload" : a == "Msgb" ? "back" : "forward");
         }
         else if (a == "volu")
@@ -2355,6 +2618,12 @@ private:
                 setVolume(m_muted > 0 ? m_muted : 1);
         } else if (a == "zoom") {
             zoom();
+        } else if (a == "PQsh") {
+            showUpNext();
+        } else if (a == "PQcl") {
+            clearUpNext();
+        } else if (a == "smin" || a == "minp") {
+            switchToMini11(!(m_mini11 && m_mini11->isShown()));
         } else if (a == "TFnd")
             m_window->makeFirstResponder(m_search);
         else if (a == "add ")
@@ -2395,6 +2664,10 @@ private:
             newSmartPlaylist();
         else if (a == "VOpt")
             showViewOptions();
+        else if (a == "vtog")
+            showVisualizer(!m_visualizerShown);
+        else if (a == "full")
+            fullScreenVisualizer();
         else if (a == "pref") {
             m_prefs.onApply = [this] { applyPreferences(); };
             m_prefs.show();
@@ -2418,6 +2691,10 @@ private:
     std::unique_ptr<SmartPlaylistWindow> m_smartWindow;
     std::unique_ptr<ViewOptionsWindow> m_viewOptions;
     PreferencesWindow m_prefs;
+    Visualizer *m_visualizer = nullptr;
+    std::unique_ptr<Window> m_fullWindow;
+    Visualizer *m_fullVisualizer = nullptr;
+    bool m_visualizerShown = false;
     std::vector<int> m_columnFields;      // the list's columns, by field (View Options)
     int m_sortField = 2;                  // the field the songs are sorted by
     MainMenu m_menu;
@@ -2425,6 +2702,8 @@ private:
     TopBand *m_top = nullptr;
     NavBar *m_nav = nullptr;
     StoreView *m_store = nullptr;
+    StoreBar *m_storeBar = nullptr;   // 8.2.1's
+    bool m_store8 = false;            // 8.2.1: the iTunes Store source chosen
     FrameButtons *m_frameButtons = nullptr;
     BottomBand *m_bottom = nullptr;
     PictureButton *m_prev = nullptr, *m_play = nullptr, *m_next = nullptr, *m_speakerLow = nullptr, *m_speakerHigh = nullptr;
@@ -2441,6 +2720,7 @@ private:
     TrackList *m_browse[3] = {};          // Genre, Artist, Album
     BrowserSplitter *m_splitter = nullptr;
     GridView *m_grid = nullptr;
+    int m_view11 = 0;   // 11.4's nav bar view: 0 Songs, 1 Albums, 2 Artists, 3 Genres
     CoverFlowView *m_flow = nullptr;
     int m_viewMode = 0;                   // 0 the list, 1 the grid
     bool m_showBrowser = false, m_browseGenre = true;
@@ -2455,6 +2735,10 @@ private:
     int m_repeat = 0;   // 0 off, 1 all, 2 one (432's rows)
     double m_muted = 0;
     bool m_mini = false;
+    std::unique_ptr<MiniPlayer11> m_mini11;
+    bool m_toMini11 = false;
+    std::unique_ptr<UpNext11> m_upNext;
+    std::string m_upNextPath;
     Size m_fullSize{1000, 620 + TitleBarHeight};
     double m_miniWidth = 200;
     int m_timer = 0;

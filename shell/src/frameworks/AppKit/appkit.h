@@ -47,6 +47,7 @@ public:
     }
     void addSubview(View *v);   // takes it
     void removeSubview(View *v);   // deletes it
+    void bringSubviewToFront(View *v);   // drawn last, hit first
     void removeAllSubviews();
     const std::vector<View *> &subviews() const { return m_subviews; }
     View *superview() const { return m_parent; }

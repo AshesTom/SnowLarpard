@@ -190,7 +190,10 @@ if(ITUNES_DEPS_FOUND)
                    src/itunes/smartplaylist.cpp src/itunes/smartplaylist.h
                    src/itunes/coverflow.cpp src/itunes/coverflow.h
                    src/itunes/viewoptions.cpp src/itunes/viewoptions.h
-                   src/itunes/preferences.cpp src/itunes/preferences.h)
+                   src/itunes/preferences.cpp src/itunes/preferences.h
+                   src/itunes/visualizer.cpp src/itunes/visualizer.h
+                   src/itunes/miniplayer11.cpp src/itunes/miniplayer11.h
+                   src/itunes/upnext11.cpp src/itunes/upnext11.h)
     target_link_libraries(iTunes PRIVATE aquakit PkgConfig::ITUNES_DEPS)
     target_compile_options(iTunes PRIVATE -Wall -Wextra)
     set_target_properties(iTunes PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/iTunes.app/Contents/MacOS")

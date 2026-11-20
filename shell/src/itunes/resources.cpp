@@ -319,6 +319,13 @@ PictureInfo pictureInfo(int id)
         {8251, {2, 13, 0, 0, 3}},  {886, {4, 2, 11, 14, 4}},
         // the songs' header (304, 313 right to left) and status icons (FUN_00e5675c)
         {304, {3, 4, 2, 16, 3}},   {313, {3, 4, 16, 2, 3}},  {8455, {2, 10, 0, 0, 0}},
+        // the MiniPlayer's (MiniPlayerController, FUN_00a062da)
+        {8110, {3, 1, 0, 0, 3}},   {8111, {3, 1, 0, 0, 3}},  {8112, {3, 3, 0, 0, 3}},  {8113, {3, 1, 0, 0, 3}},
+        {8114, {3, 4, 0, 0, 3}},   {8118, {3, 1, 0, 0, 3}},  {8122, {2, 1, 3, 3, 2}},  {8123, {3, 4, 0, 0, 3}},
+        {8124, {3, 2, 0, 0, 3}},   {8126, {3, 1, 0, 0, 3}},  {8160, {3, 1, 0, 0, 3}},
+        // Up Next's (PlayQueueHeaderView, PlayQueueCell)
+        {8259, {3, 1, 5, 5, 3}},   {8314, {3, 2, 0, 0, 3}},  {8316, {3, 1, 3, 3, 8}},  {8452, {3, 2, 0, 0, 3}},
+        {8454, {3, 2, 0, 0, 3}},   {8459, {3, 2, 0, 0, 3}},
     };
     if (eleven()) {
         auto it = table11.find(id);
@@ -348,6 +355,9 @@ PictureInfo pictureInfo(int id)
         {138, {3, 2, 0, 0, 3}},
         // the Preferences' Parental lock (PBUT 142: 33-point cells, kind 1; row 0 locked)
         {142, {3, 2, 0, 0, 1}},
+        // the Store bar (MusicStoreBar.nib)
+        {600, {3, 1, 0, 0, 3}},    {602, {3, 1, 0, 0, 3}},   {606, {3, 1, 11, 11, 3}}, {612, {1, 1, 0, 0, 0}},
+        {626, {3, 1, 0, 0, 3}},    {644, {1, 1, 3, 3, 0}},
     };
     auto it = table.find(id);
     return it == table.end() ? PictureInfo{} : it->second;

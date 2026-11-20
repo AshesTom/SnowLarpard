@@ -137,10 +137,31 @@ private:
 class GridView::Items : public View {
 public:
     explicit Items(GridView *g) : m_grid(g) {}
-    double side() const { return std::round(100 * (0.5 + 1.5 * m_grid->m_zoom)); }
-    double cellW() const { return side() + 40; }
-    double cellH() const { return side() + 58; }
-    int columns() const { return std::max(1, int((frame().w - 10) / cellW())); }
+    double side() const
+    {
+        if (eleven())
+            return baseW11() + extra11() - 20;
+        return std::round(100 * (0.5 + 1.5 * m_grid->m_zoom));
+    }
+    // 11.4 (AlbumsGridViewController's item size, FUN_0004a6ee): by the size setting 1, 25, 50, 75 or
+    // 100, 128, 138, 148, 158 or 168 wide, 14 more high (the two lines under the cover); laid out by
+    // ITGridViewFillTilingAugmenter (FUN_007e49ce): as many columns as fit, each cell then wider by an
+    // equal whole share of what is left, and taller by that × its height / width
+    double baseW11() const
+    {
+        const int level = int(std::round(m_grid->m_zoom * 4));
+        return 128 + 10 * std::clamp(level, 0, 4);
+    }
+    double baseH11() const { return baseW11() + 14; }
+    int columns11() const { return std::max(1, int(frame().w / baseW11())); }
+    double extra11() const
+    {
+        const int n = columns11();
+        return std::floor(std::max(0.0, frame().w - n * baseW11()) / n);
+    }
+    double cellW() const { return eleven() ? baseW11() + extra11() : side() + 40; }
+    double cellH() const { return eleven() ? baseH11() + std::floor(baseH11() / baseW11() * extra11()) : side() + 58; }
+    int columns() const { return eleven() ? columns11() : std::max(1, int((frame().w - 10) / cellW())); }
     double contentHeight() const
     {
         const int n = int(m_grid->m_groups.size()), c = columns();
@@ -149,6 +170,8 @@ public:
     Rect cellRect(int i) const
     {
         const int c = columns();
+        if (eleven())
+            return {(i % c) * cellW(), 10 + (i / c) * cellH(), cellW(), cellH()};
         // the row's cells spread over the width
         const double gap = (frame().w - c * cellW()) / (c + 1);
         return {gap + (i % c) * (cellW() + gap), 10 + (i / c) * cellH(), cellW(), cellH()};
@@ -156,10 +179,46 @@ public:
     Rect artRect(int i) const
     {
         const Rect c = cellRect(i);
+        if (eleven())   // by eye: 10 in at the sides and the top
+            return {c.x + 10, c.y, side(), side()};
         return {c.x + 20, c.y + 12, side(), side()};
+    }
+    void draw11(cairo_t *cr)
+    {
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_paint(cr);
+        // TextStyles' 1001 (item grid 1: HelveticaNeue-Medium 13) and 1002 (item grid 2: HelveticaNeue 12)
+        AK::TextStyle title, sub;
+        const iTunes::TextStyle t1 = textStyle(1001), t2 = textStyle(1002);
+        title.font = t1.font;
+        title.color = Color::gray(0);
+        sub.font = t2.font;
+        sub.color = Color::gray(110);
+        for (size_t i = 0; i < m_grid->m_groups.size(); ++i) {
+            const Group &g = m_grid->m_groups[i];
+            const Rect a = artRect(int(i));
+            const Image img = m_grid->cover(g.artPath);
+            if (!img.isNull())
+                img.draw(cr, a);
+            else
+                fill(cr, a, Color::gray(225));
+            if (int(i) == m_grid->m_selected) {
+                cairo_set_source_rgb(cr, 0.22, 0.46, 0.84);
+                cairo_set_line_width(cr, 3);
+                cairo_rectangle(cr, a.x - 1.5, a.y - 1.5, a.w + 3, a.h + 3);
+                cairo_stroke(cr);
+            }
+            drawText(cr, g.title, Rect{a.x, a.bottom() + 3, a.w, 16}, title);
+            if (!g.subtitle.empty())
+                drawText(cr, g.subtitle, Rect{a.x, a.bottom() + 18, a.w, 15}, sub);
+        }
     }
     void draw(cairo_t *cr) override
     {
+        if (eleven()) {
+            draw11(cr);
+            return;
+        }
         fill(cr, bounds(), Background);
         AK::TextStyle title, sub;
         title.font = Font::boldSystem(11);
@@ -238,9 +297,12 @@ void GridView::setFrame(const Rect &r)
 
 void GridView::relayout()
 {
-    m_bar->setFrame({0, 0, frame().w, BarHeight});
+    // 11.4: no browse bar (the nav bar chooses Albums, Artists, Genres)
+    const double bar = eleven() ? 0 : BarHeight;
+    m_bar->setHidden(eleven());
+    m_bar->setFrame({0, 0, frame().w, bar});
     auto *sv = static_cast<ScrollView *>(m_scroll);
-    sv->setFrame({0, BarHeight, frame().w, std::max(0.0, frame().h - BarHeight)});
+    sv->setFrame({0, bar, frame().w, std::max(0.0, frame().h - bar)});
     m_items->setFrame({0, 0, sv->frame().w - 15, 1});
     sv->lineStep = 20;
     sv->setDocumentHeight(std::max(m_items->contentHeight(), sv->frame().h));
@@ -249,7 +311,7 @@ void GridView::relayout()
     m_bar->setNeedsDisplay();
 }
 
-void GridView::draw(cairo_t *cr) { fill(cr, bounds(), Background); }
+void GridView::draw(cairo_t *cr) { fill(cr, bounds(), eleven() ? Color::gray(255) : Background); }
 
 void GridView::setSongs(const std::vector<int> &ids)
 {

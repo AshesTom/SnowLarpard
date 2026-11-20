@@ -1627,6 +1627,8 @@ void TabView::addTab(const std::string &label, View *page)
     m_labels.push_back(label);
     m_pages.push_back(page);
     addSubview(page);
+    // the tabs above the pages: a page kept where its nib put it (keepPageFrames) may lie under them
+    bringSubviewToFront(m_tabs);
     layout();
 }
 

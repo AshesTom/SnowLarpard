@@ -44,6 +44,16 @@ void View::addSubview(View *v)
     setNeedsDisplay();
 }
 
+void View::bringSubviewToFront(View *v)
+{
+    auto it = std::find(m_subviews.begin(), m_subviews.end(), v);
+    if (it == m_subviews.end())
+        return;
+    m_subviews.erase(it);
+    m_subviews.push_back(v);
+    setNeedsDisplay();
+}
+
 void View::removeSubview(View *v)
 {
     auto it = std::find(m_subviews.begin(), m_subviews.end(), v);

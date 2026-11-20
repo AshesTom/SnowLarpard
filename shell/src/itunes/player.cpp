@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <clocale>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <unistd.h>
 
 namespace iTunes {
@@ -156,7 +158,45 @@ void Player::setEqualizer(bool on, double preamp, const double bands[10])
             af += buf;
         }
     }
+    m_eq = af;
+    applyFilters();
+}
+
+void Player::applyFilters()
+{
+    if (!m_mpv)
+        return;
+    std::string af = m_eq;
+    if (m_analysis)
+        af += std::string(af.empty() ? "" : ",") + "@vis:lavfi=[astats=metadata=1:reset=1,aspectralstats=measure=centroid+rolloff+flux]";
     mpv_set_property_string(m_mpv, "af", af.c_str());
+}
+
+void Player::setAnalysis(bool on)
+{
+    if (on == m_analysis)
+        return;
+    m_analysis = on;
+    applyFilters();
+}
+
+Player::Levels Player::levels() const
+{
+    Levels l;
+    if (!m_mpv || !m_analysis || m_state != Playing)
+        return l;
+    auto get = [&](const char *key, double &out) {
+        char *s = mpv_get_property_string(m_mpv, (std::string("af-metadata/vis/") + key).c_str());
+        if (s) {
+            out = std::atof(s);
+            mpv_free(s);
+        }
+    };
+    get("lavfi.astats.Overall.RMS_level", l.rms);
+    get("lavfi.aspectralstats.1.centroid", l.centroid);
+    get("lavfi.aspectralstats.1.rolloff", l.rolloff);
+    get("lavfi.aspectralstats.1.flux", l.flux);
+    return l;
 }
 
 } // namespace iTunes

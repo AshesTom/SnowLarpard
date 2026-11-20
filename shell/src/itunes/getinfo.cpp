@@ -8,8 +8,13 @@
 // (40, 421, 251) with its popup (CNTL 2710 at 301, 419); "Part of a compilation" (351, 420). Each
 // label 20 points over its field, 3 to its left; the labels the DITL's own text.
 // The Summary pane is drawn by code not read here: its layout below is by eye (the artwork, the names,
-// then the file's facts under the list's column names). Video, Sorting and Options have no tab: what
-// they edit isn't kept. Lyrics: the tags' lyrics; Artwork: the song's own picture.
+// then the file's facts under the list's column names). Video DITL 275 (Show, Season Number, Episode
+// ID, Episode Number, Description), Sorting DITL 276 (Name, Artist, Album Artist, Album, Composer, Show
+// and their Sort fields: the tags' TITLESORT, ARTISTSORT, ALBUMARTISTSORT, ALBUMSORT, COMPOSERSORT,
+// SHOWSORT), Options DITL 272 (Volume Adjustment on CNTL 2722, Equalizer Preset 2724, Media Kind 2725,
+// VoiceOver Language 2726, Rating, Start and Stop Time, Remember playback position, Skip when
+// shuffling, Part of a gapless album), each built from its DITL; what the library doesn't keep is
+// shown disabled. Lyrics: the tags' lyrics; Artwork: the song's own picture.
 #include "getinfo.h"
 
 #include "controls.h"
@@ -21,6 +26,7 @@
 #include <taglib/tpropertymap.h>
 
 #include <algorithm>
+#include <map>
 #include <cstdlib>
 
 using namespace AK;
@@ -72,9 +78,102 @@ void writeLyrics(const std::string &path, const std::string &text)
     f.save();
 }
 
+// the Sorting pane's Sort fields (DITL 276's edit items 4, 8, …, 24) and their tags
+const struct {
+    int item;
+    const char *tag;
+} SortFields[] = {{4, "TITLESORT"}, {8, "ARTISTSORT"}, {12, "ALBUMARTISTSORT"}, {16, "ALBUMSORT"}, {20, "COMPOSERSORT"}, {24, "SHOWSORT"}};
+
+std::map<std::string, std::string> tagsOf(const std::string &path)
+{
+    std::map<std::string, std::string> out;
+    TagLib::FileRef f(path.c_str());
+    if (f.isNull() || !f.file())
+        return out;
+    const TagLib::PropertyMap p = f.file()->properties();
+    for (const auto &[k, v] : p)
+        if (!v.isEmpty())
+            out[k.to8Bit(true)] = v.front().to8Bit(true);
+    return out;
+}
+
+void writeTags(const std::string &path, const std::map<std::string, std::string> &tags)
+{
+    TagLib::FileRef f(path.c_str());
+    if (f.isNull() || !f.file())
+        return;
+    TagLib::PropertyMap p = f.file()->properties();
+    for (const auto &[k, v] : tags) {
+        if (v.empty())
+            p.erase(TagLib::String(k, TagLib::String::UTF8));
+        else
+            p.replace(TagLib::String(k, TagLib::String::UTF8), TagLib::StringList(TagLib::String(v, TagLib::String::UTF8)));
+    }
+    f.file()->setProperties(p);
+    f.save();
+}
+
+// A pane from its DITL (the dialog's coordinates, less the tab view's place): its texts, fields, check
+// boxes, buttons, popups (CNTL 401–415 on MENU min) and sliders (48–51); all disabled but the fields
+std::map<int, View *> ditlPage(View *page, int ditl)
+{
+    std::map<int, View *> items;
+    int n = 0;
+    for (const DialogItem &it : dialogItems(ditl)) {
+        ++n;
+        View *v = nullptr;
+        Rect r = it.rect;
+        switch (it.type) {
+        case DialogItem::Text:
+            v = page->add<Label>(it.text, Font::system(11));
+            break;
+        case DialogItem::Edit: {
+            TextField *f = page->add<TextField>();
+            f->font = Font::system(11);
+            r = Rect{r.x - 3, r.y - 3, r.w + 6, r.h + 6};
+            v = f;
+            break;
+        }
+        case DialogItem::CheckBox:
+        case DialogItem::Radio: {
+            CheckBox *b = page->add<CheckBox>(it.text, it.type == DialogItem::Radio);
+            b->small = true;
+            v = b;
+            break;
+        }
+        case DialogItem::Button:
+            v = page->add<Button>(it.text);
+            break;
+        case DialogItem::Control:
+            if (it.proc >= 400 && it.proc <= 415) {
+                PopUpButton *pop = page->add<PopUpButton>();
+                for (const std::string &t : classicMenu(it.min))
+                    pop->items.push_back(t == "-" ? MenuItem::line() : MenuItem(t));
+                v = pop;
+            } else if (it.proc >= 48 && it.proc <= 51) {
+                Slider *sl = page->add<Slider>();
+                sl->setValue(it.max > it.min ? double(it.value - it.min) / (it.max - it.min) : 0.5);
+                v = sl;
+            }
+            break;
+        default:
+            break;
+        }
+        if (!v)
+            continue;
+        v->setFrame(r.translated(-TabX, -TabY));
+        if (it.type != DialogItem::Text && it.type != DialogItem::Edit)
+            v->setEnabled(false);
+        items[n] = v;
+    }
+    return items;
+}
+
 } // namespace
 
 struct InfoWindow::Pane {
+    std::map<int, View *> video, sorting, options;
+    std::map<std::string, std::string> sortLoaded;
     TabView *tabs = nullptr;
     // Summary
     ImageView *art = nullptr;
@@ -180,6 +279,19 @@ void InfoWindow::build()
     p.compilation->setFrame(Rect{351, 420, 160, 16}.translated(-TabX, -TabY));
     p.compilation->setEnabled(false);   // not kept in the library yet
 
+    // Video, Sorting, Options: their DITLs
+    p.video = ditlPage(video, 275);
+    for (auto &[n, v] : p.video)
+        if (dynamic_cast<TextField *>(v))
+            v->setEnabled(false);   // not kept: no TV shows in the library
+    p.sorting = ditlPage(sorting, 276);
+    for (auto &[n, v] : p.sorting)
+        if (dynamic_cast<TextField *>(v) && n % 4 == 2)
+            v->setEnabled(false);   // the left column: the Info pane's own fields
+    p.options = ditlPage(options, 272);
+    for (auto &[n, v] : p.options)
+        v->setEnabled(dynamic_cast<Label *>(v) != nullptr);
+
     // Lyrics: the tags'
     p.lyrics = lyrics->add<TextField>();
     p.lyrics->font = Font::system(11);
@@ -195,8 +307,6 @@ void InfoWindow::build()
     p.tabs->addTab("Options", options);
     p.tabs->addTab("Lyrics", lyrics);
     p.tabs->addTab("Artwork", artwork);
-    for (int i : {2, 3, 4})
-        p.tabs->setTabLabel(i, "");
     p.tabs->select(1);
 
     Button *ok = c->add<Button>("OK");
@@ -279,6 +389,18 @@ void InfoWindow::load()
     std::sort(genres.begin(), genres.end());
     genres.erase(std::unique(genres.begin(), genres.end()), genres.end());
     p.genre->items = genres;
+    // Sorting: the names on the left, their sort forms from the tags on the right
+    const std::map<std::string, std::string> tags = tagsOf(t->path);
+    const std::string left[6] = {t->name, t->artist, t->albumArtist, t->album, t->composer, ""};
+    p.sortLoaded.clear();
+    for (int i = 0; i < 6; ++i) {
+        if (auto *f = dynamic_cast<TextField *>(p.sorting[SortFields[i].item - 2]))
+            f->setText(left[i]);
+        auto it = tags.find(SortFields[i].tag);
+        p.sortLoaded[SortFields[i].tag] = it == tags.end() ? "" : it->second;
+        if (auto *f = dynamic_cast<TextField *>(p.sorting[SortFields[i].item]))
+            f->setText(p.sortLoaded[SortFields[i].tag]);
+    }
     p.lyricsLoaded = lyricsOf(t->path);
     p.lyrics->setText(p.lyricsLoaded);
 }
@@ -316,6 +438,12 @@ bool InfoWindow::save()
     }
     if (p.lyrics->text != p.lyricsLoaded)
         writeLyrics(t.path, p.lyrics->text);
+    std::map<std::string, std::string> sorts;
+    for (const auto &sf : SortFields)
+        if (auto *f = dynamic_cast<TextField *>(p.sorting[sf.item]); f && f->text != p.sortLoaded[sf.tag])
+            sorts[sf.tag] = f->text;
+    if (!sorts.empty())
+        writeTags(t.path, sorts);
     if (changed && onChanged)
         onChanged(t.id);
     return changed;
