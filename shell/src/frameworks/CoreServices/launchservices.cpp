@@ -66,7 +66,8 @@ const std::vector<std::string> fileManagers = {"org.kde.dolphin", "org.gnome.Nau
 const std::vector<std::string> ownBundles = {"/Applications/System Preferences.app", "/Applications/Preview.app",
                                              "/Applications/Mail.app", "/Applications/Photo Booth.app",
                                              "/Applications/Calculator.app", "/Applications/Stickies.app",
-                                             "/Applications/TextEdit.app", "/Applications/Utilities/Grab.app",
+                                             "/Applications/TextEdit.app", "/Applications/iTunes.app",
+                                             "/Applications/Utilities/Grab.app",
                                              "/Applications/Utilities/Activity Monitor.app",
                                              "/System/Library/CoreServices/Software Update.app"};
 
@@ -455,7 +456,7 @@ bool launch(const App &app, const std::vector<std::string> &files)
 
 bool open(const std::string &path)
 {
-    // PDFs and pictures are Preview's (LaunchServices' default on 10.6)
+    // PDFs and pictures are Preview's, songs iTunes' (LaunchServices' defaults on 10.6)
     static const std::set<std::string> preview = {"pdf", "png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "icns"};
     const size_t dot = path.rfind('.');
     if (dot != std::string::npos && path.find("://") == std::string::npos) {
@@ -463,6 +464,13 @@ bool open(const std::string &path)
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
         if (preview.count(ext)) {
             const App a = forMacBundle("/Applications/Preview.app");
+            if (a.valid() && launch(a, {path}))
+                return true;
+        }
+        // songs are iTunes'
+        static const std::set<std::string> music = {"mp3", "m4a", "m4p", "aac", "aif", "aiff", "wav", "flac", "ogg", "oga", "opus"};
+        if (music.count(ext)) {
+            const App a = forMacBundle("/Applications/iTunes.app");
             if (a.valid() && launch(a, {path}))
                 return true;
         }

@@ -54,7 +54,7 @@ private:
         QRect restore;           // before zooming or full screen
         bool deleteWindow = false, takeFocus = false, acceptsInput = true;
         int ignoreUnmaps = 0;
-        QSize minimum;
+        QSize minimum, maximum;   // WM_NORMAL_HINTS' PMinSize, PMaxSize (empty: none)
         xcb_window_t transientFor = 0;
         int hover = None, pressed = None;
         bool overButtons = false;
@@ -65,6 +65,7 @@ private:
     void unmanage(Client *c, bool destroyed);
     Client *find(xcb_window_t w);
     void readProperties(Client *c);
+    void readSizeHints(Client *c);   // WM_NORMAL_HINTS' smallest and largest sizes
     void applyShape(Client *c);
     void place(Client *c, bool hasPosition);
     void applyGeometry(Client *c);

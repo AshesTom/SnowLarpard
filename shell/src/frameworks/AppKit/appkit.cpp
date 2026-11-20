@@ -248,11 +248,12 @@ void Window::setContentSize(Size size)
     invalidate();
 }
 
-void Window::setResizable(Size minContent)
+void Window::setResizable(Size minContent, Size maxContent)
 {
     m_resizable = true;
     m_minSize = minContent;
-    m_native->setResizable({minContent.w, minContent.h + m_titleBar});
+    m_native->setResizable({minContent.w, minContent.h + m_titleBar},
+                           {maxContent.w, maxContent.h > 0 ? maxContent.h + m_titleBar : 0});
 }
 
 void Window::nativeResize(Size surface)

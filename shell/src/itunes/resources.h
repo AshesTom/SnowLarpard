@@ -60,16 +60,37 @@ struct PictureInfo {
     int columns = 1, rows = 1;
     int fixedLeft = 0, fixedRight = 0;
     int kind = 0;   // FUN_0002b9f0's state to column mapping
+    int fixedTop = 0, fixedBottom = 0;   // a PBUT's: kept at the top and bottom, the middle stretched
 };
 PictureInfo pictureInfo(int id);
 
 // A button's state as FUN_0002c5f8 and its callers give it: 0 disabled, 1 normal, 2 pressed, 4 disabled
 // in an inactive window, 5 enabled in an inactive window
 int stateColumn(int kind, int state);
+// 11.4's (FUN_000200da, its tables at 0x134cd44 by kind): states 0 normal, 1 pressed, 4 in an inactive
+// window
+int stateColumn11(int kind, int state);
 
 // One cell of a picture (column, row) into dst: the fixed left and right sides kept, the middle
 // stretched across (FUN_0002a3d6, FUN_0002a75a)
 void drawCell(cairo_t *cr, int id, int column, int row, const AK::Rect &dst, double alpha = 1);
+// The Dialog Manager's resources (8.2.1's Localized.rsrc): a DLOG's rect, a DITL's items (their rects in
+// the dialog, a control's CNTL), a classic MENU's item titles ("-" a separator)
+struct DialogItem {
+    enum Type { User = 0, Button = 4, CheckBox = 5, Radio = 6, Control = 7, Text = 8, Edit = 16, Icon = 32, Picture = 64 };
+    int type = User;
+    bool disabled = false;
+    AK::Rect rect;
+    std::string text;
+    // a Control's CNTL: its procID (144 a separator, 401 / 402 a popup on MENU min, 50 / 51 a slider),
+    // value, minimum, maximum, title
+    int proc = 0, value = 0, min = 0, max = 0;
+    std::string title;
+};
+AK::Size dialogSize(int dlog);
+std::vector<DialogItem> dialogItems(int ditl);
+std::vector<std::string> classicMenu(int id);
+
 // A picture's cell size
 AK::Size cellSize(int id);
 

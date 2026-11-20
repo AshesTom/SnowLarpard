@@ -448,11 +448,18 @@ bool launch(const App &app, const QStringList &files)
 
 bool openFile(const QString &path)
 {
-    // PDFs and pictures are Preview's (LaunchServices' default on 10.6): ours once built, else the
+    // PDFs and pictures are Preview's, songs iTunes' (LaunchServices' defaults on 10.6): ours once built, else the
     // Linux viewer standing for it; the rest goes to the desktop's own choice
     static const QStringList preview = {"pdf", "png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "icns"};
     if (preview.contains(QFileInfo(path).suffix().toLower())) {
         const App a = forMacBundle("/Applications/Preview.app");
+        if (a.valid() && launch(a, {path}))
+            return true;
+    }
+    // songs are iTunes'
+    static const QStringList music = {"mp3", "m4a", "m4p", "aac", "aif", "aiff", "wav", "flac", "ogg", "oga", "opus"};
+    if (music.contains(QFileInfo(path).suffix().toLower())) {
+        const App a = forMacBundle("/Applications/iTunes.app");
         if (a.valid() && launch(a, {path}))
             return true;
     }

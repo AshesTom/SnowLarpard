@@ -29,6 +29,14 @@
 #include "panels.h"
 #include "text.h"
 
+#include "equalizer.h"
+#include "frame.h"
+#include "getinfo.h"
+#include "coverflow.h"
+#include "grid.h"
+#include "smartplaylist.h"
+#include "viewoptions.h"
+#include "preferences.h"
 #include "library.h"
 #include "player.h"
 #include "resources.h"
@@ -39,41 +47,13 @@
 #include <cstdio>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 using namespace AK;
 using namespace iTunes;
 
 namespace {
-
-// ---- GradientFrameView's gradients (FUN_00028bba, FUN_00028dc6; the greys at 0xa5fbc0)
-
-double gradientValue(double start, double end, int row, int rows)
-{
-    const double t = rows > 1 ? double(row) / (rows - 1) : 0, d = start - end;
-    return std::round(t * t * t * d - t * t * d * 1.5 - d * 0.5 * t + start);
-}
-
-// rows [from, to) of a gradient `rows` tall (90 at most, then its end grey) into r
-void drawGradient(cairo_t *cr, const Rect &r, double start, double end, int rows, int from)
-{
-    const int span = std::min(rows, 90);
-    for (int y = 0; y < int(r.h); ++y) {
-        const int row = from + y;
-        const double v = row < span ? gradientValue(start, end, row, span) : end;
-        fill(cr, Rect{r.x, r.y + y, r.w, 1}, Color::gray(int(v)));
-    }
-}
-
-// A text with its shadow under it (the sources' and the selection's), as iTunes' FUN_002985e2 draws
-void drawShadowed(cairo_t *cr, const std::string &text, const Rect &r, AK::TextStyle t, const Color &shadow)
-{
-    const Color c = t.color;
-    t.color = shadow;
-    drawText(cr, text, r.translated(0, 1), t);
-    t.color = c;
-    drawText(cr, text, r, t);
-}
 
 // 11.4: a menu item's text by its number, its keys ("###M#option") and hand-made column dropped
 std::string menuText(uint32_t number)
@@ -203,6 +183,7 @@ public:
     bool showTotal = false;              // `stim` 2: the whole time on the right, not the time left
     std::function<void(double)> onSeek;
     std::function<void()> onToggleTime;
+    Image artwork;   // the song's own (11.4 shows it)
 
     LCD()
     {
@@ -237,8 +218,8 @@ public:
         if (eleven()) {
             // 11.4 (LCDPlayerView, FUN_002b1dae): in the picture's box (2 to 56), the scrubber 2 above
             // its bottom between the times, past 240 inset by a tenth of the excess on each side
-            const double t = timeWidth(), w = frame().w;
-            Rect r{4 + t + 2, 56 - 2 - 21, w - 8 - 2 * (t + 2), 21};
+            const double t = timeWidth(), off = artworkWidth(), w = frame().w - off;
+            Rect r{off + 4 + t + 2, 56 - 2 - 21, w - 8 - 2 * (t + 2), 21};
             if (r.w > 240) {
                 const double inset = std::floor((r.w - 240) / 10);
                 r.x += inset;
@@ -255,6 +236,10 @@ public:
         }
         return r;
     }
+
+    // FUN_002b1dae: with artwork, on an LCD wider than 360, the lines and the scrubber begin at its right
+    // edge (12 + its side) instead of 12
+    double artworkWidth() const { return eleven() && showing && !artwork.isNull() && frame().w > 360 ? frame().h - 16 : 0; }
 
     void draw(cairo_t *cr) override
     {
@@ -278,7 +263,8 @@ public:
         // thumb (8 × 10 at 21) on the time played, within the drag rect (2 in from each end)
         const Rect bar = scrubberRect();
         const Image art = slider(512);
-        if (!art.isNull()) {
+        // a scrubber of no width (a narrow mini player: FUN_0004ee6a hides nothing, the view is empty)
+        if (!art.isNull() && bar.w > 0) {
             // QuickDraw's CopyMask: whole pixels, the middle repeated, never blended into the ends
             const auto part = [&](const Rect &src, const Rect &dst) {
                 if (dst.w <= 0)
@@ -331,10 +317,16 @@ public:
             return;
         }
         const iTunes::TextStyle lcd = textStyle(302);
-        const double W = frame().w, lineH = std::ceil(lineHeight(lcd.font));
+        const double off = artworkWidth(), W = frame().w - off, lineH = std::ceil(lineHeight(lcd.font));
         const Rect bar = scrubberRect();
-        m_lines[0].draw(cr, Rect{9, 6, W - 18, lineH}, lcd);
-        m_lines[1].draw(cr, Rect{9, bar.y - lineH + 4, W - 18, lineH}, lcd);
+        if (off > 0) {
+            // LCDPlayerView's artwork (FUN_002b1dae): at (12, 8), a square as tall as the LCD less 16
+            const double side = frame().h - 16;
+            const Size fit = scaledToFit(artwork.size(), {side, side});
+            artwork.draw(cr, Rect{12 + std::floor((side - fit.w) / 2), 8 + std::floor((side - fit.h) / 2), fit.w, fit.h});
+        }
+        m_lines[0].draw(cr, Rect{off + 9, 6, W - 18, lineH}, lcd);
+        m_lines[1].draw(cr, Rect{off + 9, bar.y - lineH + 4, W - 18, lineH}, lcd);
         drawCell(cr, 160, 0, 0, bar);
         if (duration > 0) {
             const Size thumb = cellSize(161);
@@ -515,104 +507,14 @@ private:
 //   (WindowTitleTextView 1001, TXTS 730: Txtr 13000, Lucida Grande 13, its shadow #C4C4C4 a point
 //   under it) from 102 to 102 points from the right, 1 to 19 down; the buttons 1050–1052 at 8, 29, 50,
 //   4 down (WindowFrameButtonView: 13004–13006's columns inactive, normal, rollover, pressed, all three
-//   in rollover while the pointer is over any of them). Its gradient, its controls aside, moves the
+//   in rollover while the pointer is over any of them: frame.h). Its gradient, its controls aside, moves the
 //   window; a double click in the title bar puts it in the Dock.
-
-class FrameButtons : public View {
-public:
-    std::function<void(int)> onClick;   // 1 close, 2 minimize, 3 zoom (WFBt)
-    void draw(cairo_t *cr) override
-    {
-        const bool key = windowIsKey();
-        for (int i = 0; i < 3; ++i) {
-            // FUN_0002b9f0's kind 4: 0 inactive, 1 normal, 3 rollover (column 2), 2 pressed (column 3)
-            const int state = m_pressed == i && m_inside ? 2 : m_over ? 3 : key ? 1 : 0;
-            const Size cell = cellSize(13004 + i);
-            drawCell(cr, 13004 + i, stateColumn(4, state), 0, Rect{Offsets[i], 0, cell.w, cell.h});
-        }
-    }
-    void mouseMoved(Event &e) override { setOver(buttonAt(e.location) >= 0 || overUnion(e.location)); }
-    void mouseExited(Event &) override { setOver(false); }
-    void mouseDown(Event &e) override
-    {
-        m_pressed = buttonAt(e.location);
-        m_inside = m_pressed >= 0;
-        setNeedsDisplay();
-    }
-    void mouseDragged(Event &e) override
-    {
-        const bool in = m_pressed >= 0 && buttonAt(e.location) == m_pressed;
-        if (in != m_inside) {
-            m_inside = in;
-            setNeedsDisplay();
-        }
-    }
-    void mouseUp(Event &e) override
-    {
-        const int b = m_pressed;
-        const bool fire = b >= 0 && buttonAt(e.location) == b;
-        m_pressed = -1;
-        m_inside = false;
-        m_over = overUnion(e.location);
-        setNeedsDisplay();
-        if (fire && onClick)
-            onClick(b + 1);
-    }
-
-private:
-    static constexpr double Offsets[3] = {0, 21, 42};   // 8, 29, 50 in the title bar
-    int buttonAt(Point p) const
-    {
-        for (int i = 0; i < 3; ++i)
-            if (Rect{Offsets[i], 0, 14, 15}.contains(p))
-                return i;
-        return -1;
-    }
-    // the tracking area: the union of the three (FUN_0001b9c8)
-    bool overUnion(Point p) const { return Rect{0, 0, Offsets[2] + 14, 15}.contains(p); }
-    void setOver(bool over)
-    {
-        if (over != m_over) {
-            m_over = over;
-            setNeedsDisplay();
-        }
-    }
-    int m_pressed = -1;
-    bool m_inside = false, m_over = false;
-};
-
-// A band of the frame: a drag on it moves the window (GradientFrameView's own clicks)
-class FrameBand : public View {
-public:
-    std::function<void()> onDoubleClickTitle;
-    void mouseDown(Event &e) override
-    {
-        if (e.clickCount == 2 && e.location.y < m_titleBar) {
-            if (onDoubleClickTitle)
-                onDoubleClickTitle();
-            return;
-        }
-        if (Window *w = window())
-            w->dragMove(e.screen, e.screen, true);
-        m_from = e.screen;
-    }
-    void mouseDragged(Event &e) override
-    {
-        if (Window *w = window())
-            w->dragMove(m_from, e.screen, false);
-    }
-
-protected:
-    double m_titleBar = 0;
-
-private:
-    Point m_from;
-};
 
 class TopBand : public FrameBand {
 public:
     TopBand() { m_titleBar = eleven() ? TopHeight11 : TitleBarHeight; }
     std::string title;
+    bool mini = false;   // 8.2.1's mini player: the band is the whole window
     void draw(cairo_t *cr) override
     {
         if (eleven()) {
@@ -624,8 +526,9 @@ public:
         // the title bar's 22 points and the content border's 54: one gradient of 76 rows
         const bool key = windowIsKey();
         const double w = frame().w;
-        drawGradient(cr, bounds(), key ? 197 : 233, key ? 150 : 207, int(TitleBarHeight + TopBandHeight), 0);
-        fill(cr, Rect{0, frame().h - 1, w, 1}, Color::gray(key ? 64 : 135));
+        drawGradient(cr, bounds(), key ? 197 : 233, key ? 150 : 207, int(mini ? frame().h : TitleBarHeight + TopBandHeight), 0);
+        if (!mini)   // the mini player's band is the window's bottom too
+            fill(cr, Rect{0, frame().h - 1, w, 1}, Color::gray(key ? 64 : 135));
         // the bevel along the top (FUN_0002776a): 7001, 7000 stretched, 7002, at their own height
         const Size end = cellSize(7001);
         drawCell(cr, 7001, 0, 0, Rect{0, 0, end.w, end.h});
@@ -638,6 +541,8 @@ public:
         t.color = key ? Color::gray(0) : Color::gray(0, 0.5);
         t.align = Align::Center;
         const Rect r{102, 1, std::max(0.0, w - 204), 18};
+        if (r.w < 1)
+            return;
         if (key)
             drawShadowed(cr, title, r, t, Color::rgb(0xc4, 0xc4, 0xc4));
         else
@@ -851,6 +756,14 @@ private:
 //   columns grey 217; selected with the keyboard in an active window colour 10 (61 128 223), its lines
 //   19, its text 22 (white); otherwise 11 (192), 20 and 23 (black). The song playing: TrackStatusIcons
 //   (PBUT 306), the speaker with its waves, the bottom row's when selected.
+//   11.4 (FUN_00e5675c fills the list's pictures and styles, FUN_00024686 draws the header): the header
+//   picture 304 again (cells 40 x 23, 2 and 16 kept at the ends), the header at least 22 high (26 with
+//   the large text); its column by
+//   FUN_000200da's kind 3 (normal 1, pressed 2, inactive window 0), its row the column's sort indicator;
+//   the title in 9004, 5 in from the left, 5 from the right (16 when sorted: the arrow's room). The song
+//   playing: 8455 (20 x 20 cells, two columns: the second on a highlighted row), its row by the track's
+//   status through the table at 0x137277c (FUN_00026da7): 3 playing row 0 (the speaker with its waves),
+//   2 paused row 1.
 
 struct Column {
     std::string title;
@@ -858,7 +771,9 @@ struct Column {
     Align align;
 };
 
-double listRowHeight() { return std::ceil(lineHeight(textStyle(9002).font)) + 2; }
+// the list's text: Txtr 9002 List Contents (Small), 9003 (Large) by the General pane's List Text
+int g_listText = 9002;
+double listRowHeight() { return std::ceil(lineHeight(textStyle(g_listText).font)) + 2; }
 
 class TrackList : public View {
 public:
@@ -871,7 +786,12 @@ public:
     bool ascending = true;
     std::function<void(int)> onDoubleClick;
     std::function<void(int)> onSort;
-    static constexpr double HeaderHeight = 16;
+    std::function<void(int)> onSelect;   // a row chosen by a click or the arrows
+    bool statusColumn = true;            // column 0 the speaker's (the songs'); the browser's have none
+    int ratingColumn = -1;               // its cells the rating (0 to 100) drawn as stars
+    std::function<void(int, int)> onRate;   // a click on the selected row's stars: row, rating
+    // 11.4: the header view's height at least 22 (26 with the large text), FUN_00e5675c's end
+    static double headerHeight() { return eleven() ? std::max(22.0, std::ceil(lineHeight(textStyle(9004).font)) + 6) : 16; }
     double rowHeight = 16;
 
     TrackList()
@@ -888,7 +808,7 @@ public:
     }
     void reload()
     {
-        m_scroll->setFrame({0, HeaderHeight, frame().w, frame().h - HeaderHeight});
+        m_scroll->setFrame({0, headerHeight(), frame().w, frame().h - headerHeight()});
         m_scroll->setDocumentHeight(std::max(double(rows.size()) * rowHeight, m_scroll->frame().h));
         m_body->setFrame(m_scroll->document()->bounds());
         setNeedsDisplay();
@@ -908,25 +828,27 @@ public:
         for (size_t c = 0; c < columns.size(); ++c) {
             const double w = c + 1 == columns.size() ? std::max(columns[c].width, frame().w - x) : columns[c].width;
             const int row = int(c) == sortColumn ? (ascending ? 2 : 1) : 0;
-            if (eleven()) {
-                // 11.4's header (ITListHeaderView): flat; its own pictures (9137–9140) not traced yet
-                fill(cr, Rect{x, 0, w, HeaderHeight}, Color::gray(m_pressed == int(c) ? 230 : 250));
-                fill(cr, Rect{x + w - 1, 3, 1, HeaderHeight - 6}, Color::gray(217));
-                fill(cr, Rect{x, HeaderHeight - 1, w, 1}, Color::gray(199));
-            } else {
-                drawCell(cr, 304, stateColumn(pictureInfo(304).kind, m_pressed == int(c) ? 2 : state), row, Rect{x, 0, w, HeaderHeight});
-            }
             AK::TextStyle t;
             t.font = head.font;
             t.color = head.color;
             t.align = columns[c].align;
-            drawText(cr, columns[c].title, Rect{x + 4, 0, columns[c].width - (int(c) == sortColumn ? 20 : 8), HeaderHeight - 1}, t);
+            if (eleven()) {
+                // FUN_00024686: the cell, then the title 5 in (16 on the right of a sorted column)
+                const int st = m_pressed == int(c) ? 1 : windowIsKey() ? 0 : 4;
+                drawCell(cr, 304, stateColumn11(pictureInfo(304).kind, st), row, Rect{x, 0, w, headerHeight()});
+                const double right = row == 1 || row == 2 ? 16 : 5;
+                const double th = lineHeight(head.font);
+                drawText(cr, columns[c].title, Rect{x + 5, std::floor((headerHeight() - th) / 2), w - 5 - right, th}, t);
+            } else {
+                drawCell(cr, 304, stateColumn(pictureInfo(304).kind, m_pressed == int(c) ? 2 : state), row, Rect{x, 0, w, headerHeight()});
+                drawText(cr, columns[c].title, Rect{x + 4, 0, columns[c].width - (int(c) == sortColumn ? 20 : 8), headerHeight() - 1}, t);
+            }
             x += w;
         }
     }
     void mouseDown(Event &e) override
     {
-        if (e.location.y >= HeaderHeight)
+        if (e.location.y >= headerHeight())
             return;
         m_pressed = columnAt(e.location.x);
         setNeedsDisplay();
@@ -953,6 +875,8 @@ public:
             selected = std::clamp(selected + (e.keysym == XKB_KEY_Down ? 1 : -1), 0, int(rows.size()) - 1);
             scrollToRow(selected);
             m_body->setNeedsDisplay();
+            if (onSelect)
+                onSelect(selected);
             return;
         }
         if ((e.keysym == XKB_KEY_Return || e.keysym == XKB_KEY_KP_Enter) && selected >= 0 && onDoubleClick) {
@@ -981,7 +905,7 @@ private:
             const bool focused = list->isFirstResponder() && windowIsKey();
             const double h = list->rowHeight;
             const int n = int(std::ceil(frame().h / h));
-            const iTunes::TextStyle body = textStyle(9002);
+            const iTunes::TextStyle body = textStyle(g_listText);
             for (int r = 0; r < n; ++r) {
                 const double y = r * h;
                 const bool sel = r == list->selected && size_t(r) < list->rows.size();
@@ -996,12 +920,24 @@ private:
                 for (size_t c = 0; c < list->columns.size(); ++c) {
                     const Column &col = list->columns[c];
                     if (size_t(r) < list->rows.size()) {
-                        if (c == 0) {
-                            if (r == list->playing && eleven())   // 11.4: the volume's speaker (its status icons not traced)
-                                drawCell(cr, 328, 1, 2, Rect{x + std::floor((col.width - 14) / 2), y + std::floor((h - 14) / 2), 14, 14});
+                        if (c == 0 && list->statusColumn) {
+                            if (r == list->playing && eleven()) {   // 8455: playing row 0, paused row 1
+                                const double side = std::min(cellSize(8455).h, h);
+                                const Size cs{side, side};
+                                drawCell(cr, 8455, sel && focused ? 1 : 0, list->playingPaused ? 1 : 0,
+                                         Rect{x + std::floor((col.width - cs.w) / 2), y + std::floor((h - cs.h) / 2), cs.w, cs.h});
+                            }
                             else if (r == list->playing)
                                 drawCell(cr, 306, list->playingPaused ? 0 : 2, sel && focused ? 1 : 0,
                                          Rect{x + std::floor((col.width - 12) / 2), y + std::floor((h - 12) / 2), 12, 12});
+                        } else if (int(c) == list->ratingColumn) {
+                            // the user rating (PBUT 528 unselected, 529 selected, 531 selected without
+                            // the keyboard): eleven rows of 11, a half star each
+                            const std::string &cell = c < list->rows[size_t(r)].size() ? list->rows[size_t(r)][c] : std::string();
+                            const int rating = std::clamp(std::atoi(cell.c_str()), 0, 100);
+                            const int pic = sel ? (focused ? 529 : 531) : 528;
+                            if (rating > 0 || sel)
+                                drawCell(cr, pic, 0, (rating + 5) / 10, Rect{x + 5, y + std::floor((h - 11) / 2), 68, 11});
                         } else {
                             AK::TextStyle t;
                             t.font = body.font;
@@ -1020,10 +956,28 @@ private:
         {
             const int r = int(e.location.y / list->rowHeight);
             window()->makeFirstResponder(list);
+            // a click on the selected row's stars rates it: the star under the pointer, none left of
+            // the first
+            if (r >= 0 && r == list->selected && list->ratingColumn >= 0 && list->onRate) {
+                double x = 0;
+                for (int c = 0; c < list->ratingColumn; ++c)
+                    x += list->columns[size_t(c)].width;
+                const double dx = e.location.x - x - 5;
+                if (dx >= -5 && dx < 68) {
+                    list->onRate(r, std::clamp(int(std::ceil(dx / (68.0 / 5))), 0, 5) * 20);
+                    return;
+                }
+            }
             if (r >= 0 && size_t(r) < list->rows.size()) {
+                const bool changed = list->selected != r;
                 list->selected = r;
+                setNeedsDisplay();
+                list->setNeedsDisplay();
+                if (changed && list->onSelect)
+                    list->onSelect(r);
                 if (e.clickCount == 2 && list->onDoubleClick)
                     list->onDoubleClick(r);
+                return;
             }
             setNeedsDisplay();
             list->setNeedsDisplay();
@@ -1032,6 +986,47 @@ private:
     ScrollView *m_scroll;
     Body *m_body;
     int m_pressed = -1;
+};
+
+// ---- the browser (View ▸ Show Browser, ⌘B): BrowserWindow's layout (FUN_000249e4 at 0x25454–0x25640)
+//   puts three ColumnDisplays over the songs, as tall as the browser's height (+0x452: at first half the
+//   list's room less 10, FUN_000683fa's 0.5; at least 80, and the songs keep 120 below, FUN_0013cbbe),
+//   across the list's width: with the genre (the preference at +0x25B) Genre from the left a third,
+//   Artist the middle, Album the last third; without, Artist and Album halves. A ColumnDisplay
+//   (FUN_0040e0ac) is the songs' list engine (FUN_002fa50e) with one column, its header in Txtr 9004
+//   (0x232C); its first row "All (N Genres)" (STR# 166). The songs start 10 points under it: the
+//   splitter, the window's pictures 313 (+8, stretched) and 312 (+4, its grip, centred), loaded with the
+//   window (FUN_0000fe66 at 0x10744, 0x10e71).
+
+class BrowserSplitter : public View {
+public:
+    std::function<void()> onPress, onRelease;
+    std::function<void(double)> onDrag;   // the pointer's move since the press
+    void draw(cairo_t *cr) override
+    {
+        drawCell(cr, 313, 0, 0, bounds());
+        const Size grip = cellSize(312);
+        drawCell(cr, 312, 0, 0, Rect{std::floor((frame().w - grip.w) / 2), 0, grip.w, grip.h});
+    }
+    void mouseDown(Event &e) override
+    {
+        m_from = e.screen.y;
+        if (onPress)
+            onPress();
+    }
+    void mouseDragged(Event &e) override
+    {
+        if (onDrag)
+            onDrag(e.screen.y - m_from);
+    }
+    void mouseUp(Event &) override
+    {
+        if (onRelease)
+            onRelease();
+    }
+
+private:
+    double m_from = 0;
 };
 
 // ---- the sources (SourceDisplay: FUN_0016cb22 draws a row, FUN_0002d3b2 places its parts)
@@ -1141,6 +1136,9 @@ public:
         m_timer = App::shared().addTimer(0.25, true, [this] { refreshLCD(); });
         m_player.onEnd = [this] { advance(1, true); };
         m_player.onError = [this](const std::string &) { advance(1, true); };
+        if (!eleven())
+            m_equalizer.apply();
+        applyPreferences();
     }
 
     void comeForward() { m_window->orderFront(); }
@@ -1152,6 +1150,32 @@ public:
         m_library.add(paths);
         m_library.save();
         loadSource();
+    }
+
+    // Documents opened (the Finder, the Dock, `open`): added to the library and the first song played,
+    // in the Library, as iTunes does with a file double-clicked in the Finder
+    void openFiles(const std::vector<std::string> &paths)
+    {
+        if (paths.empty())
+            return;
+        addFiles(paths);
+        int id = 0;
+        for (const std::string &p : paths)
+            if ((id = m_library.idForPath(p)))
+                break;
+        if (!id)
+            return;
+        if (m_search && !m_search->text.empty())
+            m_search->setText(std::string());
+        setStoreMode(false);
+        if (m_sources->selected() != 1)   // Music, under LIBRARY
+            m_sources->select(1);
+        loadSource();
+        const auto it = std::find(m_list->ids.begin(), m_list->ids.end(), id);
+        if (it != m_list->ids.end())
+            playRow(int(it - m_list->ids.begin()));
+        else
+            playTrack(id);
     }
 
 private:
@@ -1206,8 +1230,9 @@ private:
             refreshLCD();
         };
         for (int i = 0; i < 3; ++i) {
-            m_views[i] = m_top->add<PictureButton>(540 + i, i == 0 ? 1 : 0);
-            m_views[i]->setEnabled(i == 0);   // the list alone: no grid, no Cover Flow
+            m_views[i] = m_top->add<PictureButton>(540 + i, 0);
+            m_views[i]->setEnabled(true);   // the list, the grid, Cover Flow
+            m_views[i]->onClick = [this, i] { setViewMode(i); };
             m_views[i]->setHidden(eleven());  // 11.4: no view buttons in the top part
         }
         m_search = m_top->add<SearchField>();
@@ -1220,21 +1245,85 @@ private:
         m_divider = c->add<View>();
 
         m_list = c->add<TrackList>();
-        // the status column (Play Status, the speaker), then Name, Time, Artist, Album, Genre, Play Count:
-        // STR# 9006's titles, CWid 9000's default widths
-        m_list->columns = {{"", 45, Align::Left},          {tr("9006.001"), 200, Align::Left}, {tr("9006.009"), 59, Align::Right},
-                           {tr("9006.003"), 125, Align::Left}, {tr("9006.002"), 125, Align::Left}, {tr("9006.006"), 80, Align::Left},
-                           {tr("9006.019"), 82, Align::Right}};
+        // the status column (Play Status, the speaker), then the columns View Options chose (at first
+        // Name, Time, Artist, Album, Genre, Play Count, My Rating): STR# 9006's titles, CWid 9000's widths
+        {
+            std::istringstream in(Settings("itunes").string("Columns"));
+            for (int f; in >> f;)
+                if (listField(f))
+                    m_columnFields.push_back(f);
+            if (m_columnFields.empty())
+                m_columnFields = defaultColumns();
+        }
+        applyColumns();
+        m_list->onRate = [this](int row, int rating) { rate(m_list->ids[size_t(row)], rating); };
         m_list->onDoubleClick = [this](int row) { playRow(row); };
+        m_list->onSelect = [this](int row) {
+            if (m_viewMode == 2 && row >= 0 && size_t(row) < m_list->ids.size())
+                m_flow->showSong(m_list->ids[size_t(row)]);
+        };
         m_list->onSort = [this](int c) {
+            if (c <= 0 || size_t(c) > m_columnFields.size())
+                return;
             if (m_list->sortColumn == c)
                 m_list->ascending = !m_list->ascending;
             else {
                 m_list->sortColumn = c;
                 m_list->ascending = true;
             }
+            m_sortField = m_columnFields[size_t(c) - 1];
             loadSource();
         };
+
+        // the browser: Genre, Artist, Album (STR# 9006's titles)
+        static const char *const titles[3] = {"9006.006", "9006.003", "9006.002"};
+        for (int i = 0; i < 3; ++i) {
+            m_browse[i] = c->add<TrackList>();
+            m_browse[i]->statusColumn = false;
+            m_browse[i]->sortColumn = -1;
+            m_browse[i]->columns = {{tr(titles[i]), 100, Align::Left}};
+            m_browse[i]->onSelect = [this, i](int row) { chooseInBrowser(i, row); };
+            m_browse[i]->setHidden(true);
+        }
+        // the grid (View ▸ as Grid)
+        m_grid = c->add<GridView>(m_library);
+        m_grid->setHidden(true);
+        m_grid->onPlay = [this](const std::vector<int> &ids) {
+            if (ids.empty())
+                return;
+            m_queue = ids;
+            m_queuePos = 0;
+            if (m_shuffle)
+                shuffleQueue(0);
+            playTrack(m_queue[0]);
+        };
+        // Cover Flow (View ▸ as Cover Flow)
+        m_flow = c->add<CoverFlowView>(m_library);
+        m_flow->setHidden(true);
+        m_flow->onChoose = [this](int id) {
+            const auto it = std::find(m_list->ids.begin(), m_list->ids.end(), id);
+            if (it == m_list->ids.end())
+                return;
+            m_list->selected = int(it - m_list->ids.begin());
+            m_list->scrollToRow(m_list->selected);
+            m_list->body()->setNeedsDisplay();
+        };
+        m_flow->onPlay = m_grid->onPlay;
+        m_viewMode = eleven() ? 0 : std::clamp(Settings("itunes").integer("ViewMode", 0), 0, 2);
+        m_splitter = c->add<BrowserSplitter>();
+        m_splitter->setHidden(true);
+        m_splitter->onPress = [this] { m_browserDragFrom = m_browse[1]->frame().h; };
+        m_splitter->onRelease = [this] { Settings("itunes").set("BrowserHeight", int(m_browserHeight)); };
+        m_splitter->onDrag = [this](double dy) {
+            m_browserHeight = m_browserDragFrom + dy;
+            layout();
+        };
+        {
+            Settings s("itunes");
+            m_showBrowser = !eleven() && s.boolean("Browser", false);
+            m_browseGenre = s.boolean("BrowserGenre", true);
+            m_browserHeight = s.integer("BrowserHeight", -1);
+        }
 
         if (eleven())
             buildNavAndStore(c);
@@ -1266,7 +1355,7 @@ private:
         layout();
         m_window->setIcon(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {128, 128}));
         m_window->show();
-        m_window->makeFirstResponder(m_list);
+        m_window->makeFirstResponder(m_viewMode == 2 ? static_cast<View *>(m_flow) : m_viewMode == 1 ? static_cast<View *>(m_grid) : m_list);
     }
 
     // 11.4: the nav bar and the Store (BWNavBarController, BWStoreController)
@@ -1323,8 +1412,36 @@ private:
     }
 
     // BrowserWindow's layout pass (FUN_000249e4) and the top bar's places (FUN_00142cb2)
-    // The zoom button: iTunes' mini player (the window down to its top band), not yet ported
-    void zoom() {}
+    // The zoom button and Window ▸ Zoom: iTunes' mini player (FUN_00149a4a, the flag +0x172). Each mode
+    // keeps its own size (+0x176 the full one, +0x180 the mini one, 200 wide at first: FUN_0000fe66 at
+    // 0xff71); the limits are kEventWindowGetMinimum/MaximumSize's (FUN_001440ca): mini 65 high, 65 to
+    // 450 wide; full at least 700 x 400, unbounded. 11.4's mini player is a window of its own: not done.
+    void zoom()
+    {
+        if (eleven())
+            return;
+        const Size now = m_window->size();
+        m_mini = !m_mini;
+        if (m_mini) {
+            m_fullSize = now;
+            m_window->setResizable({65, TitleBarHeight + 65}, {450, TitleBarHeight + 65});
+            m_window->setContentSize({std::clamp(m_miniWidth, 65.0, 450.0), TitleBarHeight + 65});
+        } else {
+            m_miniWidth = now.w;
+            m_window->setResizable({700, 400});
+            m_window->setContentSize(m_fullSize);
+        }
+        for (View *v : std::initializer_list<View *>{m_sourceScroll, m_divider, m_list, m_bottom, m_search, m_views[0], m_views[1], m_views[2],
+                                                    m_browse[0], m_browse[1], m_browse[2], m_splitter, m_grid, m_flow})
+            v->setHidden(m_mini);
+        m_prev->setPicture(m_mini ? 322 : 316);
+        m_play->setPicture(m_mini ? 326 : 320);
+        m_next->setPicture(m_mini ? 324 : 318);
+        m_top->mini = m_mini;
+        // Advanced ▸ Keep MiniPlayer on top of all other windows
+        m_window->setFloating(m_mini && Settings("itunes").boolean("MiniOnTop", false));
+        layout();
+    }
 
     void layout()
     {
@@ -1337,8 +1454,26 @@ private:
         }
         // the frame's top: the title bar, then the content border; the controls under the title bar
         const double T = TitleBarHeight;
-        m_top->setFrame({0, 0, W, T + TopBandHeight});
         m_frameButtons->setFrame({8, 4, 56, 16});
+        if (m_mini) {
+            // the mini player (FUN_00142cb2's mini cases, FUN_0013be44, FUN_000249e4): the top band is
+            // the whole window
+            m_top->setFrame({0, 0, W, H});
+            m_prev->setFrame({3, T + 11, 29, 29});
+            m_play->setFrame({32, T + 9, 33, 33});
+            m_next->setFrame({65, T + 11, 29, 29});
+            m_volume->setFrame({19, T + 47, 58, 12});
+            m_speakerLow->setFrame({7, T + 46, 13.5, 13});
+            m_speakerHigh->setFrame({81, T + 46, 13.5, 13});
+            // the LCD from (106, 10) to (W − 10, 56); none when that leaves it no room
+            const Rect lcd{106, T + 10, W - 10 - 106, 46};
+            m_lcd->setHidden(lcd.w < 40);
+            m_lcd->setFrame(lcd.w < 40 ? Rect{106, T + 10, 40, 46} : lcd);
+            m_window->contentView()->setNeedsDisplay();
+            return;
+        }
+        m_lcd->setHidden(false);
+        m_top->setFrame({0, 0, W, T + TopBandHeight});
         // the transport
         m_prev->setFrame({24, T + 8, 31, 32});
         m_play->setFrame({60, T + 4, 39, 39});
@@ -1373,7 +1508,7 @@ private:
         m_sources->setFrame({0, 0, sourceW - 15, std::max(bodyH, m_sources->contentHeight())});
         m_sourceScroll->setDocumentHeight(m_sources->frame().h);
         m_divider->setFrame({sourceW, bodyTop, 1, bodyH});
-        m_list->setFrame({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
+        layoutBrowser({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
 
         // the bottom band: its buttons 20 high, 4 above the bottom
         m_bottom->setFrame({0, H - BottomBandHeight, W, BottomBandHeight});
@@ -1385,6 +1520,101 @@ private:
         m_geniusSidebar->setFrame({W - 18 - 40, by, 40, 20});
         m_genius->setFrame({W - 18 - 40 - 39, by, 39, 20});
         m_window->contentView()->setNeedsDisplay();
+    }
+
+    // The list's room: the browser over the songs when shown (FUN_000249e4, FUN_0013cbbe)
+    void layoutBrowser(const Rect &area)
+    {
+        // the view buttons' row: the chosen one's second row
+        for (int i = 0; i < 3; ++i)
+            m_views[i]->setRow(i == m_viewMode ? 1 : 0);
+        // the grid takes the list's room, with its own bar instead of the browser
+        const bool grid = m_viewMode == 1 && !m_mini, flow = m_viewMode == 2 && !m_mini;
+        m_grid->setHidden(!grid);
+        m_flow->setHidden(!flow);
+        m_list->setHidden(grid || m_mini);
+        if (flow) {
+            // Cover Flow over the songs: the upper part (55% here, by eye), the songs under it
+            for (TrackList *b : m_browse)
+                b->setHidden(true);
+            m_splitter->setHidden(true);
+            const double h = std::floor(area.h * 0.55);
+            m_flow->setFrame({area.x, area.y, area.w, h});
+            m_list->setFrame({area.x, area.y + h, area.w, area.h - h});
+            return;
+        }
+        if (grid) {
+            for (TrackList *b : m_browse)
+                b->setHidden(true);
+            m_splitter->setHidden(true);
+            m_grid->setFrame(area);
+            return;
+        }
+        const bool shown = m_showBrowser && !m_mini;
+        for (TrackList *b : m_browse)
+            b->setHidden(!shown);
+        m_browse[0]->setHidden(!shown || !m_browseGenre);
+        m_splitter->setHidden(!shown);
+        if (!shown) {
+            m_list->setFrame(area);
+            return;
+        }
+        // its height: half the room less the splitter at first; at least 80, the songs keeping 120
+        const double room = area.h - 10;
+        if (m_browserHeight < 0)
+            m_browserHeight = std::floor(room * 0.5);
+        const double h = std::max(std::min(80.0, room), std::min(m_browserHeight, room - 120));
+        const double third = std::floor(area.w / 3), half = std::floor(area.w / 2);
+        Rect cols[3];
+        if (m_browseGenre) {
+            cols[0] = {area.x, area.y, third, h};
+            cols[1] = {area.x + third, area.y, area.w - 2 * third, h};
+            cols[2] = {area.right() - third, area.y, third, h};
+        } else {
+            cols[1] = {area.x, area.y, half, h};
+            cols[2] = {area.x + half, area.y, area.w - half, h};
+        }
+        for (int i = 0; i < 3; ++i) {
+            if (cols[i].w <= 0)
+                continue;
+            // a line between the columns: each but the last a point narrower
+            m_browse[i]->columns[0].width = cols[i].w;
+            m_browse[i]->setFrame(i < 2 ? Rect{cols[i].x, cols[i].y, cols[i].w - 1, cols[i].h} : cols[i]);
+        }
+        m_splitter->setFrame({area.x, area.y + h, area.w, 10});
+        m_list->setFrame({area.x, area.y + h + 10, area.w, std::max(0.0, area.h - h - 10)});
+    }
+
+    void setViewMode(int mode)
+    {
+        if (mode == m_viewMode || eleven())
+            return;
+        m_viewMode = mode;
+        Settings("itunes").set("ViewMode", mode);
+        layout();
+        loadSource();
+        m_window->makeFirstResponder(mode == 1 ? static_cast<View *>(m_grid) : mode == 2 ? static_cast<View *>(m_flow) : m_list);
+    }
+
+    void toggleBrowser()
+    {
+        m_showBrowser = !m_showBrowser;
+        Settings("itunes").set("Browser", m_showBrowser);
+        if (!m_showBrowser)
+            for (std::string &s : m_browseSel)
+                s.clear();
+        layout();
+        loadSource();
+    }
+
+    // A row of a browser column chosen: row 0 is All; the columns right of it start again at All
+    void chooseInBrowser(int column, int row)
+    {
+        TrackList *b = m_browse[column];
+        m_browseSel[column] = row <= 0 || size_t(row) >= b->rows.size() ? std::string() : b->rows[size_t(row)][0];
+        for (int i = column + 1; i < 3; ++i)
+            m_browseSel[i].clear();
+        loadSource();
     }
 
     // 11.4's layout: BWHeaderController's (FUN_001ebd78), the stoplights' (ITWindowControlsView,
@@ -1482,7 +1712,7 @@ private:
             if (!p.master) {
                 SourceRow r;
                 r.title = p.name;
-                r.icon = 15;
+                r.icon = p.smart ? 16 : 15;   // 441's rows: a playlist, a smart playlist (the gear)
                 r.tag = i;
                 m_sources->rows.push_back(r);
             }
@@ -1498,8 +1728,11 @@ private:
         std::vector<int> ids;
         const int sel = m_sources->selected();
         const int tag = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
-        if (tag >= 0 && size_t(tag) < m_library.playlists().size())
-            ids = m_library.playlists()[size_t(tag)].items;
+        if (tag >= 0 && size_t(tag) < m_library.playlists().size()) {
+            const Playlist &p = m_library.playlists()[size_t(tag)];
+            // a smart playlist's songs: its rules applied now when it updates live, else as they were
+            ids = p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
+        }
         else
             for (const auto &[id, t] : m_library.tracks())
                 ids.push_back(id);
@@ -1513,47 +1746,93 @@ private:
                 continue;
             shown.push_back(id);
         }
-        const int col = m_list->sortColumn;
+        if (m_viewMode == 1 && !eleven())
+            m_grid->setSongs(shown);
+        else if (m_showBrowser && !eleven() && m_viewMode == 0)
+            shown = browse(shown);
+        // sorted by the field of the column chosen
+        const int field = m_sortField;
         const bool asc = m_list->ascending;
-        auto key = [&](const Track &t) -> std::string {
-            switch (col) {
-            case 1: return lower(t.name);
-            case 3: return lower(t.artist) + "\x01" + lower(t.album) + "\x01" + std::to_string(1000 + t.trackNumber);
-            case 4: return lower(t.album) + "\x01" + std::to_string(1000 + t.trackNumber);
-            case 5: return lower(t.genre) + "\x01" + lower(t.artist);
-            default: return {};
-            }
-        };
+        const ListField *lf = listField(field);
+        const bool numeric = lf && lf->numeric;
         std::stable_sort(shown.begin(), shown.end(), [&](int a, int b) {
             const Track &ta = *m_library.track(a), &tb = *m_library.track(b);
-            bool less;
-            if (col == 2)
-                less = ta.totalTime < tb.totalTime;
-            else if (col == 6)
-                less = ta.playCount < tb.playCount;
-            else
-                less = key(ta) < key(tb);
-            if (!asc) {
-                const bool more = col == 2 ? tb.totalTime < ta.totalTime : col == 6 ? tb.playCount < ta.playCount : key(tb) < key(ta);
-                return more;
+            if (numeric) {
+                const long long x = cellNumber(ta, field), y = cellNumber(tb, field);
+                return asc ? x < y : y < x;
             }
-            return less;
+            const std::string x = cellKey(ta, field), y = cellKey(tb, field);
+            return asc ? x < y : y < x;
         });
         m_list->ids = shown;
         m_list->rows.clear();
         long long ms = 0, bytes = 0;
         for (int id : shown) {
             const Track &t = *m_library.track(id);
-            m_list->rows.push_back({std::string(), t.name, formatTime(t.totalTime), t.artist, t.album, t.genre,
-                                    t.playCount ? std::to_string(t.playCount) : std::string()});
+            std::vector<std::string> row{std::string()};
+            for (int f : m_columnFields)
+                row.push_back(cellText(t, f));
+            m_list->rows.push_back(std::move(row));
             ms += t.totalTime;
             bytes += t.size;
         }
         m_list->selected = std::min(m_list->selected, int(shown.size()) - 1);
         markPlaying();
         m_list->reload();
+        if (m_viewMode == 2 && !eleven()) {
+            m_flow->setSongs(m_list->ids);
+            if (m_list->selected >= 0)
+                m_flow->showSong(m_list->ids[size_t(m_list->selected)]);
+        }
         m_bottom->totals = totals(shown.size(), ms, bytes);
         m_bottom->setNeedsDisplay();
+    }
+
+    // The browser's columns from the songs, each filtered by the choices left of it; the songs that
+    // pass all three (an empty field is in All only)
+    std::vector<int> browse(const std::vector<int> &ids)
+    {
+        static const char *const counts[3][2] = {{"166.001", "166.002"}, {"166.003", "166.004"}, {"166.005", "166.006"}};
+        auto field = [&](const Track &t, int i) -> const std::string & { return i == 0 ? t.genre : i == 1 ? t.artist : t.album; };
+        std::vector<int> pass = ids;
+        for (int i = 0; i < 3; ++i) {
+            if (i == 0 && !m_browseGenre) {
+                m_browseSel[0].clear();
+                continue;
+            }
+            std::vector<std::string> values;
+            for (int id : pass) {
+                const std::string &v = field(*m_library.track(id), i);
+                if (!v.empty())
+                    values.push_back(v);
+            }
+            std::sort(values.begin(), values.end(), [](const std::string &a, const std::string &b) { return lower(a) < lower(b); });
+            values.erase(std::unique(values.begin(), values.end()), values.end());
+            if (!m_browseSel[i].empty() && std::find(values.begin(), values.end(), m_browseSel[i]) == values.end())
+                m_browseSel[i].clear();
+            TrackList *b = m_browse[i];
+            b->rows.clear();
+            std::string all = tr(counts[i][values.size() == 1 ? 0 : 1]);
+            const size_t at = all.find("%1");
+            if (at != std::string::npos)
+                all.replace(at, 2, std::to_string(values.size()));
+            b->rows.push_back({all});
+            b->selected = 0;
+            for (const std::string &v : values) {
+                if (v == m_browseSel[i])
+                    b->selected = int(b->rows.size());
+                b->rows.push_back({v});
+            }
+            b->reload();
+            if (!m_browseSel[i].empty()) {
+                std::vector<int> next;
+                for (int id : pass)
+                    if (field(*m_library.track(id), i) == m_browseSel[i])
+                        next.push_back(id);
+                pass = next;
+            }
+        }
+        return pass;
     }
 
     static std::string lower(std::string s)
@@ -1625,9 +1904,7 @@ private:
         m_player.play(t->path);
         t->playCount++;
         m_library.save();
-        for (size_t i = 0; i < m_list->ids.size(); ++i)
-            if (m_list->ids[i] == id && m_list->rows[i].size() > 6)
-                m_list->rows[i][6] = std::to_string(t->playCount);
+        updateCells(id, 22);
         markPlaying();
         m_list->body()->setNeedsDisplay();
         refreshLCD();
@@ -1725,6 +2002,10 @@ private:
         m_lcd->showing = active;
         if (active) {
             const Track &t = *m_library.track(m_current);
+            if (t.path != m_artworkPath) {
+                m_artworkPath = t.path;
+                m_lcd->artwork = eleven() ? Image::fromData(artworkData(t.path), {128, 128}) : Image();
+            }
             m_lcd->setTrack(t.name, t.artist, t.album);
             m_lcd->position = m_player.position();
             m_lcd->duration = m_player.duration() > 0 ? m_player.duration() : t.totalTime / 1000.0;
@@ -1751,6 +2032,49 @@ private:
         layout();
     }
 
+    // File ▸ New Smart Playlist… (nspl), Edit Smart Playlist (esmp)
+    int selectedPlaylist() const
+    {
+        const int sel = m_sources->selected();
+        return sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
+    }
+    void newSmartPlaylist()
+    {
+        m_smartWindow = std::make_unique<SmartPlaylistWindow>(SmartInfo{}, [this](const SmartInfo &info) {
+            Playlist p;
+            p.name = "untitled playlist";
+            int n = 1;
+            auto taken = [&](const std::string &name) {
+                return std::any_of(m_library.playlists().begin(), m_library.playlists().end(), [&](const Playlist &q) { return q.name == name; });
+            };
+            while (taken(p.name))
+                p.name = "untitled playlist " + std::to_string(++n);
+            p.smart = true;
+            p.info = info;
+            p.items = m_library.evaluate(info);
+            m_library.playlists().push_back(p);
+            m_library.save();
+            rebuildSources();
+            m_sources->select(int(m_sources->rows.size()) - 1, true);
+            layout();
+        });
+        m_smartWindow->show();
+    }
+    void editSmartPlaylist()
+    {
+        const int tag = selectedPlaylist();
+        if (tag < 0 || !m_library.playlists()[size_t(tag)].smart)
+            return;
+        m_smartWindow = std::make_unique<SmartPlaylistWindow>(m_library.playlists()[size_t(tag)].info, [this, tag](const SmartInfo &info) {
+            Playlist &p = m_library.playlists()[size_t(tag)];
+            p.info = info;
+            p.items = m_library.evaluate(info);
+            m_library.save();
+            loadSource();
+        });
+        m_smartWindow->show();
+    }
+
     void newPlaylistFromSelection()
     {
         if (m_list->selected < 0)
@@ -1765,7 +2089,8 @@ private:
     {
         const int sel = m_sources->selected();
         const int tag = sel >= 0 ? m_sources->rows[size_t(sel)].tag : -1;
-        if (m_list->selected < 0)
+        // a smart playlist's songs are its rules': nothing to take out of it
+        if (m_list->selected < 0 || (tag >= 0 && m_library.playlists()[size_t(tag)].smart))
             return;
         const int id = m_list->ids[size_t(m_list->selected)];
         if (tag >= 0) {
@@ -1780,6 +2105,82 @@ private:
         }
         m_library.save();
         loadSource();
+    }
+
+    // File ▸ Rating, a click on the stars: the song's rating, kept in the library
+    void rate(int id, int rating)
+    {
+        Track *t = m_library.track(id);
+        if (!t)
+            return;
+        t->rating = rating;
+        m_library.save();
+        updateCells(id, 25);
+        m_list->body()->setNeedsDisplay();
+    }
+
+    // A song's cell of a field, again (its play count, its rating)
+    void updateCells(int id, int field)
+    {
+        const auto col = std::find(m_columnFields.begin(), m_columnFields.end(), field);
+        const Track *t = m_library.track(id);
+        if (col == m_columnFields.end() || !t)
+            return;
+        const size_t c = size_t(col - m_columnFields.begin()) + 1;
+        for (size_t i = 0; i < m_list->ids.size(); ++i)
+            if (m_list->ids[i] == id && m_list->rows[i].size() > c)
+                m_list->rows[i][c] = cellText(*t, field);
+    }
+
+    // The list's columns from the fields chosen (View Options), the sorted one kept
+    void applyColumns()
+    {
+        m_list->columns = {{"", 45, Align::Left}};
+        m_list->ratingColumn = -1;
+        for (int f : m_columnFields) {
+            const ListField *lf = listField(f);
+            if (f == 25)
+                m_list->ratingColumn = int(m_list->columns.size());
+            m_list->columns.push_back({tr(lf->titleKey), lf->width, lf->align});
+        }
+        const auto s = std::find(m_columnFields.begin(), m_columnFields.end(), m_sortField);
+        if (s == m_columnFields.end()) {
+            m_sortField = 2;
+            m_list->ascending = true;
+        }
+        m_list->sortColumn = int(std::find(m_columnFields.begin(), m_columnFields.end(), m_sortField) - m_columnFields.begin()) + 1;
+    }
+
+    // View ▸ View Options… (VOpt)
+    void showViewOptions()
+    {
+        const int sel = m_sources->selected();
+        const SourceRow row = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)] : SourceRow{};
+        m_viewOptions = std::make_unique<ViewOptionsWindow>(row.title, std::max(0, row.icon), m_columnFields, [this](const std::vector<int> &cols) {
+            m_columnFields = cols;
+            std::string s;
+            for (int f : cols)
+                s += (s.empty() ? "" : " ") + std::to_string(f);
+            Settings("itunes").set("Columns", s);
+            applyColumns();
+            loadSource();
+        });
+        m_viewOptions->show();
+    }
+
+    // The preferences the port acts on (section 14): the list's text size, Sound Check, the MiniPlayer
+    // on top
+    void applyPreferences()
+    {
+        if (eleven())
+            return;
+        Settings s("itunes");
+        g_listText = s.integer("ListTextLarge", 0) == 1 ? 9003 : 9002;
+        m_list->rowHeight = listRowHeight();
+        m_list->reload();
+        m_list->body()->setNeedsDisplay();
+        m_player.setSoundCheck(s.boolean("SoundCheck", false));
+        m_window->setFloating(m_mini && s.boolean("MiniOnTop", false));
     }
 
     void showInFinder()
@@ -1882,6 +2283,31 @@ private:
             a == "zoom" || a == "brwn" || a == "batf" || a == "abou" || a == "terminate:" || a == "hide:" ||
             a == "hideOtherApplications:" || a == "unhideAllApplications:" || a == "clos" || a == "CLOS")
             return true;
+        if (a == "eqwn")   // Window ▸ Equalizer: 8.2.1's EQWindow
+            return !eleven();
+        if (a.size() == 4 && a.rfind("SRT", 0) == 0 && a[3] >= '0' && a[3] <= '5') {   // File ▸ Rating
+            const Track *t = hasSel ? m_library.track(m_list->ids[size_t(m_list->selected)]) : nullptr;
+            v.checked = t && (t->rating + 10) / 20 == a[3] - '0';
+            return t != nullptr;
+        }
+        if (a == "SRAT")
+            return hasSel;
+        if (a == "nspl")
+            return !eleven();
+        if (a == "pref")   // iTunes ▸ Preferences…: 8.2.1's
+            return !eleven();
+        if (a == "VOpt")
+            return !eleven() && m_viewMode == 0;
+        if (a == "esmp") {
+            const int tag = selectedPlaylist();
+            return !eleven() && tag >= 0 && m_library.playlists()[size_t(tag)].smart;
+        }
+        if (a == "geti")   // File ▸ Get Info: 8.2.1's Info Window
+            return hasSel && !eleven();
+        if (a == "SBro") {
+            v.title = tr(m_showBrowser ? "kMenuItemHideBrowser" : "kMenuItemShowBrowser");
+            return !eleven() && !m_mini && m_viewMode == 0;
+        }
         if (a == "npls" || a == "revl" || a == "clea" || a == "plps")
             return hasSel;
         if (a == "SCur")
@@ -1894,9 +2320,9 @@ private:
             v.checked = (a == "rpt0" && m_repeat == 0) || (a == "rpt2" && m_repeat == 1) || (a == "rpt1" && m_repeat == 2);
             return true;
         }
-        if (a == "lisv") {
-            v.checked = true;
-            return true;
+        if (a == "lisv" || a == "thmv" || a == "covv") {   // View ▸ as List, as Grid, as Cover Flow
+            v.checked = (a == "lisv" ? 0 : a == "thmv" ? 1 : 2) == m_viewMode;
+            return a == "lisv" || !eleven();
         }
         return false;
     }
@@ -1927,6 +2353,8 @@ private:
                 setVolume(0);
             } else
                 setVolume(m_muted > 0 ? m_muted : 1);
+        } else if (a == "zoom") {
+            zoom();
         } else if (a == "TFnd")
             m_window->makeFirstResponder(m_search);
         else if (a == "add ")
@@ -1957,12 +2385,41 @@ private:
             m_window->miniaturize();
         else if (a == "abou")
             showAbout();
+        else if (a == "eqwn")
+            m_equalizer.show();
+        else if (a == "SBro")
+            toggleBrowser();
+        else if (a == "lisv" || a == "thmv" || a == "covv")
+            setViewMode(a == "lisv" ? 0 : a == "thmv" ? 1 : 2);
+        else if (a == "nspl")
+            newSmartPlaylist();
+        else if (a == "VOpt")
+            showViewOptions();
+        else if (a == "pref") {
+            m_prefs.onApply = [this] { applyPreferences(); };
+            m_prefs.show();
+        }
+        else if (a == "esmp")
+            editSmartPlaylist();
+        else if (a == "geti" && m_list->selected >= 0) {
+            m_info.onChanged = [this](int) { loadSource(); refreshLCD(); };
+            m_info.show(m_list->ids, m_list->selected);
+        }
+        else if (a.size() == 4 && a.rfind("SRT", 0) == 0 && m_list->selected >= 0)
+            rate(m_list->ids[size_t(m_list->selected)], (a[3] - '0') * 20);
         else if (a == "terminate:")
             App::shared().quit();
     }
 
     Library m_library;
     Player m_player;
+    Equalizer m_equalizer{m_player};
+    InfoWindow m_info{m_library};
+    std::unique_ptr<SmartPlaylistWindow> m_smartWindow;
+    std::unique_ptr<ViewOptionsWindow> m_viewOptions;
+    PreferencesWindow m_prefs;
+    std::vector<int> m_columnFields;      // the list's columns, by field (View Options)
+    int m_sortField = 2;                  // the field the songs are sorted by
     MainMenu m_menu;
     std::unique_ptr<Window> m_window, m_about;
     TopBand *m_top = nullptr;
@@ -1981,12 +2438,25 @@ private:
     SourceList *m_sources = nullptr;
     View *m_divider = nullptr;
     TrackList *m_list = nullptr;
+    TrackList *m_browse[3] = {};          // Genre, Artist, Album
+    BrowserSplitter *m_splitter = nullptr;
+    GridView *m_grid = nullptr;
+    CoverFlowView *m_flow = nullptr;
+    int m_viewMode = 0;                   // 0 the list, 1 the grid
+    bool m_showBrowser = false, m_browseGenre = true;
+    double m_browserHeight = -1;          // the browser's height (+0x452), -1 until laid out
+    double m_browserDragFrom = 0;
+    std::string m_browseSel[3];           // the chosen genre, artist, album ("" all)
     double m_sourceWidth = eleven() ? 185 : 200;   // ACfg's Default Source Width (11.4's AppConfig.plist: 185)
     std::vector<int> m_queue;
     int m_queuePos = 0, m_current = -1;
+    std::string m_artworkPath;
     bool m_shuffle = false;
     int m_repeat = 0;   // 0 off, 1 all, 2 one (432's rows)
     double m_muted = 0;
+    bool m_mini = false;
+    Size m_fullSize{1000, 620 + TitleBarHeight};
+    double m_miniWidth = 200;
     int m_timer = 0;
 };
 
@@ -2009,9 +2479,9 @@ int main(int argc, char **argv)
     if (Instance::handToRunning("iTunes", files))
         return 0;
     ITunesApp itunes;
-    itunes.addFiles(files);
+    itunes.openFiles(files);
     Instance::listen("iTunes", [&itunes](std::vector<std::string> f) {
-        itunes.addFiles(f);
+        itunes.openFiles(f);
         itunes.comeForward();
     });
     return app.run();

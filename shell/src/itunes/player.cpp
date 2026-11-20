@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <clocale>
+#include <cstdio>
 #include <unistd.h>
 
 namespace iTunes {
@@ -131,6 +132,41 @@ void Player::setVolume(double v)
     // mpv's volume is cubic itself (0 to 100)
     double percent = m_volume * 100;
     mpv_set_property(m_mpv, "volume", MPV_FORMAT_DOUBLE, &percent);
+}
+
+} // namespace iTunes
+
+namespace iTunes {
+
+void Player::setEqualizer(bool on, double preamp, const double bands[10])
+{
+    if (!m_mpv)
+        return;
+    // FFmpeg's peaking filters an octave wide at iTunes' ten frequencies, the preamp a gain before them
+    static const int freq[10] = {32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
+    std::string af;
+    if (on) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "lavfi-volume=volume=%.2fdB", preamp);
+        af = buf;
+        for (int i = 0; i < 10; ++i) {
+            if (bands[i] == 0)
+                continue;
+            std::snprintf(buf, sizeof buf, ",lavfi-equalizer=f=%d:width_type=o:width=1:gain=%.2f", freq[i], bands[i]);
+            af += buf;
+        }
+    }
+    mpv_set_property_string(m_mpv, "af", af.c_str());
+}
+
+} // namespace iTunes
+
+namespace iTunes {
+
+void Player::setSoundCheck(bool on)
+{
+    if (m_mpv)
+        mpv_set_property_string(m_mpv, "replaygain", on ? "track" : "no");
 }
 
 } // namespace iTunes

@@ -121,7 +121,8 @@ public:
     void setContentSize(Size size);
     // A window the user resizes (a document's), its content no smaller than minContent; the size box
     // in its bottom right corner (WindowServer's on X11, AquaKit's on Wayland). onResize after each.
-    void setResizable(Size minContent);
+    // maxContent: the largest (0 in a dimension: unbounded), as kEventWindowGetMaximumSize gives it
+    void setResizable(Size minContent, Size maxContent = {});
     bool isResizable() const { return m_resizable; }
     std::function<void(Size)> onResize;
     Kind kind() const { return m_kind; }

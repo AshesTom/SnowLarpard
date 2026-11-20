@@ -317,6 +317,8 @@ PictureInfo pictureInfo(int id)
         {869, {3, 1, 11, 11, 3}},  {870, {1, 1, 0, 0, 0}},   {871, {3, 1, 11, 11, 3}}, {876, {3, 2, 13, 13, 3}},
         {879, {1, 1, 0, 0, 0}},    {882, {3, 1, 0, 0, 3}},   {883, {3, 1, 0, 0, 3}},   {887, {1, 1, 0, 0, 0}},
         {8251, {2, 13, 0, 0, 3}},  {886, {4, 2, 11, 14, 4}},
+        // the songs' header (304, 313 right to left) and status icons (FUN_00e5675c)
+        {304, {3, 4, 2, 16, 3}},   {313, {3, 4, 16, 2, 3}},  {8455, {2, 10, 0, 0, 0}},
     };
     if (eleven()) {
         auto it = table11.find(id);
@@ -332,6 +334,20 @@ PictureInfo pictureInfo(int id)
         {472, {5, 1, 0, 0, 5}},    {475, {1, 1, 3, 2, 0}},   {477, {1, 1, 0, 0, 0}},   {478, {1, 1, 0, 0, 0}},
         {540, {5, 2, 0, 0, 5}},    {541, {5, 2, 0, 0, 5}},   {542, {5, 2, 0, 0, 5}},   {654, {5, 2, 0, 0, 5}},
         {441, {2, 30, 0, 0, 0}},   {304, {3, 3, 1, 16, 3}},  {306, {13, 2, 0, 0, 0}},  {300, {2, 1, 0, 0, 0}},   {13004, {4, 2, 0, 0, 4}}, {13005, {4, 2, 0, 0, 4}}, {13006, {4, 2, 0, 0, 4}},
+        // the utility windows' buttons, the Equalizer's popup and sliders (EQWindow.nib)
+        {13014, {4, 2, 0, 0, 4}},  {13015, {4, 2, 0, 0, 4}}, {13016, {4, 2, 0, 0, 4}}, {786, {3, 1, 4, 12, 3}},
+        {3210, {1, 1, 0, 0, 0, 10, 10}},   {3212, {3, 1, 0, 0, 3}},
+        // the browser's splitter; the user ratings (PBUT 528, 529, 531: eleven rows, a half star each)
+        {312, {1, 1, 0, 0, 0}},    {313, {1, 1, 0, 0, 0}},   {528, {1, 11, 0, 0, 0}},  {529, {1, 11, 0, 0, 0}},
+        {531, {1, 11, 0, 0, 0}},
+        // the grid (Placards.nib's BrowseBar; PBUT 570, 578: their fixed sides)
+        {552, {2, 2, 3, 3, 2}},    {553, {2, 2, 3, 3, 2}},   {554, {2, 2, 1, 1, 2}},   {556, {2, 1, 4, 4, 1}},
+        {558, {3, 1, 0, 0, 3}},    {560, {3, 1, 0, 0, 3}},   {562, {3, 1, 0, 0, 3}},   {564, {1, 1, 0, 0, 0}},
+        {570, {1, 1, 22, 22, 0, 22, 22}}, {578, {1, 1, 12, 12, 0, 12, 12}},
+        // the smart playlist rules' − and + (PBUT 138: disabled, normal, pressed; − then +)
+        {138, {3, 2, 0, 0, 3}},
+        // the Preferences' Parental lock (PBUT 142: 33-point cells, kind 1; row 0 locked)
+        {142, {3, 2, 0, 0, 1}},
     };
     auto it = table.find(id);
     return it == table.end() ? PictureInfo{} : it->second;
@@ -351,6 +367,15 @@ int stateColumn(int kind, int state)
     }
 }
 
+int stateColumn11(int kind, int state)
+{
+    static const int m[9][7] = {
+        {1, 1, 1, 1, 0, 1, 0}, {0, 1, 0, 0, 0, 0, 0}, {1, 2, 1, 1, 0, 1, 0}, {1, 3, 2, 1, 0, 1, 0}, {1, 2, 1, 1, 0, 4, 3},
+        {1, 3, 2, 1, 0, 5, 4}, {0, 0, 0, 0, 1, 1, 1}, {0, 2, 1, 0, 0, 0, 0}, {0, 1, 1, 0, 0, 0, 0},
+    };
+    return kind >= 1 && kind <= 9 && state >= 0 && state < 7 ? m[kind - 1][state] : 0;
+}
+
 Size cellSize(int id)
 {
     const Image img = picture(id);
@@ -367,6 +392,17 @@ void drawCell(cairo_t *cr, int id, int column, int row, const Rect &dst, double 
     const Size cell = cellSize(id);
     const Rect src{column * cell.w, row * cell.h, cell.w, cell.h};
     const double l = std::min<double>(info.fixedLeft, dst.w / 2), r = std::min<double>(info.fixedRight, dst.w / 2);
+    const double t = std::min<double>(info.fixedTop, dst.h / 2), b = std::min<double>(info.fixedBottom, dst.h / 2);
+    if (t > 0 || b > 0) {
+        // a nine-slice: the corners kept, the edges stretched along, the middle both ways
+        const double xs[4] = {src.x, src.x + l, src.right() - r, src.right()}, xd[4] = {dst.x, dst.x + l, dst.right() - r, dst.right()};
+        const double ys[4] = {src.y, src.y + t, src.bottom() - b, src.bottom()}, yd[4] = {dst.y, dst.y + t, dst.bottom() - b, dst.bottom()};
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                if (xs[i + 1] > xs[i] && ys[j + 1] > ys[j] && xd[i + 1] > xd[i] && yd[j + 1] > yd[j])
+                    img.draw(cr, {xs[i], ys[j], xs[i + 1] - xs[i], ys[j + 1] - ys[j]}, {xd[i], yd[j], xd[i + 1] - xd[i], yd[j + 1] - yd[j]}, alpha);
+        return;
+    }
     if ((l == 0 && r == 0) || dst.w == cell.w) {
         img.draw(cr, src, dst, alpha);
         return;
@@ -374,6 +410,67 @@ void drawCell(cairo_t *cr, int id, int column, int row, const Rect &dst, double 
     img.draw(cr, {src.x, src.y, l, src.h}, {dst.x, dst.y, l, dst.h}, alpha);
     img.draw(cr, {src.x + l, src.y, src.w - l - r, src.h}, {dst.x + l, dst.y, dst.w - l - r, dst.h}, alpha);
     img.draw(cr, {src.right() - r, src.y, r, src.h}, {dst.right() - r, dst.y, r, dst.h}, alpha);
+}
+
+Size dialogSize(int dlog)
+{
+    const std::string *d = localized().get("DLOG", dlog);
+    if (!d || d->size() < 8)
+        return {};
+    return {double(s16(*d, 6) - s16(*d, 2)), double(s16(*d, 4) - s16(*d, 0))};
+}
+
+std::vector<DialogItem> dialogItems(int ditl)
+{
+    std::vector<DialogItem> items;
+    const std::string *dp = localized().get("DITL", ditl);
+    if (!dp || dp->size() < 2)
+        return items;
+    const std::string &d = *dp;
+    const int n = s16(d, 0) + 1;
+    size_t p = 2;
+    for (int i = 0; i < n && p + 14 <= d.size(); ++i) {
+        DialogItem it;
+        const int top = s16(d, p + 4), left = s16(d, p + 6), bottom = s16(d, p + 8), right = s16(d, p + 10);
+        it.rect = {double(left), double(top), double(right - left), double(bottom - top)};
+        const unsigned type = uint8_t(d[p + 12]);
+        it.type = int(type & 0x7F);
+        it.disabled = type & 0x80;
+        const size_t len = uint8_t(d[p + 13]);
+        const std::string data = d.substr(p + 14, std::min(len, d.size() - p - 14));
+        if (it.type == DialogItem::Control && data.size() >= 2) {
+            // the CNTL: rect, value, visible, max, min, procID, refCon, title
+            if (const std::string *cn = localized().get("CNTL", s16(data, 0)); cn && cn->size() >= 23) {
+                it.value = s16(*cn, 8);
+                it.max = s16(*cn, 12);
+                it.min = s16(*cn, 14);
+                it.proc = s16(*cn, 16);
+                it.title = macRoman(pstring(*cn, 22));
+            }
+        } else {
+            it.text = macRoman(data);
+        }
+        items.push_back(it);
+        p += 14 + len + (len & 1);
+    }
+    return items;
+}
+
+std::vector<std::string> classicMenu(int id)
+{
+    std::vector<std::string> out;
+    const std::string *dp = localized().get("MENU", id);
+    if (!dp || dp->size() < 15)
+        return out;
+    const std::string &d = *dp;
+    size_t p = 14;
+    p += 1 + uint8_t(d[p]);   // the title
+    while (p < d.size() && d[p]) {
+        const std::string t = macRoman(pstring(d, p));
+        out.push_back(t == "-" ? "-" : t);
+        p += 1 + uint8_t(d[p]) + 4;
+    }
+    return out;
 }
 
 Color colour(int index)

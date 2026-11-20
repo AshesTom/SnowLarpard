@@ -91,9 +91,7 @@ Then, in a window of your current desktop (Xephyr, or Xwayland's window under Wa
 ./sl.sh -- 1600x1000                      # at a size
 ```
 
-Nothing on your system is touched: the DVD's files and the build go to `.local/`, and the session
-has a home of its own, `.local/home/<you>` (Desktop, Documents, Downloads... as a new 10.6 account
-has them; `SL_HOME=$HOME ./sl.sh --` to use yours).
+The DVD's files and the build go to `.local/`; the session runs on your own home.
 `tools/extract.py` keeps only what the shell reads (about 150 MB in `.local/assets`) and the
 DVD's HFS+ partition in `.local/media/MacOSX.hfs` (6 GB), from which it can extract again without
 the DVD (`tools/extract.py .local/media/MacOSX.hfs`): delete it when you're done extracting.

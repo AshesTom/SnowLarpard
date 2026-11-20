@@ -30,6 +30,11 @@ public:
     void seek(double seconds);
     void setVolume(double v);  // 0..1, the slider's (a cubic curve, as the ear hears)
     double volume() const { return m_volume; }
+    // The Equalizer (EQWindow): a preamp and ten bands at 32, 64, 125, 250, 500 Hz, 1, 2, 4, 8 and
+    // 16 kHz, in dB (±12); off: no filter
+    void setEqualizer(bool on, double preamp, const double bands[10]);
+    // Sound Check: the songs' own loudness (their ReplayGain tags) evened out
+    void setSoundCheck(bool on);
 
     std::function<void()> onEnd;
     std::function<void(const std::string &)> onError;

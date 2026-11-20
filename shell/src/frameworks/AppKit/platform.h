@@ -42,7 +42,7 @@ public:
     virtual void minimize() {}
     virtual void resize(Size surface) = 0;
     // the user may resize it, down to minSurface (the title bar included)
-    virtual void setResizable(Size minSurface) = 0;
+    virtual void setResizable(Size minSurface, Size maxSurface) = 0;   // max 0: unbounded
     virtual void startResize() {}   // the size box dragged (Wayland: the compositor resizes)
     virtual void setRoundedBottomCorners(bool) {}
     // -[NSWindow setAlphaValue:]: the whole window's opacity, 0 to 1 (the compositor's)

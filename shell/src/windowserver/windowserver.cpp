@@ -193,9 +193,8 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     if (hints.size() >= 4 * 7) {
         const auto *h = reinterpret_cast<const uint32_t *>(hints.constData());
         hasPosition = (h[0] & 5) != 0;   // USPosition (1) | PPosition (4)
-        if (h[0] & 16)                   // PMinSize
-            c->minimum = QSize(int(h[5]), int(h[6]));
     }
+    readSizeHints(c);
     if (!existing)
         place(c, hasPosition && !c->geometry.topLeft().isNull());
     else
@@ -330,6 +329,19 @@ void WindowServer::unmanage(Client *c, bool destroyed)
             setActiveProperty(0);
     }
     updateClientLists();
+}
+
+void WindowServer::readSizeHints(Client *c)
+{
+    const QByteArray hints = X11::bytes(c->window, XCB_ATOM_WM_NORMAL_HINTS, XCB_ATOM_WM_SIZE_HINTS);
+    c->minimum = c->maximum = QSize();
+    if (hints.size() < 4 * 9)
+        return;
+    const auto *h = reinterpret_cast<const uint32_t *>(hints.constData());
+    if (h[0] & 16)   // PMinSize
+        c->minimum = QSize(int(h[5]), int(h[6]));
+    if (h[0] & 32)   // PMaxSize
+        c->maximum = QSize(int(h[7]), int(h[8]));
 }
 
 void WindowServer::readProperties(Client *c)
@@ -1013,6 +1025,8 @@ bool WindowServer::nativeEventFilter(const QByteArray &type, void *message, qint
             } else if (e->atom == atom("_SNOWLEOPARD_ROUNDED_BOTTOM")) {
                 readProperties(c);
                 applyShape(c);
+            } else if (e->atom == XCB_ATOM_WM_NORMAL_HINTS) {
+                readSizeHints(c);   // a window whose limits change (iTunes' mini player)
             } else if (e->atom == atom("WM_PROTOCOLS") || e->atom == XCB_ATOM_WM_HINTS) {
                 readProperties(c);
             } else if (e->atom == atom("_NET_WM_WINDOW_OPACITY")) {
@@ -1182,8 +1196,10 @@ void WindowServer::motion(xcb_motion_notify_event_t *e)
         xcb_flush(m_conn);
     } else if (m_drag == Resizing) {
         QSize minimum = c->minimum.expandedTo(QSize(Frame::MinimumWidth, 40));
-        c->geometry.setSize(QSize(qMax(minimum.width(), m_dragGeometry.width() + delta.x()),
-                                  qMax(minimum.height(), m_dragGeometry.height() + delta.y())));
+        QSize size(qMax(minimum.width(), m_dragGeometry.width() + delta.x()), qMax(minimum.height(), m_dragGeometry.height() + delta.y()));
+        if (!c->maximum.isEmpty())
+            size = size.boundedTo(c->maximum.expandedTo(minimum));
+        c->geometry.setSize(size);
         c->zoomed = false;
         applyGeometry(c);
         paintTitle(c);

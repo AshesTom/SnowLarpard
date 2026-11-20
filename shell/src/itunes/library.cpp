@@ -6,6 +6,7 @@
 #include <taglib/audioproperties.h>
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
+#include <taglib/tpropertymap.h>
 
 #include <algorithm>
 #include <cctype>
@@ -317,6 +318,14 @@ bool Library::isAudio(const std::string &path) const
     return exts.count(extension(path)) > 0;
 }
 
+int Library::idForPath(const std::string &path) const
+{
+    for (const auto &[id, t] : m_tracks)
+        if (t.path == path)
+            return id;
+    return 0;
+}
+
 const Track *Library::track(int id) const
 {
     auto it = m_tracks.find(id);
@@ -365,6 +374,15 @@ bool Library::load()
             tr.bitRate = int(t.num("Bit Rate"));
             tr.sampleRate = int(t.num("Sample Rate"));
             tr.playCount = int(t.num("Play Count"));
+            tr.composer = t.str("Composer");
+            tr.albumArtist = t.str("Album Artist");
+            tr.grouping = t.str("Grouping");
+            tr.comments = t.str("Comments");
+            tr.trackCount = int(t.num("Track Count"));
+            tr.discNumber = int(t.num("Disc Number"));
+            tr.discCount = int(t.num("Disc Count"));
+            tr.bpm = int(t.num("BPM"));
+            tr.rating = int(t.num("Rating"));
             tr.dateAdded = t.str("Date Added");
             tr.path = pathFromURL(t.str("Location"));
             if (tr.id > 0) {
@@ -381,6 +399,30 @@ bool Library::load()
             if (const Node *items = p.get("Playlist Items"))
                 for (const Node &i : items->array)
                     pl.items.push_back(int(i.num("Track ID")));
+            if (const Node *s = p.get("Smart Rules")) {
+                // ours: iTunes keeps them as the binary "Smart Info" and "Smart Criteria" (SLst)
+                auto flag = [&](const char *k) { const Node *n = s->get(k); return n && n->text == "true"; };
+                pl.smart = true;
+                pl.info.any = flag("Match Any");
+                pl.info.useRules = !s->get("Match") || flag("Match");
+                pl.info.limit = flag("Limit");
+                pl.info.limitValue = int(s->num("Limit Value"));
+                pl.info.limitUnit = int(s->num("Limit Unit"));
+                pl.info.limitOrder = int(s->num("Limit Order"));
+                pl.info.checkedOnly = flag("Checked Only");
+                pl.info.live = !s->get("Live Updating") || flag("Live Updating");
+                if (const Node *rules = s->get("Rules"))
+                    for (const Node &r : rules->array) {
+                        SmartRule rule;
+                        rule.field = int(r.num("Field"));
+                        rule.op = uint32_t(r.num("Operator"));
+                        rule.text = r.str("Text");
+                        rule.from = r.num("From");
+                        rule.to = r.num("To");
+                        rule.unit = std::max(1, int(r.num("Unit")));
+                        pl.info.rules.push_back(rule);
+                    }
+            }
             m_playlists.push_back(pl);
         }
     return true;
@@ -415,18 +457,27 @@ bool Library::save() const
         num("Track ID", id);
         str("Name", t.name);
         str("Artist", t.artist);
+        str("Album Artist", t.albumArtist);
+        str("Composer", t.composer);
         str("Album", t.album);
+        str("Grouping", t.grouping);
         str("Genre", t.genre);
         str("Kind", t.kind);
         num("Size", t.size);
         num("Total Time", t.totalTime);
+        num("Disc Number", t.discNumber);
+        num("Disc Count", t.discCount);
         num("Track Number", t.trackNumber);
+        num("Track Count", t.trackCount);
         num("Year", t.year);
+        num("BPM", t.bpm);
         if (!t.dateAdded.empty())
             o << "\t\t\t<key>Date Added</key><date>" << t.dateAdded << "</date>\n";
         num("Bit Rate", t.bitRate);
         num("Sample Rate", t.sampleRate);
         num("Play Count", t.playCount);
+        num("Rating", t.rating);
+        str("Comments", t.comments);
         o << "\t\t\t<key>Track Type</key><string>File</string>\n";
         str("Location", fileURL(t.path));
         o << "\t\t</dict>\n";
@@ -436,6 +487,25 @@ bool Library::save() const
         o << "\t\t<dict>\n\t\t\t<key>Name</key><string>" << xmlEscape(p.name) << "</string>\n";
         if (p.master)
             o << "\t\t\t<key>Master</key><true/>\n\t\t\t<key>Visible</key><false/>\n";
+        if (p.smart) {
+            const SmartInfo &s = p.info;
+            auto b = [](bool v) { return v ? "<true/>" : "<false/>"; };
+            o << "\t\t\t<key>Smart Rules</key>\n\t\t\t<dict>\n"
+              << "\t\t\t\t<key>Match</key>" << b(s.useRules) << "\n"
+              << "\t\t\t\t<key>Match Any</key>" << b(s.any) << "\n"
+              << "\t\t\t\t<key>Limit</key>" << b(s.limit) << "\n"
+              << "\t\t\t\t<key>Limit Value</key><integer>" << s.limitValue << "</integer>\n"
+              << "\t\t\t\t<key>Limit Unit</key><integer>" << s.limitUnit << "</integer>\n"
+              << "\t\t\t\t<key>Limit Order</key><integer>" << s.limitOrder << "</integer>\n"
+              << "\t\t\t\t<key>Checked Only</key>" << b(s.checkedOnly) << "\n"
+              << "\t\t\t\t<key>Live Updating</key>" << b(s.live) << "\n"
+              << "\t\t\t\t<key>Rules</key>\n\t\t\t\t<array>\n";
+            for (const SmartRule &r : s.rules)
+                o << "\t\t\t\t\t<dict><key>Field</key><integer>" << r.field << "</integer><key>Operator</key><integer>" << r.op
+                  << "</integer><key>Text</key><string>" << xmlEscape(r.text) << "</string><key>From</key><integer>" << r.from
+                  << "</integer><key>To</key><integer>" << r.to << "</integer><key>Unit</key><integer>" << r.unit << "</integer></dict>\n";
+            o << "\t\t\t\t</array>\n\t\t\t</dict>\n";
+        }
         o << "\t\t\t<key>All Items</key><true/>\n\t\t\t<key>Playlist Items</key>\n\t\t\t<array>\n";
         for (int id : p.items)
             o << "\t\t\t\t<dict>\n\t\t\t\t\t<key>Track ID</key><integer>" << id << "</integer>\n\t\t\t\t</dict>\n";
@@ -474,6 +544,23 @@ void Library::addFile(const std::string &path)
         t.genre = tag->genre().to8Bit(true);
         t.year = int(tag->year());
         t.trackNumber = int(tag->track());
+        t.comments = tag->comment().to8Bit(true);
+        // the rest from TagLib's property map (ID3's TCOM, TPE2, TIT1, TRCK n/m, TPOS, TBPM; MP4's
+        // and Vorbis' own)
+        const TagLib::PropertyMap p = f.file()->properties();
+        auto prop = [&](const char *k) { return p.contains(k) && !p[k].isEmpty() ? p[k].front().to8Bit(true) : std::string(); };
+        auto second = [](const std::string &v) { const size_t s = v.find('/'); return s == std::string::npos ? 0 : std::atoi(v.c_str() + s + 1); };
+        t.composer = prop("COMPOSER");
+        t.albumArtist = prop("ALBUMARTIST");
+        t.grouping = prop("GROUPING").empty() ? prop("CONTENTGROUP") : prop("GROUPING");
+        t.trackCount = second(prop("TRACKNUMBER"));
+        if (!prop("TRACKTOTAL").empty())
+            t.trackCount = std::atoi(prop("TRACKTOTAL").c_str());
+        t.discNumber = std::atoi(prop("DISCNUMBER").c_str());
+        t.discCount = second(prop("DISCNUMBER"));
+        if (!prop("DISCTOTAL").empty())
+            t.discCount = std::atoi(prop("DISCTOTAL").c_str());
+        t.bpm = std::atoi(prop("BPM").c_str());
     }
     if (!f.isNull() && f.audioProperties()) {
         t.totalTime = f.audioProperties()->lengthInMilliseconds();
@@ -486,6 +573,41 @@ void Library::addFile(const std::string &path)
     for (Playlist &p : m_playlists)
         if (p.master)
             p.items.push_back(t.id);
+}
+
+bool Library::writeTags(const Track &t)
+{
+    Track *mine = track(t.id);
+    if (!mine)
+        return false;
+    *mine = t;
+    TagLib::FileRef f(t.path.c_str());
+    if (f.isNull() || !f.tag())
+        return false;
+    TagLib::Tag *tag = f.tag();
+    auto s = [](const std::string &v) { return TagLib::String(v, TagLib::String::UTF8); };
+    tag->setTitle(s(t.name));
+    tag->setArtist(s(t.artist));
+    tag->setAlbum(s(t.album));
+    tag->setGenre(s(t.genre));
+    tag->setComment(s(t.comments));
+    tag->setYear(unsigned(std::max(0, t.year)));
+    TagLib::PropertyMap p = f.file()->properties();
+    auto set = [&](const char *k, const std::string &v) {
+        if (v.empty())
+            p.erase(k);
+        else
+            p.replace(k, TagLib::StringList(s(v)));
+    };
+    auto pair = [](int n, int of) { return n ? std::to_string(n) + (of ? "/" + std::to_string(of) : std::string()) : std::string(); };
+    set("COMPOSER", t.composer);
+    set("ALBUMARTIST", t.albumArtist);
+    set("GROUPING", t.grouping);
+    set("TRACKNUMBER", pair(t.trackNumber, t.trackCount));
+    set("DISCNUMBER", pair(t.discNumber, t.discCount));
+    set("BPM", t.bpm ? std::to_string(t.bpm) : std::string());
+    f.file()->setProperties(p);
+    return f.save();
 }
 
 int Library::add(const std::vector<std::string> &paths)
@@ -517,6 +639,23 @@ int Library::add(const std::vector<std::string> &paths)
         }
     }
     return int(m_tracks.size() - before);
+}
+
+std::vector<unsigned char> artworkData(const std::string &path)
+{
+    TagLib::FileRef f(path.c_str(), false);
+    if (f.isNull())
+        return {};
+    const auto pictures = f.complexProperties("PICTURE");
+    for (const auto &p : pictures) {
+        auto it = p.find("data");
+        if (it == p.end())
+            continue;
+        const TagLib::ByteVector v = it->second.toByteVector();
+        if (!v.isEmpty())
+            return std::vector<unsigned char>(v.data(), v.data() + v.size());
+    }
+    return {};
 }
 
 } // namespace iTunes

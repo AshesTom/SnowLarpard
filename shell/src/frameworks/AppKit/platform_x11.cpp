@@ -391,15 +391,21 @@ public:
         xcb_configure_window(X->conn, m_id, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, wh);
         cairo_xcb_surface_set_size(m_surface, int(size.w), int(size.h));
     }
-    void setResizable(Size minSize) override
+    void setResizable(Size minSize, Size maxSize) override
     {
-        // WM_NORMAL_HINTS: the smallest size only (WindowServer's size box resizes it)
+        // WM_NORMAL_HINTS: the smallest size, the largest when there is one (WindowServer's size box
+        // resizes it within them)
         m_resizable = true;
         m_minSize = minSize;
         uint32_t hints[18] = {};
         hints[0] = 16;   // PMinSize
         hints[5] = uint32_t(minSize.w);
         hints[6] = uint32_t(minSize.h);
+        if (maxSize.w > 0 || maxSize.h > 0) {
+            hints[0] |= 32;   // PMaxSize
+            hints[7] = maxSize.w > 0 ? uint32_t(maxSize.w) : 32767;
+            hints[8] = maxSize.h > 0 ? uint32_t(maxSize.h) : 32767;
+        }
         X->property(m_id, "WM_NORMAL_HINTS", X->atom("WM_SIZE_HINTS"), 32, 18, hints);
     }
     void configured(Size size)

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <string>
 
 namespace AK {
@@ -71,6 +72,8 @@ public:
     // representation closest above `atLeast`), TIFF, PDF (its first page drawn at the scale covering
     // `atLeast`, else at its size in points). Empty on failure.
     static Image load(const std::string &path, Size atLeast = {});
+    // The same from a file's bytes in memory (TIFF excepted)
+    static Image fromData(const std::vector<unsigned char> &bytes, Size atLeast = {});
     // A picture's own size without decoding it (a PDF's: its page in points)
     static Size sizeOf(const std::string &path);
     bool savePng(const std::string &path) const;

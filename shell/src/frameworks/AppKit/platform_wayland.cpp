@@ -322,13 +322,14 @@ public:
             xdg_toplevel_set_max_size(m_toplevel, int(size.w), int(size.h));
         }
     }
-    void setResizable(Size minSize) override
+    void setResizable(Size minSize, Size maxSize) override
     {
         m_resizable = true;
         m_minSize = minSize;
+        m_maxSize = maxSize;
         if (m_toplevel) {
             xdg_toplevel_set_min_size(m_toplevel, int(minSize.w), int(minSize.h));
-            xdg_toplevel_set_max_size(m_toplevel, 0, 0);
+            xdg_toplevel_set_max_size(m_toplevel, int(maxSize.w), int(maxSize.h));
         }
     }
     void startResize() override
@@ -478,7 +479,7 @@ private:
     wl_callback *m_frame = nullptr;
     bool m_configured = false;
     bool m_resizable = false;
-    Size m_minSize, m_asked;   // m_asked: the compositor's size in its last configure (0: ours)
+    Size m_minSize, m_maxSize, m_asked;   // m_asked: the compositor's size in its last configure (0: ours)
     std::vector<Buffer *> m_buffers;
     Buffer *m_painting = nullptr;
     bool m_active = false, m_roundedBottom = false;
@@ -590,6 +591,7 @@ void WlWindow::show()
             xdg_toplevel_set_fullscreen(m_toplevel, nullptr);
         } else if (m_resizable) {
             xdg_toplevel_set_min_size(m_toplevel, int(m_minSize.w), int(m_minSize.h));
+            xdg_toplevel_set_max_size(m_toplevel, int(m_maxSize.w), int(m_maxSize.h));
         } else {
             // System Preferences' window doesn't resize
             xdg_toplevel_set_min_size(m_toplevel, int(m_size.w), int(m_size.h));

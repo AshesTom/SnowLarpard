@@ -568,14 +568,21 @@ Image Image::load(const std::string &path, Size atLeast)
     std::vector<unsigned char> bytes = readFile(path);
     if (bytes.size() < 8)
         return {};
+    if (std::memcmp(bytes.data(), "II*", 3) == 0 || std::memcmp(bytes.data(), "MM\0*", 4) == 0)
+        return tiff(path);
+    return fromData(bytes, atLeast);
+}
+
+Image Image::fromData(const std::vector<unsigned char> &bytes, Size atLeast)
+{
+    if (bytes.size() < 8)
+        return {};
     if (std::memcmp(bytes.data(), "\x89PNG", 4) == 0)
         return fromPngBytes(bytes.data(), bytes.size());
     if (bytes[0] == 0xFF && bytes[1] == 0xD8)
         return jpeg(bytes, atLeast);
     if (std::memcmp(bytes.data(), "icns", 4) == 0)
         return icns(bytes, atLeast);
-    if (std::memcmp(bytes.data(), "II*", 3) == 0 || std::memcmp(bytes.data(), "MM\0*", 4) == 0)
-        return tiff(path);
     if (std::memcmp(bytes.data(), "%PDF", 4) == 0)
         return pdf(bytes, atLeast);
     return {};

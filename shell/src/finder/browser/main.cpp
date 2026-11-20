@@ -82,8 +82,8 @@ bool spawn(const std::vector<std::string> &argv)
     return ok;
 }
 
-// A document: PDFs and pictures to Preview (ours, beside this program's bundle), applications started,
-// the rest to the desktop's own choice
+// A document: PDFs and pictures to Preview, songs to iTunes (ours, beside this program's bundle: 10.6's
+// LaunchServices defaults), applications started, the rest to the desktop's own choice
 void openDocument(const Item &item)
 {
     if (item.application) {
@@ -98,6 +98,12 @@ void openDocument(const Item &item)
     const std::string previewBin = apps + "/Preview.app/Contents/MacOS/Preview";
     if (std::find(std::begin(preview), std::end(preview), ext) != std::end(preview) && isFile(previewBin)) {
         spawn({previewBin, item.path});
+        return;
+    }
+    static const char *const music[] = {"mp3", "m4a", "m4p", "aac", "aif", "aiff", "wav", "flac", "ogg", "oga", "opus"};
+    const std::string itunesBin = apps + "/iTunes.app/Contents/MacOS/iTunes";
+    if (std::find(std::begin(music), std::end(music), ext) != std::end(music) && isFile(itunesBin)) {
+        spawn({itunesBin, item.path});
         return;
     }
     spawn({"xdg-open", item.path});
