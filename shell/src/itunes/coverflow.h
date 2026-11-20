@@ -25,8 +25,12 @@ public:
     void showSong(int id);
     std::function<void(int id)> onChoose;                  // an album chosen: its first song
     std::function<void(const std::vector<int> &)> onPlay;  // a cover double-clicked: its songs
+    std::function<void()> onFullScreen;                    // the HUD's full screen button (`full`)
+    bool fullScreen = false;                               // AlbumCoverDisplay's mode flag 1
     void draw(cairo_t *cr) override;
     void mouseDown(AK::Event &e) override;
+    void mouseDragged(AK::Event &e) override;
+    void mouseUp(AK::Event &e) override;
     void scrollWheel(AK::Event &e) override;
     void keyDown(AK::Event &e) override;
     bool acceptsFirstResponder() const override { return true; }
@@ -41,6 +45,11 @@ private:
         double x, z, angle, alpha;
     };
     void select(int index, bool notify);
+    AK::Rect scrollerRect() const;
+    AK::Rect thumbRect() const;
+    AK::Rect fullRect() const;
+    void drawHud(cairo_t *cr) const;
+    void scrollTo(double x);
     void tick();
     std::vector<Placed> placements() const;
     void drawCover(cairo_t *cr, const Album &a, const Placed &p, double size, double baseY) const;
@@ -51,6 +60,8 @@ private:
     int m_selected = 0;
     double m_position = 0;   // the animated index in the middle
     int m_timer = 0;
+    bool m_dragThumb = false, m_pressFull = false;
+    double m_grab = 0;
     mutable std::map<std::string, AK::Image> m_covers;
 };
 

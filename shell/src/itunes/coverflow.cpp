@@ -239,17 +239,110 @@ void CoverFlowView::draw(cairo_t *cr)
     t.font = Font::boldSystem(12);
     t.color = Color::gray(255);
     t.align = Align::Center;
-    drawText(cr, a.title, Rect{0, frame().h - 42, frame().w, 16}, t);
+    // the titles over the scroller (by eye)
+    const double ty = scrollerRect().y - 40;
+    drawText(cr, a.title, Rect{0, ty, frame().w, 16}, t);
     t.font = Font::system(11);
     t.color = Color::gray(160);
-    drawText(cr, a.artist, Rect{0, frame().h - 25, frame().w, 15}, t);
+    drawText(cr, a.artist, Rect{0, ty + 17, frame().w, 15}, t);
+    drawHud(cr);
+}
+
+// FUN_00408c7e, the HUD's controls: the scroller (`sbar`, PSCR 2022, 2023 when +0x87 is off) 16 high, its
+// foot 23 from the view's foot (57 in full screen); its insets both the larger of 110 and what the
+// buttons beside it take (the full screen button: its width + 35), so 110 in the window; the full
+// screen button (`full`, PBUT 2020, 34 × 24, its second row pressed) at the right, 23 in
+Rect CoverFlowView::scrollerRect() const
+{
+    const double W = frame().w, H = frame().h;
+    const double inset = fullScreen ? 201 : 110;   // full screen: past Previous, Play, Next (57 + 31 + 5 + 37 + 5 + 31 + 35)
+    const double foot = fullScreen ? 57 : 23;
+    return {inset, H - foot - 16, std::max(0.0, W - 2 * inset), 16};
+}
+
+// the thumb (26 wide in the art, 8 kept at its ends) within the track less 20 at each end, as wide as
+// one album's share, the middle album's place along it
+Rect CoverFlowView::thumbRect() const
+{
+    const Rect r = scrollerRect();
+    const double usable = std::max(0.0, r.w - 40);
+    const double n = std::max<double>(1, m_albums.size());
+    const double w = std::clamp(usable / n, 26.0, std::max(26.0, usable));
+    const double f = m_albums.size() > 1 ? std::clamp(m_position / (n - 1), 0.0, 1.0) : 0;
+    return {std::round(r.x + 20 + f * (usable - w)), r.y, w, 16};
+}
+
+Rect CoverFlowView::fullRect() const
+{
+    const Rect r = scrollerRect();
+    return {frame().w - 23 - 34, std::round(r.y + 8 - 12), 34, 24};
+}
+
+void CoverFlowView::drawHud(cairo_t *cr) const
+{
+    const Image art = scroller(2022);
+    const Rect r = scrollerRect();
+    if (!art.isNull() && r.w >= 52) {
+        // the track (0..52 of the art): 26 kept at the left, 25 at the right, the middle stretched
+        art.draw(cr, Rect{0, 0, 26, 16}, Rect{r.x, r.y, 26, 16});
+        art.draw(cr, Rect{26, 0, 1, 16}, Rect{r.x + 26, r.y, r.w - 51, 16});
+        art.draw(cr, Rect{27, 0, 25, 16}, Rect{r.right() - 25, r.y, 25, 16});
+        if (m_albums.size() > 1) {
+            const Rect t = thumbRect();
+            art.draw(cr, Rect{52, 0, 8, 16}, Rect{t.x, t.y, 8, 16});
+            art.draw(cr, Rect{60, 0, 10, 16}, Rect{t.x + 8, t.y, std::max(0.0, t.w - 16), 16});
+            art.draw(cr, Rect{70, 0, 8, 16}, Rect{t.right() - 8, t.y, 8, 16});
+        }
+    }
+    const Image full = picture(2020);
+    if (!full.isNull() && onFullScreen) {
+        const Rect f = fullRect();
+        full.draw(cr, Rect{0, m_pressFull ? 24.0 : 0.0, 34, 24}, f);
+    }
+}
+
+void CoverFlowView::scrollTo(double x)
+{
+    const Rect r = scrollerRect(), t = thumbRect();
+    const double usable = std::max(1.0, r.w - 40 - t.w);
+    const double f = std::clamp((x - m_grab - r.x - 20) / usable, 0.0, 1.0);
+    select(int(std::round(f * (std::max<size_t>(1, m_albums.size()) - 1))), true);
+}
+
+void CoverFlowView::mouseDragged(Event &e)
+{
+    if (m_dragThumb)
+        scrollTo(e.location.x);
+}
+
+void CoverFlowView::mouseUp(Event &e)
+{
+    if (m_pressFull) {
+        m_pressFull = false;
+        setNeedsDisplay();
+        if (fullRect().contains(e.location) && onFullScreen)
+            App::shared().later([this] { onFullScreen(); });
+    }
+    m_dragThumb = false;
 }
 
 void CoverFlowView::mouseDown(Event &e)
 {
     window()->makeFirstResponder(this);
+    if (onFullScreen && fullRect().contains(e.location)) {
+        m_pressFull = true;
+        setNeedsDisplay();
+        return;
+    }
     if (m_albums.empty())
         return;
+    if (scrollerRect().contains(e.location)) {
+        const Rect t = thumbRect();
+        m_dragThumb = true;
+        m_grab = t.contains(e.location) ? e.location.x - t.x : t.w / 2;
+        scrollTo(e.location.x);
+        return;
+    }
     // which cover: by its projected middle, the nearest to the pointer
     const double size = std::floor(frame().h * 2 / 3 * 0.68);
     int hit = m_selected;
@@ -281,6 +374,8 @@ void CoverFlowView::keyDown(Event &e)
         select(m_selected - 1, true);
     else if (e.keysym == XKB_KEY_Right)
         select(m_selected + 1, true);
+    else if (e.keysym == XKB_KEY_Escape && fullScreen && onFullScreen)
+        App::shared().later([this] { onFullScreen(); });
     else if ((e.keysym == XKB_KEY_Return || e.keysym == XKB_KEY_KP_Enter) && onPlay && !m_albums.empty())
         onPlay(m_albums[size_t(m_selected)].ids);
     else

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "resources.h"
 
+#include <array>
+
 #include "foundation.h"
 
 #include <algorithm>
@@ -228,30 +230,112 @@ Pixels directBits(const std::string &d)
             }
         }
         at += count;
+        // cmpCount 4: alpha's plane first, then red, green, blue
         for (int x = 0; x < px.width; ++x)
             for (int k = 0; k < 3; ++k) {
-                const size_t from = size_t(k) * px.width + x;
+                const size_t from = size_t(k + cmpCount - 3) * px.width + x;
                 px.rgb[(size_t(y) * px.width + x) * 3 + k] = from < row.size() ? row[from] : 0;
             }
     }
     return px;
 }
 
+// A PICT's PackBitsRect (opcode 0x0098) with a PixMap: indexed pixels (1, 2, 4 or 8 bits) through its
+// colour table, each row PackBits (its byte count one byte up to 250 row bytes, else two); as RGB
+Pixels packBits(const std::string &d)
+{
+    Pixels px;
+    const auto u16 = [&](size_t at) { return at + 2 <= d.size() ? (uint8_t(d[at]) << 8) | uint8_t(d[at + 1]) : 0; };
+    size_t op = std::string::npos;
+    for (size_t i = 10; i + 2 < d.size(); i += 2)
+        if (u16(i) == 0x0098 && (u16(i + 2) & 0x8000)) {
+            op = i;
+            break;
+        }
+    if (op == std::string::npos)
+        return px;
+    size_t at = op + 2;
+    const int rowBytes = u16(at) & 0x3fff;
+    const int top = int16_t(u16(at + 2)), left = int16_t(u16(at + 4)), bottom = int16_t(u16(at + 6)), right = int16_t(u16(at + 8));
+    const int pixelSize = u16(at + 10 + 18);
+    if (right <= left || bottom <= top || !(pixelSize == 1 || pixelSize == 2 || pixelSize == 4 || pixelSize == 8))
+        return px;
+    at += 10 + 36;   // rowBytes, bounds, the rest of the PixMap
+    const int ctSize = u16(at + 6) + 1;
+    at += 8;
+    std::vector<std::array<uint8_t, 3>> table(256, {0, 0, 0});
+    for (int i = 0; i < ctSize; ++i, at += 8) {
+        const int value = u16(at) & 0xff;
+        table[size_t(value)] = {uint8_t(u16(at + 2) >> 8), uint8_t(u16(at + 4) >> 8), uint8_t(u16(at + 6) >> 8)};
+    }
+    at += 8 + 8 + 2;   // the source and destination rects, the mode
+    px.width = right - left;
+    px.height = bottom - top;
+    px.rgb.assign(size_t(px.width) * px.height * 3, 0);
+    for (int y = 0; y < px.height; ++y) {
+        std::vector<uint8_t> row;
+        if (rowBytes < 8) {
+            row.assign(d.begin() + long(std::min(d.size(), at)), d.begin() + long(std::min(d.size(), at + rowBytes)));
+            at += rowBytes;
+        } else {
+            int count = 0;
+            if (rowBytes > 250) {
+                count = u16(at);
+                at += 2;
+            } else {
+                count = at < d.size() ? uint8_t(d[at]) : 0;
+                at += 1;
+            }
+            for (size_t i = at, end = std::min(d.size(), at + count); i < end;) {
+                const int c = uint8_t(d[i++]);
+                if (c < 128) {
+                    for (int k = 0; k <= c && i < end; ++k)
+                        row.push_back(uint8_t(d[i++]));
+                } else if (c > 128 && i < end) {
+                    row.insert(row.end(), size_t(257 - c), uint8_t(d[i++]));
+                }
+            }
+            at += count;
+        }
+        for (int x = 0; x < px.width; ++x) {
+            const size_t bit = size_t(x) * pixelSize;
+            const int byte = bit / 8 < row.size() ? row[bit / 8] : 0;
+            const int index = (byte >> (8 - pixelSize - int(bit % 8))) & ((1 << pixelSize) - 1);
+            for (int k = 0; k < 3; ++k)
+                px.rgb[(size_t(y) * px.width + x) * 3 + k] = table[size_t(index)][size_t(k)];
+        }
+    }
+    return px;
+}
+
+// either kind
+Pixels pictPixels(const std::string &d)
+{
+    Pixels p = directBits(d);
+    return p.width > 0 ? p : packBits(d);
+}
+
 } // namespace
 
-Image slider(int id)
+static Image maskedArt(const char *type, int id);
+
+Image slider(int id) { return maskedArt("PSLD", id); }
+Image scroller(int id) { return maskedArt("PSCR", id); }
+
+// A PSLD's or PSCR's art: both begin with their PICT and its mask
+static Image maskedArt(const char *type, int id)
 {
-    static std::map<int, Image> cache;
-    auto it = cache.find(id);
+    static std::map<std::pair<std::string, int>, Image> cache;
+    auto it = cache.find({type, id});
     if (it != cache.end())
         return it->second;
     Image img;
-    const std::string *psld = art().get("PSLD", id);
+    const std::string *psld = art().get(type, id);
     if (psld && psld->size() >= 4) {
         const int pictureId = int16_t((uint8_t((*psld)[0]) << 8) | uint8_t((*psld)[1]));
         const int maskId = int16_t((uint8_t((*psld)[2]) << 8) | uint8_t((*psld)[3]));
         const std::string *pic = art().get("PICT", pictureId), *mask = art().get("PICT", maskId);
-        const Pixels colour = pic ? directBits(*pic) : Pixels{}, alpha = mask ? directBits(*mask) : Pixels{};
+        const Pixels colour = pic ? pictPixels(*pic) : Pixels{}, alpha = mask ? pictPixels(*mask) : Pixels{};
         if (colour.width > 0 && colour.width == alpha.width && colour.height == alpha.height) {
             cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, colour.width, colour.height);
             cairo_surface_flush(s);
@@ -269,7 +353,7 @@ Image slider(int id)
             img = Image(s);
         }
     }
-    cache[id] = img;
+    cache[{type, id}] = img;
     return img;
 }
 
@@ -639,6 +723,16 @@ std::vector<MainMenuItem> parseMenu(int id, int depth)
         }
         items.push_back(it);
         p += size_t(len) + 2;
+    }
+    // View ▸ Visualizer (xMNU 204, `VISS`): iTunes puts the visualizers it loaded above the divider:
+    // its own (Magnetosphere, 5800.001) and the classic one (4000.001)
+    if (id == 204) {
+        MainMenuItem mag, classic;
+        mag.title = tr("5800.001");
+        mag.action = "VisM";
+        classic.title = tr("4000.001");
+        classic.action = "VisC";
+        items.insert(items.begin(), {mag, classic});
     }
     return items;
 }

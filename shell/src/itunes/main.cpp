@@ -1375,6 +1375,7 @@ private:
             m_list->body()->setNeedsDisplay();
         };
         m_flow->onPlay = m_grid->onPlay;
+        m_flow->onFullScreen = [this] { fullScreenCoverFlow(); };
         m_viewMode = eleven() ? 0 : std::clamp(Settings("itunes").integer("ViewMode", 0), 0, 2);
         // 8.2.1's iTunes Store, a source: the Store bar over the pages (iTunesStore's)
         if (!eleven() && StoreView::available()) {
@@ -2221,6 +2222,10 @@ private:
                 m_lcd->artwork = eleven() ? Image::fromData(artworkData(t.path), {128, 128}) : Image();
             }
             m_lcd->setTrack(t.name, t.artist, t.album);
+            if (m_visualizer)
+                m_visualizer->setTrack(t.name, t.artist);
+            if (m_fullVisualizer)
+                m_fullVisualizer->setTrack(t.name, t.artist);
             if (m_upNext && t.path != m_upNextPath) {
                 m_upNextPath = t.path;
                 refreshUpNext();
@@ -2403,6 +2408,30 @@ private:
         m_window->setFloating(m_mini && s.boolean("MiniOnTop", false));
     }
 
+    // Cover Flow's full screen button (`full`, PBUT 2020; AlbumCoverDisplay's mode flag 1): the covers
+    // over the whole screen, the scroller 57 from the foot; the button again or Escape ends it
+    void fullScreenCoverFlow()
+    {
+        if (m_fullFlow) {
+            m_fullFlowWindow.reset();
+            m_fullFlow = nullptr;
+            return;
+        }
+        const Rect screen = App::shared().screenFrame();
+        m_fullFlowWindow = std::make_unique<Window>(Size{screen.w, screen.h}, "Cover Flow", Window::FullScreen);
+        m_fullFlow = m_fullFlowWindow->contentView()->add<CoverFlowView>(m_library);
+        m_fullFlow->fullScreen = true;
+        m_fullFlow->setFrame({0, 0, screen.w, screen.h});
+        m_fullFlow->setSongs(m_list->ids);
+        m_fullFlow->onPlay = m_grid->onPlay;
+        m_fullFlow->onChoose = m_flow->onChoose;
+        m_fullFlow->onFullScreen = [this] { fullScreenCoverFlow(); };
+        if (m_current >= 0)
+            m_fullFlow->showSong(m_current);
+        m_fullFlowWindow->makeFirstResponder(m_fullFlow);
+        m_fullFlowWindow->show();
+    }
+
     // View ▸ Full Screen (`full`, ⌘F) with the visualizer on: Magnetosphere over the whole screen, a
     // click or a key back to the window
     void fullScreenVisualizer()
@@ -2435,6 +2464,9 @@ private:
         m_visualizerShown = on && !m_mini;
         m_visualizer->setHidden(!m_visualizerShown);
         m_visualizer->setRunning(m_visualizerShown);
+        // its keys (M, P, I, C, F, N, L, ?) go to it
+        if (m_visualizerShown)
+            m_window->makeFirstResponder(m_visualizer);
         layout();
     }
 
@@ -2550,7 +2582,13 @@ private:
         if (a == "nspl")
             return !eleven();
         if (a == "full")
-            return m_visualizer && m_visualizerShown && !eleven();
+            return !eleven() && ((m_visualizer && m_visualizerShown) || m_viewMode == 2);
+        if (a == "VisM") {   // View ▸ Visualizer ▸ iTunes Visualizer: the one there is
+            v.checked = true;
+            return !eleven();
+        }
+        if (a == "VisC" || a == "VisO")   // the classic visualizer and the options: not ported
+            return false;
         if (a == "vtog") {   // View ▸ Show / Hide Visualizer
             v.title = tr(m_visualizerShown ? "kMenuItemHideVisualizer" : "kMenuItemShowVisualizer");
             return m_visualizer && !m_mini;
@@ -2666,8 +2704,12 @@ private:
             showViewOptions();
         else if (a == "vtog")
             showVisualizer(!m_visualizerShown);
-        else if (a == "full")
-            fullScreenVisualizer();
+        else if (a == "full") {
+            if (m_visualizerShown)
+                fullScreenVisualizer();
+            else if (m_viewMode == 2)
+                fullScreenCoverFlow();
+        }
         else if (a == "pref") {
             m_prefs.onApply = [this] { applyPreferences(); };
             m_prefs.show();
@@ -2722,6 +2764,8 @@ private:
     GridView *m_grid = nullptr;
     int m_view11 = 0;   // 11.4's nav bar view: 0 Songs, 1 Albums, 2 Artists, 3 Genres
     CoverFlowView *m_flow = nullptr;
+    std::unique_ptr<Window> m_fullFlowWindow;
+    CoverFlowView *m_fullFlow = nullptr;
     int m_viewMode = 0;                   // 0 the list, 1 the grid
     bool m_showBrowser = false, m_browseGenre = true;
     double m_browserHeight = -1;          // the browser's height (+0x452), -1 until laid out

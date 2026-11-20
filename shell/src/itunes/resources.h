@@ -54,6 +54,8 @@ AK::Image picture(int id);
 // A PSLD slider's art (FUN_0027a97a): its PICT picture through its PICT mask (white: nothing) — the
 // slider in its rect, the thumbs beside it
 AK::Image slider(int psld);
+// A PSCR scroller's art the same way (its PICT through its mask): the track, then the thumb beside it
+AK::Image scroller(int pscr);
 
 // The picture table's entry (FUN_0000ebe4): its grid of states and its fixed sides
 struct PictureInfo {

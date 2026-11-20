@@ -47,8 +47,11 @@
 // particles glowing points added up, their trails one stroke each, not GL; the magnets not drawn.
 #include "visualizer.h"
 
+#include "resources.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <numeric>
 
 using namespace AK;
@@ -120,12 +123,54 @@ void Visualizer::mouseDown(Event &)
         onDismiss();
 }
 
+void Visualizer::setTrack(const std::string &name, const std::string &artist)
+{
+    if (name == m_trackName && artist == m_trackArtist)
+        return;
+    m_trackName = name;
+    m_trackArtist = artist;
+    m_infoUntil = m_time + 5 * 60;   // a new song: its name a few seconds (by eye)
+}
+
+// Magnetosphere's keys (5801.001–016)
 void Visualizer::keyDown(Event &e)
 {
-    if (onDismiss)
-        onDismiss();
-    else
-        View::keyDown(e);
+    const char c = e.text.size() == 1 ? char(std::tolower(e.text[0])) : 0;
+    switch (c) {
+    case '?':
+    case '/':
+        m_help = !m_help;
+        break;
+    case 'm':   // Change mode: the next scene
+        newScene();
+        break;
+    case 'p':   // Change palette
+        newColours();
+        break;
+    case 'i':   // Display track info
+        m_infoUntil = m_time + 5 * 60;
+        break;
+    case 'c':   // Toggle auto-cycle (on by default): the scenes changing with the music
+        m_autoCycle = !m_autoCycle;
+        break;
+    case 'f':   // Toggle freeze mode: nothing new, scenes nor colours
+        m_frozen = !m_frozen;
+        break;
+    case 'n':   // Toggle nebula mode: the noise field (by eye)
+        m_field = !m_field;
+        m_push = m_field ? 0.2 : 1;
+        break;
+    case 'l':   // Toggle camera lock
+        m_cameraLock = !m_cameraLock;
+        break;
+    default:
+        if (onDismiss)
+            onDismiss();
+        else
+            View::keyDown(e);
+        return;
+    }
+    setNeedsDisplay();
 }
 
 void Visualizer::setRunning(bool on)
@@ -170,7 +215,7 @@ void Visualizer::bandBeat(int band)
     switch (band) {
     case 0:
     case 1:
-        if (five(m_rng) == 0) {
+        if (five(m_rng) == 0 && !m_cameraLock) {
             if (band == 0)
                 m_yawTo += angle(m_rng);
             else
@@ -178,13 +223,14 @@ void Visualizer::bandBeat(int band)
         }
         break;
     case 2:
-        if (five(m_rng) == 0)
+        if (five(m_rng) == 0 && !m_cameraLock)
             m_yawTo += angle(m_rng) / 2;
-        if (two(m_rng) == 0)
+        if (two(m_rng) == 0 && m_autoCycle && !m_frozen)
             newScene();
         break;
     case 3:
-        m_swirlOn = !m_swirlOn;
+        if (!m_frozen)
+            m_swirlOn = !m_swirlOn;
         break;
     case 4:
         m_longTrails = two(m_rng) == 0;
@@ -477,7 +523,7 @@ void Visualizer::step()
     // the camera: its phase on beats, its turns easing to theirs
     if (m_kick > 0.1)
         m_phase += 0.006 * dt * 5;
-    m_yaw += (m_yawTo - m_yaw) * 0.02 * dt + 0.002 * dt;
+    m_yaw += (m_yawTo - m_yaw) * 0.02 * dt + (m_cameraLock ? 0 : 0.002 * dt);
     m_pitch += (m_pitchTo - m_pitch) * 0.02 * dt;
     // the background
     static const double ease[3] = {0.045, 0.035, 0.025};
@@ -564,6 +610,28 @@ void Visualizer::draw(cairo_t *cr)
         line(l.cb, b, l.ca, a);
     }
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+    AK::TextStyle t;
+    t.color = Color::gray(230);
+    // I: the song's name and artist at the bottom left (by eye)
+    if (m_time < m_infoUntil && !m_trackName.empty()) {
+        t.font = Font::boldSystem(18);
+        drawText(cr, m_trackName, Rect{20, H - 58, W - 40, 24}, t);
+        t.font = Font::system(14);
+        drawText(cr, m_trackArtist, Rect{20, H - 32, W - 40, 20}, t);
+    }
+    // ?: the keys, as 5801's pairs
+    if (m_help) {
+        t.font = Font::system(13);
+        double y = 20;
+        for (int i = 1; i < 16; i += 2) {
+            char key[16], what[16];
+            std::snprintf(key, sizeof key, "5801.%03d", i);
+            std::snprintf(what, sizeof what, "5801.%03d", i + 1);
+            drawText(cr, tr(key), Rect{20, y, 30, 18}, t);
+            drawText(cr, tr(what), Rect{50, y, W - 70, 18}, t);
+            y += 20;
+        }
+    }
 }
 
 } // namespace iTunes

@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace iTunes {
@@ -24,7 +25,9 @@ public:
     std::function<void()> onDismiss;
     void mouseDown(AK::Event &) override;
     void keyDown(AK::Event &) override;
-    bool acceptsFirstResponder() const override { return bool(onDismiss); }
+    bool acceptsFirstResponder() const override { return true; }
+    // the song shown by I (Display track info) and when a song begins
+    void setTrack(const std::string &name, const std::string &artist);
 
 private:
     struct Vec {
@@ -101,6 +104,11 @@ private:
     // the background (FUN_00540758) and its target; the particles' hue; long trails
     double m_bg[3] = {0, 0, 0}, m_bgTo[3] = {0, 0, 0}, m_hue = 0.6;
     bool m_longTrails = true;
+    // the keys (Localizable.strings 5801): ? help, M mode, P palette, I track info, C auto-cycle (on at
+    // first), F freeze, N nebula, L camera lock
+    bool m_help = false, m_autoCycle = true, m_frozen = false, m_cameraLock = false;
+    std::string m_trackName, m_trackArtist;
+    double m_infoUntil = 0;   // m_time until which the song's name is shown
 };
 
 } // namespace iTunes
