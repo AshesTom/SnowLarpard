@@ -644,6 +644,17 @@ void Document::build()
     m_window->setResizable({100, 36});
     m_scroll = m_window->contentView()->add<TextScrollView>();
     m_scroll->setFrame(m_window->contentView()->bounds());
+    // ScalingScrollView (-makeScalePopUpButton): ZoomValues.strings' titles, their factors
+    // (0x1000168e0), 100% at first
+    {
+        std::vector<std::pair<std::string, double>> scales;
+        const std::pair<const char *, double> table[] = {{"10%", 0.1}, {"25%", 0.25}, {"50%", 0.5},  {"75%", 0.75},
+                                                         {"100%", 1},   {"125%", 1.25}, {"150%", 1.5}, {"200%", 2},
+                                                         {"400%", 4},   {"800%", 8},    {"1600%", 16}};
+        for (const auto &[key, factor] : table)
+            scales.push_back({Assets::tr(Bundle, "ZoomValues", key, key), factor});
+        m_scroll->setScales(scales, 4);
+    }
     TextView *tv = textView();
     tv->background = Color::gray(255);
     tv->onChange = [this] { textChanged(); };
@@ -666,6 +677,20 @@ void Document::setHasMultiplePages(bool pages)
     if (!m_scroll)
         return;
     m_scroll->setPages(pages ? std::optional<TextView::PageGeometry>(m_paper) : std::nullopt);
+    if (!pages) {
+        // the popup goes with the horizontal scroller (-tile): the text back at its size
+        textView()->setZoom(1);
+        m_scroll->setScales({}, -1);
+        App::shared().later([this] {
+            std::vector<std::pair<std::string, double>> scales;
+            const std::pair<const char *, double> table[] = {{"10%", 0.1}, {"25%", 0.25}, {"50%", 0.5},  {"75%", 0.75},
+                                                             {"100%", 1},   {"125%", 1.25}, {"150%", 1.5}, {"200%", 2},
+                                                             {"400%", 4},   {"800%", 8},    {"1600%", 16}};
+            for (const auto &[key, factor] : table)
+                scales.push_back({Assets::tr(Bundle, "ZoomValues", key, key), factor});
+            m_scroll->setScales(scales, 4);
+        });
+    }
     textView()->scrollToSelection();   // scrollRangeToVisible: the selected range
 }
 

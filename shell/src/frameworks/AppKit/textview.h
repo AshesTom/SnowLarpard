@@ -42,6 +42,12 @@ public:
     void setTabs(std::vector<double> stops, double interval);
 
     // How far down the text is scrolled (the clip view's bounds origin), and its most
+    // ScalingScrollView's scale factor (TextEdit's zoom popup): drawn and hit at that scale, the
+    // scroll offsets in the text's own points
+    void setZoom(double zoom);
+    double zoom() const { return m_zoom; }
+    double viewWidth() const { return frame().w / m_zoom; }
+    double viewHeight() const { return frame().h / m_zoom; }
     double scrollOffset() const { return m_scroll; }
     double maxScrollOffset() const;
     void scrollTo(double y);
@@ -157,6 +163,7 @@ private:
     size_t m_caret = 0, m_anchor = 0;
     double m_goalX = -1;
     double m_scroll = 0, m_scrollX = 0;
+    double m_zoom = 1;
     std::optional<PageGeometry> m_pages;
     mutable size_t m_pageCount = 1;
     int m_clickCount = 1;
@@ -198,6 +205,12 @@ public:
     // the text's pages shown (TextView::setPages) and the horizontal scroller with them
     void setPages(std::optional<TextView::PageGeometry> pages);
 
+    // TextEdit's ScalingScrollView: with the horizontal scroller, a popup of the scales at its right
+    // end (shadowless square bezel, arrows at the bottom, the tool tips' font at 10), the scroller
+    // that much shorter, a black line before it; choosing one scales the text
+    void setScales(std::vector<std::pair<std::string, double>> scales, int selected);
+    std::function<void(double)> onScale;
+
 private:
     Rect scrollerRect(bool horizontal = false) const;
     double proportion(bool horizontal = false) const;
@@ -210,6 +223,10 @@ private:
     double m_dragFrom = 0, m_dragOffset = 0;
     bool m_dragging = false, m_horizontal = false;   // the scroller pressed: the horizontal one
     int m_arrow = 0, m_repeat = 0;
+    std::vector<std::pair<std::string, double>> m_scales;
+    int m_scale = -1;
+    double scalePopupWidth() const;
+    Rect scalePopupRect() const;
 };
 
 } // namespace AK

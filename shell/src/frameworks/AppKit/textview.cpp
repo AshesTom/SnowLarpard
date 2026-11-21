@@ -503,14 +503,18 @@ size_t TextView::wordEnd(size_t i) const
 void TextView::draw(cairo_t *cr)
 {
     layout();
-    const double top = m_scroll, bottom = m_scroll + frame().h;
+    // ScalingScrollView's scale factor: the clip view's bounds scaled, the text laid out the same
+    cairo_save(cr);
+    cairo_scale(cr, m_zoom, m_zoom);
+    const Rect seen{0, 0, viewWidth(), viewHeight()};
+    const double top = m_scroll, bottom = m_scroll + viewHeight();
     const double ox = textOriginX() + Padding;
-    const double rightEdge = m_pages ? ox + textWidth() + Padding : frame().w;
+    const double rightEdge = m_pages ? ox + textWidth() + Padding : viewWidth();
     if (m_pages) {
         // -[MultiplePageView drawRect:] (0x10000ba2e), on the screen: the clip view's controlColor
         // (DocumentWindow.nib) between and around the pages, each page in marginColor, its text
         // container (centerScanRect:, NSInsetRect -1) framed a point wide in lineColor
-        fill(cr, bounds(), Color::gray(232));
+        fill(cr, seen, Color::gray(232));
         cairo_save(cr);
         cairo_translate(cr, -m_scrollX, -m_scroll);
         const PageGeometry &g = *m_pages;
@@ -529,7 +533,7 @@ void TextView::draw(cairo_t *cr)
         }
         cairo_restore(cr);
     } else {
-        fill(cr, bounds(), background);
+        fill(cr, seen, background);
     }
     cairo_save(cr);
     cairo_translate(cr, -m_scrollX, -m_scroll);
@@ -581,6 +585,7 @@ void TextView::draw(cairo_t *cr)
         Rect r = caretRect(m_caret);
         fill(cr, Rect{std::round(r.x), std::round(r.y), 1, std::round(r.h)}, Color::gray(0));
     }
+    cairo_restore(cr);
     cairo_restore(cr);
 }
 
@@ -703,7 +708,7 @@ void TextView::scrollToSelection()
 {
     layout();
     const Rect r = caretRect(m_caret);
-    const double h = frame().h;
+    const double h = viewHeight();
     if (r.y < m_scroll)
         m_scroll = r.y;
     else if (r.y + r.h > m_scroll + h)
@@ -713,16 +718,24 @@ void TextView::scrollToSelection()
     if (m_pages) {
         if (r.x - Padding < m_scrollX)
             m_scrollX = r.x - Padding;
-        else if (r.x + 1 + Padding > m_scrollX + frame().w)
-            m_scrollX = r.x + 1 + Padding - frame().w;
+        else if (r.x + 1 + Padding > m_scrollX + viewWidth())
+            m_scrollX = r.x + 1 + Padding - viewWidth();
         m_scrollX = std::clamp(m_scrollX, 0.0, maxScrollOffsetX());
     }
     setNeedsDisplay();
 }
 
-double TextView::maxScrollOffset() const { return std::max(0.0, contentHeight() - frame().h); }
+double TextView::maxScrollOffset() const { return std::max(0.0, contentHeight() - viewHeight()); }
 
-double TextView::maxScrollOffsetX() const { return std::max(0.0, contentWidth() - frame().w); }
+double TextView::maxScrollOffsetX() const { return std::max(0.0, contentWidth() - viewWidth()); }
+
+void TextView::setZoom(double zoom)
+{
+    m_zoom = std::clamp(zoom, 0.01, 100.0);
+    m_scroll = std::clamp(m_scroll, 0.0, maxScrollOffset());
+    m_scrollX = std::clamp(m_scrollX, 0.0, maxScrollOffsetX());
+    setNeedsDisplay();
+}
 
 void TextView::scrollToX(double x)
 {
@@ -745,7 +758,7 @@ void TextView::setTabs(std::vector<double> stops, double interval)
 
 void TextView::scrollWheel(Event &e)
 {
-    m_scroll = std::clamp(m_scroll + e.deltaY * 3 * 13, 0.0, std::max(0.0, contentHeight() - frame().h));
+    m_scroll = std::clamp(m_scroll + e.deltaY * 3 * 13, 0.0, std::max(0.0, contentHeight() - viewHeight()));
     setNeedsDisplay();
 }
 
@@ -986,7 +999,7 @@ void TextView::mouseDown(Event &e)
 {
     if (window())
         window()->makeFirstResponder(this);
-    const size_t at = indexAt(e.location);
+    const size_t at = indexAt(Point{e.location.x / m_zoom, e.location.y / m_zoom});
     m_clickCount = e.clickCount;
     if (e.clickCount == 2) {
         size_t s = at, t = at;
@@ -1019,7 +1032,7 @@ void TextView::mouseDown(Event &e)
 
 void TextView::mouseDragged(Event &e)
 {
-    size_t at = indexAt(e.location);
+    size_t at = indexAt(Point{e.location.x / m_zoom, e.location.y / m_zoom});
     if (m_clickCount == 2) {
         if (at < m_dragOrigin)
             select(m_dragOriginEnd, wordStart(at));
@@ -1095,11 +1108,11 @@ void TextView::keyDown(Event &e)
         moveCaret(s.size(), shift);
         return;
     case XKB_KEY_Page_Up:
-        m_scroll = std::max(0.0, m_scroll - frame().h);
+        m_scroll = std::max(0.0, m_scroll - viewHeight());
         setNeedsDisplay();
         return;
     case XKB_KEY_Page_Down:
-        m_scroll = std::clamp(m_scroll + frame().h, 0.0, std::max(0.0, contentHeight() - frame().h));
+        m_scroll = std::clamp(m_scroll + viewHeight(), 0.0, std::max(0.0, contentHeight() - viewHeight()));
         setNeedsDisplay();
         return;
     case XKB_KEY_BackSpace:
@@ -1206,18 +1219,43 @@ void TextScrollView::layoutSubviews()
     m_text->setFrame({0, t, std::max(0.0, r.w - CoreUI::ScrollerWidth), std::max(0.0, r.h - t - bottom)});
 }
 
+void TextScrollView::setScales(std::vector<std::pair<std::string, double>> scales, int selected)
+{
+    m_scales = std::move(scales);
+    m_scale = selected;
+    setNeedsDisplay();
+}
+
+double TextScrollView::scalePopupWidth() const
+{
+    if (m_scales.empty() || !m_text->hasPages())
+        return 0;
+    // -sizeToFit: the widest title and the arrows
+    double w = 0;
+    for (const auto &[title, v] : m_scales)
+        w = std::max(w, textWidth(title, Font::system(10)));
+    return std::ceil(w) + 22;
+}
+
+Rect TextScrollView::scalePopupRect() const
+{
+    // -tile: at the shortened horizontal scroller's end, a point taller
+    const double sw = CoreUI::ScrollerWidth, pw = scalePopupWidth();
+    return {frame().w - sw - pw, frame().h - sw - 1 + 1, pw, sw};
+}
+
 Rect TextScrollView::scrollerRect(bool horizontal) const
 {
     const double t = top(), w = frame().w, h = frame().h, sw = CoreUI::ScrollerWidth;
     if (horizontal)
-        return {0, h - sw, std::max(0.0, w - sw), sw};
+        return {0, h - sw, std::max(0.0, w - sw - scalePopupWidth()), sw};
     return {w - sw, t, sw, std::max(0.0, h - t - (m_text->hasPages() ? sw : 0))};
 }
 
 double TextScrollView::proportion(bool horizontal) const
 {
     const double total = horizontal ? m_text->contentWidth() : m_text->contentHeight();
-    const double shown = horizontal ? m_text->frame().w : m_text->frame().h;
+    const double shown = horizontal ? m_text->viewWidth() : m_text->viewHeight();
     return total > shown ? shown / total : 1;
 }
 
@@ -1242,11 +1280,58 @@ void TextScrollView::draw(cairo_t *cr)
         // the corner between the scrollers
         const double sw = CoreUI::ScrollerWidth;
         fill(cr, Rect{frame().w - sw, frame().h - sw, sw, sw}, Color::gray(255));
+        if (scalePopupWidth() > 0) {
+            // ScalingScrollView's popup: a shadowless square bezel, its title, the arrows; the black
+            // line before it (-drawRect:)
+            const Rect r = scalePopupRect();
+            cairo_pattern_t *g = cairo_pattern_create_linear(0, r.y, 0, r.bottom());
+            cairo_pattern_add_color_stop_rgb(g, 0, 0.98, 0.98, 0.98);
+            cairo_pattern_add_color_stop_rgb(g, 1, 0.86, 0.86, 0.86);
+            cairo_rectangle(cr, r.x, r.y, r.w, r.h);
+            cairo_set_source(cr, g);
+            cairo_fill(cr);
+            cairo_pattern_destroy(g);
+            fill(cr, Rect{r.x - 1, r.y, 1, r.h}, Color::gray(0));
+            fill(cr, Rect{r.x, r.y, r.w, 1}, Color::gray(170));
+            TextStyle t;
+            t.font = Font::system(10);
+            if (m_scale >= 0 && size_t(m_scale) < m_scales.size())
+                drawText(cr, m_scales[size_t(m_scale)].first, Rect{r.x + 6, r.y + 1, r.w - 18, r.h - 1}, t);
+            // the arrows, up and down
+            cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);
+            const double ax = r.right() - 9, ay = r.y + r.h / 2;
+            cairo_move_to(cr, ax - 3, ay - 1);
+            cairo_line_to(cr, ax + 3, ay - 1);
+            cairo_line_to(cr, ax, ay - 4.5);
+            cairo_close_path(cr);
+            cairo_move_to(cr, ax - 3, ay + 1);
+            cairo_line_to(cr, ax + 3, ay + 1);
+            cairo_line_to(cr, ax, ay + 4.5);
+            cairo_close_path(cr);
+            cairo_fill(cr);
+        }
     }
 }
 
 void TextScrollView::mouseDown(Event &e)
 {
+    if (scalePopupWidth() > 0 && scalePopupRect().contains(e.location)) {
+        // -scalePopUpAction:: the scale chosen, the text scaled
+        std::vector<MenuItem> items;
+        for (size_t k = 0; k < m_scales.size(); ++k)
+            items.push_back(MenuItem(m_scales[k].first, false, true, int(k) == m_scale));
+        const Rect r = scalePopupRect();
+        Menu::popUp(window(), toWindow(Point{r.x, r.y - 4}), items, r.w, Font::system(10), [this](int i) {
+            if (i < 0 || size_t(i) >= m_scales.size())
+                return;
+            m_scale = i;
+            m_text->setZoom(m_scales[size_t(i)].second);
+            if (onScale)
+                onScale(m_scales[size_t(i)].second);
+            setNeedsDisplay();
+        });
+        return;
+    }
     for (const bool horizontal : {false, true}) {
         if (horizontal && !m_text->hasPages())
             continue;
