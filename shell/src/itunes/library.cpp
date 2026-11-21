@@ -16,6 +16,7 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <sys/stat.h>
 
 using namespace AK;
@@ -280,6 +281,51 @@ private:
 };
 
 } // namespace
+
+std::vector<int> duplicates(const Library &library, const std::vector<int> &ids, bool exact)
+{
+    struct Key {
+        int id;
+        bool video;
+        std::string name, artist, album;
+        const Track *t;
+    };
+    std::vector<Key> keys;
+    for (int id : ids)
+        if (const Track *t = library.track(id)) {
+            const std::string kind = lower(t->kind);
+            keys.push_back({id, kind.find("video") != std::string::npos || kind.find("movie") != std::string::npos,
+                            lower(t->name), lower(t->artist), lower(t->album), t});
+        }
+    // the list sorted by Name (FUN_0045386e with field 2) while the duplicates are shown, the artist
+    // and album as the sort's secondary keys
+    std::stable_sort(keys.begin(), keys.end(), [](const Key &a, const Key &b) {
+        return std::tie(a.name, a.artist, a.album) < std::tie(b.name, b.artist, b.album);
+    });
+    std::set<int> marked;
+    for (size_t i = 0; i + 1 < keys.size(); ++i) {
+        const Key &a = keys[i];
+        for (size_t j = i + 1; j < keys.size(); ++j) {
+            const Key &b = keys[j];
+            if (a.video != b.video)
+                continue;   // a different kind: passed over, the run goes on
+            if (exact && (a.t->trackNumber != b.t->trackNumber || a.t->trackCount != b.t->trackCount ||
+                          a.t->discNumber != b.t->discNumber || a.t->discCount != b.t->discCount))
+                continue;
+            if (a.name != b.name || a.artist != b.artist)
+                break;   // the first that differs ends the run
+            if (exact && a.album != b.album)
+                continue;
+            marked.insert(a.id);
+            marked.insert(b.id);
+        }
+    }
+    std::vector<int> out;
+    for (int id : ids)
+        if (marked.count(id))
+            out.push_back(id);
+    return out;
+}
 
 std::string formatTime(int ms)
 {

@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -1959,6 +1960,11 @@ private:
                 continue;
             shown.push_back(id);
         }
+        if (!eleven()) {
+            const auto d = m_dups.find(tag);
+            if (d != m_dups.end() && d->second)
+                shown = duplicates(m_library, shown, d->second == 2);
+        }
         if ((m_viewMode == 1 && !eleven()) || eleven())   // 11.4: for its Albums, Artists, Genres
             m_grid->setSongs(shown);
         else if (m_showBrowser && !eleven() && m_viewMode == 0)
@@ -2258,6 +2264,26 @@ private:
     }
 
     // File ▸ New Smart Playlist… (nspl), Edit Smart Playlist (esmp)
+    // File ▸ Show Duplicates / Show Exact Duplicates (⌥), or Show All (FUN_00150918, FUN_0014eae4,
+    // FUN_00138cea): the list sorted by Name while they are shown, its sort before put back after
+    void showDuplicates(bool exact)
+    {
+        int &mode = m_dups[selectedPlaylist()];
+        if (mode) {
+            mode = 0;
+            m_sortField = m_sortBeforeDups;
+            m_list->ascending = m_ascBeforeDups;
+        } else {
+            mode = exact ? 2 : 1;
+            m_sortBeforeDups = m_sortField;
+            m_ascBeforeDups = m_list->ascending;
+            m_sortField = 2;
+            m_list->ascending = true;
+        }
+        const auto c = std::find(m_columnFields.begin(), m_columnFields.end(), m_sortField);
+        m_list->sortColumn = c == m_columnFields.end() ? -1 : int(c - m_columnFields.begin()) + 1;
+        loadSource();
+    }
     int selectedPlaylist() const
     {
         const int sel = m_sources->selected();
@@ -2579,6 +2605,12 @@ private:
         }
         if (a == "SRAT")
             return hasSel;
+        if (a == "SDup") {   // FUN_00140f50: "Show All" while they are shown
+            const auto d = m_dups.find(selectedPlaylist());
+            if (d != m_dups.end() && d->second)
+                v.title = tr("kMenuItemShowAll");
+            return !eleven() && !m_store8;
+        }
         if (a == "nspl")
             return !eleven();
         if (a == "full")
@@ -2698,6 +2730,8 @@ private:
             toggleBrowser();
         else if (a == "lisv" || a == "thmv" || a == "covv")
             setViewMode(a == "lisv" ? 0 : a == "thmv" ? 1 : 2);
+        else if (a == "SDup")
+            showDuplicates(it.alternate);
         else if (a == "nspl")
             newSmartPlaylist();
         else if (a == "VOpt")
@@ -2739,6 +2773,11 @@ private:
     bool m_visualizerShown = false;
     std::vector<int> m_columnFields;      // the list's columns, by field (View Options)
     int m_sortField = 2;                  // the field the songs are sorted by
+    // File ▸ Show Duplicates: per source (its playlist's tag, -1 the library), 1 the duplicates, 2 the
+    // exact ones (the playlist's +0x182 flag 8); the sort it had before (+0x10c), put back by Show All
+    std::map<int, int> m_dups;
+    int m_sortBeforeDups = 2;
+    bool m_ascBeforeDups = true;
     MainMenu m_menu;
     std::unique_ptr<Window> m_window, m_about;
     TopBand *m_top = nullptr;

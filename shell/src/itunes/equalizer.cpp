@@ -16,15 +16,33 @@
 //   on Manual (FUN_001557e4 with 4); a click on a band's name (EQlc) sets that band to 0, on "0 dB" all
 //   eleven. The built-in presets: the table at 0xa2b520, 22 entries of 0x30 bytes (FUN_000a6d48): +0 the
 //   name (STR# 600, its index), +4 the preamp, +6 the ten bands, in hundredths of a dB.
+// The presets (the list at +0x1a9c4, after a head node the Edit List leaves out): kept in their names'
+// order, the case ignored (FUN_000a5d60 inserts each after the last whose name sorts before); the
+// popup's commands (FUN_00155310): mpre Make Preset… (FUN_000bd8b2 → FUN_000a79e0 with the current
+// preset's name), edeq Edit List… (FUN_000a7d12), sleq a preset.
+//   Make Preset / Rename (FUN_000a79e0): Get String (DLOG 10002) titled STR# 177.009 "Make Preset" or
+//   177.011 "Rename", its prompt 177.010 "New Preset Name:", the field the preset's name; an empty name
+//   does nothing; a name another preset has asks 177.006 (Yes, No: 23987.001 / .002; "Do not warn me
+//   again", 23987.020, kept at +0x9f0) and deletes that one without asking (FUN_000a78b0 with 1); a new
+//   preset takes the sliders' values and becomes the one chosen (FUN_000a770a, FUN_000a6b36).
+//   Edit List (DLOG 148, "Edit Presets", 350 × 284): the List Manager's list in user item 2 (20, 10,
+//   200 × 254, inset 1, a 15-point scroll bar at its right; one row chosen at a time: flags 0x8C),
+//   Done (1), Rename… (3) and Delete (4) enabled when a row is chosen (FUN_000a639c).
+//   Delete (FUN_000a78b0): asks 177.004 (Delete, Cancel: 23987.015 / .004; "Do not warn me again" kept
+//   at +0x9ed); the preset chosen goes Manual with its values (FUN_000a783c). 177.005 and 177.008, the
+//   questions about the songs set to a preset, are not asked: the port's songs have no preset of their
+//   own.
 #include "equalizer.h"
 
 #include "controls.h"
+#include "panels.h"
 #include "foundation.h"
 #include "frame.h"
 #include "player.h"
 #include "resources.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <sstream>
 
@@ -223,7 +241,27 @@ Equalizer::Equalizer(Player &player) : m_player(player)
 {
     Settings s("itunes");
     m_on = s.boolean("EQOn", false);
-    m_preset = s.integer("EQPreset", 7);
+    m_preset = -1;
+    // the presets kept ("name<TAB>preamp band…"), else the built-in ones
+    for (const std::string &line : s.list("EQPresets")) {
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos)
+            continue;
+        Preset p{line.substr(0, tab), {}};
+        std::istringstream in(line.substr(tab + 1));
+        int n = 0;
+        while (n < 11 && in >> p.values[size_t(n)])
+            ++n;
+        if (n == 11)
+            insert(p);
+    }
+    if (m_presets.empty())
+        for (int i = 0; i < PresetCount; ++i)
+            insert({presetName(i), Presets[i]});
+    const std::string chosen = s.string("EQPresetName");
+    m_preset = chosen.empty() ? s.integer("EQPreset", 7) < 0 ? -1 : find(presetName(s.integer("EQPreset", 7))) : find(chosen);
+    if (chosen == "-")
+        m_preset = -1;
     std::istringstream in(s.string("EQBands"));
     std::array<int, 11> v{};
     int n = 0;
@@ -231,8 +269,8 @@ Equalizer::Equalizer(Player &player) : m_player(player)
         ++n;
     if (n == 11)
         m_values = v;
-    else if (m_preset >= 0 && m_preset < PresetCount)
-        m_values = Presets[m_preset];
+    else if (m_preset >= 0)
+        m_values = m_presets[size_t(m_preset)].values;
 }
 
 Equalizer::~Equalizer() = default;
@@ -254,11 +292,59 @@ void Equalizer::apply()
     m_player.setEqualizer(m_on, m_values[0] / 100.0, bands);
 }
 
+namespace {
+std::string folded(std::string s)
+{
+    for (char &c : s)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+} // namespace
+
+int Equalizer::find(const std::string &name) const
+{
+    for (size_t i = 0; i < m_presets.size(); ++i)
+        if (folded(m_presets[i].name) == folded(name))
+            return int(i);
+    return -1;
+}
+
+void Equalizer::insert(const Preset &p)
+{
+    const std::string key = folded(p.name);
+    size_t at = 0;
+    while (at < m_presets.size() && folded(m_presets[at].name) <= key)
+        ++at;
+    if (m_preset >= int(at))
+        ++m_preset;
+    m_presets.insert(m_presets.begin() + long(at), p);
+}
+
+void Equalizer::savePresets()
+{
+    std::vector<std::string> lines;
+    for (const Preset &p : m_presets) {
+        std::string v;
+        for (int x : p.values)
+            v += (v.empty() ? "" : " ") + std::to_string(x);
+        lines.push_back(p.name + "\t" + v);
+    }
+    Settings("itunes").set("EQPresets", lines);
+}
+
+void Equalizer::updateTitle()
+{
+    if (!m_content)
+        return;
+    m_content->popup->title = m_preset >= 0 ? m_presets[size_t(m_preset)].name : tr("kEQPresetsMenuItemManual");
+    m_content->popup->setNeedsDisplay();
+}
+
 void Equalizer::save()
 {
     Settings s("itunes");
     s.set("EQOn", m_on);
-    s.set("EQPreset", m_preset);
+    s.set("EQPresetName", m_preset >= 0 ? m_presets[size_t(m_preset)].name : std::string("-"));
     std::string v;
     for (int x : m_values)
         v += (v.empty() ? "" : " ") + std::to_string(x);
@@ -312,22 +398,25 @@ void Equalizer::build()
     // the presets (EQpu 5001)
     m_content->popup = m_content->add<PresetPopup>();
     m_content->popup->setFrame({123, 6 + T, 164, 20});
-    m_content->popup->title = m_preset >= 0 ? presetName(m_preset) : tr("kEQPresetsMenuItemManual");
+    updateTitle();
     m_content->popup->onPress = [this] {
         std::vector<MenuItem> items;
-        items.emplace_back(tr("kEQPresetsMenuItemMakePreset"), false, false);
-        items.emplace_back(tr("kEQPresetsMenuItemEditList"), false, false);
+        items.emplace_back(tr("kEQPresetsMenuItemMakePreset"), false, true);
+        items.emplace_back(tr("kEQPresetsMenuItemEditList"), false, true);
         items.push_back(MenuItem::line());
         items.emplace_back(tr("kEQPresetsMenuItemManual"), false, true, m_preset < 0);
         items.push_back(MenuItem::line());
-        for (int i = 0; i < PresetCount; ++i)
-            items.emplace_back(presetName(i), false, true, i == m_preset);
+        for (size_t i = 0; i < m_presets.size(); ++i)
+            items.emplace_back(m_presets[i].name, false, true, int(i) == m_preset);
         const Rect f = m_content->popup->frame();
         Menu::popUp(m_window.get(), {f.x, f.y + f.h}, items, f.w, textStyle(510).font, [this](int choice) {
-            if (choice == 3) {
+            if (choice == 0) {
+                makePreset();
+            } else if (choice == 1) {
+                editList();
+            } else if (choice == 3) {
                 m_preset = -1;
-                m_content->popup->title = tr("kEQPresetsMenuItemManual");
-                m_content->popup->setNeedsDisplay();
+                updateTitle();
                 save();
             } else if (choice >= 5) {
                 choosePreset(choice - 5);
@@ -377,10 +466,7 @@ void Equalizer::setValue(int slider, int hundredths, bool manual)
     }
     if (manual && m_preset >= 0) {
         m_preset = -1;
-        if (m_content) {
-            m_content->popup->title = tr("kEQPresetsMenuItemManual");
-            m_content->popup->setNeedsDisplay();
-        }
+        updateTitle();
     }
     apply();
     save();
@@ -388,15 +474,230 @@ void Equalizer::setValue(int slider, int hundredths, bool manual)
 
 void Equalizer::choosePreset(int index)
 {
+    if (index < 0 || size_t(index) >= m_presets.size())
+        return;
     m_preset = index;
-    const std::array<int, 11> v = Presets[index];
+    const std::array<int, 11> v = m_presets[size_t(index)].values;
     for (int i = 0; i < 11; ++i)
         setValue(i, v[size_t(i)], false);
-    if (m_content) {
-        m_content->popup->title = presetName(index);
-        m_content->popup->setNeedsDisplay();
-    }
+    updateTitle();
     save();
+}
+
+// Get String (DLOG 10002, 360 × 103): the prompt (17, 8) 318 × 16, the field (20, 30) 320 × 16, Cancel
+// (190, 63) and OK (270, 63), 70 × 20; done(the text) on OK
+void Equalizer::getString(const std::string &title, const std::string &text, std::function<void(std::string)> done)
+{
+    const Size size = dialogSize(10002);
+    m_askWindow = std::make_unique<Window>(Size{size.w > 0 ? size.w : 360, size.h > 0 ? size.h : 103}, title);
+    m_askWindow->setStyleMask(2);
+    m_askWindow->onClose = [this] { App::shared().later([this] { m_askWindow.reset(); }); };
+    View *c = m_askWindow->contentView();
+    TextField *field = nullptr;
+    Button *ok = nullptr, *cancel = nullptr;
+    int n = 0;
+    for (const DialogItem &it : dialogItems(10002)) {
+        ++n;
+        if (n == 1 || n == 2) {
+            Button *b = c->add<Button>(it.text);
+            b->setFrame(it.rect);
+            (n == 1 ? ok : cancel) = b;
+        } else if (n == 3) {
+            c->add<Label>(tr("177.010"), Font::system(13))->setFrame(it.rect);
+        } else if (n == 4) {
+            field = c->add<TextField>();
+            field->setFrame(Rect{it.rect.x - 3, it.rect.y - 3, it.rect.w + 6, it.rect.h + 6});
+        }
+    }
+    if (!ok || !cancel || !field)
+        return;
+    ok->isDefault = true;
+    field->setText(text);
+    field->selectAll();
+    auto finish = [this, field, done] {
+        const std::string t = field->text;
+        m_askWindow->close();
+        if (done)
+            done(t);
+    };
+    ok->action = finish;
+    field->onEnter = finish;
+    cancel->action = [this] { m_askWindow->close(); };
+    field->onCancel = [this] { m_askWindow->close(); };
+    m_askWindow->show();
+    m_askWindow->makeFirstResponder(field);
+}
+
+namespace {
+std::string withName(std::string text, const std::string &one, const std::string &two = {})
+{
+    for (const auto &[mark, value] : {std::pair<std::string, std::string>{"^1", one}, {"^2", two}}) {
+        const size_t at = text.find(mark);
+        if (at != std::string::npos)
+            text.replace(at, mark.size(), value);
+    }
+    return text;
+}
+Image appIcon() { return Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}); }
+} // namespace
+
+void Equalizer::makePreset()
+{
+    const std::string current = m_preset >= 0 ? m_presets[size_t(m_preset)].name : tr("kEQPresetsMenuItemManual");
+    getString(tr("177.009"), current, [this](std::string name) {
+        if (name.empty())
+            return;
+        const std::array<int, 11> values = m_values;
+        auto add = [this, name, values] {
+            const int old = find(name);
+            if (old >= 0) {
+                if (m_preset == old)
+                    m_preset = -1;
+                else if (m_preset > old)
+                    --m_preset;
+                m_presets.erase(m_presets.begin() + old);
+            }
+            insert({name, values});
+            savePresets();
+            choosePreset(find(name));
+            refreshList();
+        };
+        if (find(name) >= 0)
+            Alert::run(appIcon(), withName(tr("177.006"), name), {}, {tr("23987.001"), tr("23987.002")}, [add](int b) {
+                if (b == 0)
+                    add();
+            });
+        else
+            add();
+    });
+}
+
+void Equalizer::renamePreset(int index)
+{
+    if (index < 0 || size_t(index) >= m_presets.size())
+        return;
+    const std::string oldName = m_presets[size_t(index)].name;
+    getString(tr("177.011"), oldName, [this, oldName](std::string name) {
+        if (name.empty() || name == oldName)
+            return;
+        auto rename = [this, oldName, name] {
+            const int other = find(name);
+            if (other >= 0 && folded(name) != folded(oldName)) {
+                if (m_preset == other)
+                    m_preset = -1;
+                else if (m_preset > other)
+                    --m_preset;
+                m_presets.erase(m_presets.begin() + other);
+            }
+            const int at = find(oldName);
+            if (at < 0)
+                return;
+            const bool chosen = m_preset == at;
+            Preset p = m_presets[size_t(at)];
+            p.name = name;
+            if (m_preset > at)
+                --m_preset;
+            else if (chosen)
+                m_preset = -1;
+            m_presets.erase(m_presets.begin() + at);
+            insert(p);
+            if (chosen)
+                m_preset = find(name);
+            if (m_editList)
+                m_editList->selected = find(name);
+            savePresets();
+            save();
+            updateTitle();
+            refreshList();
+        };
+        const int other = find(name);
+        if (other >= 0 && folded(name) != folded(oldName))
+            Alert::run(appIcon(), withName(tr("177.006"), name), {}, {tr("23987.001"), tr("23987.002")}, [rename](int b) {
+                if (b == 0)
+                    rename();
+            });
+        else
+            rename();
+    });
+}
+
+void Equalizer::deletePreset(int index)
+{
+    if (index < 0 || size_t(index) >= m_presets.size())
+        return;
+    const std::string name = m_presets[size_t(index)].name;
+    Alert::run(appIcon(), withName(tr("177.004"), name), {}, {tr("23987.015"), tr("23987.004")}, [this, name](int b) {
+        const int at = find(name);
+        if (b != 0 || at < 0)
+            return;
+        if (m_preset == at)
+            m_preset = -1;   // FUN_000a783c: the chosen one goes Manual, its values kept
+        else if (m_preset > at)
+            --m_preset;
+        m_presets.erase(m_presets.begin() + at);
+        savePresets();
+        save();
+        updateTitle();
+        refreshList();
+    });
+}
+
+void Equalizer::refreshList()
+{
+    if (!m_editList)
+        return;
+    m_editList->rows.clear();
+    for (const Preset &p : m_presets)
+        m_editList->rows.push_back({p.name});
+    if (m_editList->selected >= int(m_presets.size()))
+        m_editList->selected = -1;
+    m_editList->reload();
+    // FUN_000a639c: Rename… and Delete with one row chosen
+    m_rename->setEnabled(m_editList->selected >= 0);
+    m_delete->setEnabled(m_editList->selected >= 0);
+}
+
+// Edit Presets (DLOG 148, FUN_000a7d12)
+void Equalizer::editList()
+{
+    if (m_editWindow) {
+        m_editWindow->orderFront();
+        return;
+    }
+    const Size size = dialogSize(148);
+    m_editWindow = std::make_unique<Window>(Size{size.w > 0 ? size.w : 350, size.h > 0 ? size.h : 284}, "Edit Presets");
+    m_editWindow->setStyleMask(2);
+    m_editWindow->onClose = [this] {
+        m_editList = nullptr;
+        m_rename = m_delete = nullptr;
+        App::shared().later([this] { m_editWindow.reset(); });
+    };
+    View *c = m_editWindow->contentView();
+    int n = 0;
+    Button *done = nullptr;
+    for (const DialogItem &it : dialogItems(148)) {
+        ++n;
+        if (n == 2) {
+            m_editList = c->add<TableView>();
+            m_editList->header = false;
+            m_editList->columns = {{"", it.rect.w - 2 - 15}};
+            m_editList->setFrame(it.rect);
+        } else if (n == 1 || n == 3 || n == 4) {
+            Button *b = c->add<Button>(it.text);
+            b->setFrame(it.rect);
+            (n == 1 ? done : n == 3 ? m_rename : m_delete) = b;
+        }
+    }
+    if (!m_editList || !done || !m_rename || !m_delete)
+        return;
+    done->isDefault = true;
+    done->action = [this] { m_editWindow->close(); };
+    m_rename->action = [this] { renamePreset(m_editList->selected); };
+    m_delete->action = [this] { deletePreset(m_editList->selected); };
+    m_editList->onSelect = [this](int) { refreshList(); };
+    m_editList->onDoubleClick = [this](int r) { renamePreset(r); };
+    refreshList();
+    m_editWindow->show();
 }
 
 } // namespace iTunes

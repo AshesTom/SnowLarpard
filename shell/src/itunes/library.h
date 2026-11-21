@@ -86,6 +86,14 @@ private:
     int m_nextId = 100;
 };
 
+// File ▸ Show Duplicates (FUN_00138cea): the songs sorted by name, each compared with those after it
+// until one differs; a pair is the same media kind (audio or video: FUN_001827a0) with the same name and
+// artist (CFString compares, case ignored); Show Exact Duplicates (the menu item with Option, bit 11 of
+// the modifiers: FUN_003ae488) also the same album, track number, track count, disc number and disc
+// count (+0xaa to +0xb0). Both songs of a pair are marked (0x200000 in the item's flags); the marked
+// ones, in the list's order, are what the list then shows
+std::vector<int> duplicates(const Library &library, const std::vector<int> &ids, bool exact);
+
 std::string formatTime(int ms);   // "3:07", "1:02:03"
 // A song's own artwork, the first picture in its tags (ID3's APIC, MP4's covr, FLAC's and Vorbis'
 // METADATA_BLOCK_PICTURE): its encoded bytes, empty when it has none
