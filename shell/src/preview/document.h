@@ -56,6 +56,20 @@ public:
     };
     std::vector<OutlineItem> outline() const;
 
+    // The document's attributes (PDFDocument's documentAttributes, the Inspector's General Info): its
+    // version, title, author, subject, producer, creator, dates (0: none), encryption and permissions
+    struct Info {
+        std::string version, title, author, subject, producer, creator;
+        long created = 0, modified = 0;
+        bool encrypted = false, canPrint = true, canCopy = true;
+        std::vector<std::string> keywords;
+    };
+    Info info() const;
+    // a picture's size in pixels (the page's points are its pixels)
+    AK::Size pixelSize() const;
+    // Save As: the document written again (a PDF through poppler; a picture copied)
+    bool saveTo(const std::string &path, std::string *error = nullptr) const;
+
 private:
     Document() = default;
     std::string m_path;

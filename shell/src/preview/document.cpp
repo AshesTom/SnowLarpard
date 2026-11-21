@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 using namespace AK;
 
@@ -277,6 +278,85 @@ std::vector<Document::OutlineItem> Document::outline() const
         poppler_index_iter_free(it);
     }
     return out;
+}
+
+Document::Info Document::info() const
+{
+    Info i;
+    if (!m_pdf)
+        return i;
+    auto take = [](gchar *v) {
+        std::string s = v ? v : "";
+        g_free(v);
+        return s;
+    };
+    i.version = take(poppler_document_get_pdf_version_string(m_pdf));
+    if (i.version.rfind("PDF-", 0) == 0)
+        i.version = i.version.substr(4);
+    i.title = take(poppler_document_get_title(m_pdf));
+    i.author = take(poppler_document_get_author(m_pdf));
+    i.subject = take(poppler_document_get_subject(m_pdf));
+    i.producer = take(poppler_document_get_producer(m_pdf));
+    i.creator = take(poppler_document_get_creator(m_pdf));
+    i.created = long(poppler_document_get_creation_date(m_pdf));
+    i.modified = long(poppler_document_get_modification_date(m_pdf));
+    // PDF keywords: separated by commas or semicolons
+    const std::string kw = take(poppler_document_get_keywords(m_pdf));
+    std::string cur;
+    for (char c : kw + ",") {
+        if (c == ',' || c == ';') {
+            const size_t a = cur.find_first_not_of(' '), b = cur.find_last_not_of(' ');
+            if (a != std::string::npos)
+                i.keywords.push_back(cur.substr(a, b - a + 1));
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    const PopplerPermissions perms = poppler_document_get_permissions(m_pdf);
+    i.canPrint = perms & POPPLER_PERMISSIONS_OK_TO_PRINT;
+    i.canCopy = perms & POPPLER_PERMISSIONS_OK_TO_COPY;
+    i.encrypted = perms != POPPLER_PERMISSIONS_FULL;
+    return i;
+}
+
+Size Document::pixelSize() const
+{
+    if (m_image.isNull())
+        return {};
+    return {double(m_image.width()), double(m_image.height())};
+}
+
+bool Document::saveTo(const std::string &path, std::string *error) const
+{
+    if (m_pdf) {
+        GError *err = nullptr;
+        if (poppler_document_save_a_copy(m_pdf, uriOf(path).c_str(), &err))
+            return true;
+        if (error)
+            *error = err ? err->message : "";
+        if (err)
+            g_error_free(err);
+        return false;
+    }
+    // a picture: its file as it is
+    std::string bytes;
+    if (FILE *in = std::fopen(m_path.c_str(), "rb")) {
+        char buf[65536];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, in)) > 0)
+            bytes.append(buf, n);
+        std::fclose(in);
+    }
+    FILE *f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        if (error)
+            *error = "You don’t have permission to save the file in this folder.";
+        return false;
+    }
+    const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+    std::fclose(f);
+    return ok;
 }
 
 } // namespace Preview

@@ -9,6 +9,7 @@
 // has no applicationShouldTerminateAfterLastWindowClosed:). One Preview: launched again, it hands
 // its files to the running one (or brings it forward, as the Dock's click does).
 #include "controls.h"
+#include "panels.h"
 #include "document.h"
 #include "foundation.h"
 #include "mainmenu.h"
@@ -23,7 +24,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <memory>
+#include <sys/stat.h>
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -188,6 +191,397 @@ void runOpenPanel(std::function<void(std::vector<std::string>)> done)
               });
 }
 
+
+// ---- the Inspector (PVInspectorWindowController, PVInspectorWindow.nib: a utility panel 320 wide)
+//
+// One for the application, showing the front window's document (mainWindow.windowController.document):
+// a segmented control along its top (PVInspectorMultiPanelView: 25 high, its segments
+// (width − 4) ÷ n, the first and last 5 longer to hide its ends past the window's), the panel chosen
+// under it, the window as tall as the panel and the bar, titled by the panel. A PDF's panels
+// (-inspectorSetupPDF): General Info, Keywords, Encryption, Crop and Rotate, Annotations; a
+// picture's (-inspectorSetupImages): General Info, More Info, Keywords, Annotations.
+
+// _NSLocalizedFileSizeDescription with the long form (PVLongDataSizeValueTransformer's 0x4000000):
+// "86 KB (86,345 bytes)"
+std::string longFileSize(long long bytes)
+{
+    if (bytes <= 0)
+        return tr("0 bytes");
+    static const char *const units[] = {"bytes", "KB", "MB", "GB", "TB"};
+    static const int digits[] = {0, 0, 1, 2, 2};
+    double v = double(bytes);
+    int u = 0;
+    auto rounded = [](double x, int d) { const double f = std::pow(10.0, d); return std::round(x * f) / f; };
+    while (u < 4 && rounded(v, digits[u]) >= 1000) {
+        v /= 1000;
+        ++u;
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.*f", digits[u], rounded(v, digits[u]));
+    std::string n = buf;
+    if (n.find('.') != std::string::npos) {
+        while (n.back() == '0')
+            n.pop_back();
+        if (n.back() == '.')
+            n.pop_back();
+    }
+    std::string all = std::to_string(bytes), grouped;
+    for (size_t i = 0; i < all.size(); ++i) {
+        if (i > 0 && (all.size() - i) % 3 == 0)
+            grouped += ',';
+        grouped += all[i];
+    }
+    return u == 0 ? grouped + " " + tr("bytes") : n + " " + units[u] + " (" + grouped + " " + tr("bytes") + ")";
+}
+
+// NSDateFormatter, NSDateFormatterLongStyle date and NSDateFormatterShortStyle time
+std::string longDate(long t)
+{
+    if (t <= 0)
+        return {};
+    char buf[96];
+    const time_t tt = time_t(t);
+    std::strftime(buf, sizeof buf, "%B %e, %Y %l:%M %p", std::localtime(&tt));
+    std::string s = buf;
+    for (size_t i; (i = s.find("  ")) != std::string::npos;)
+        s.erase(i, 1);
+    return s;
+}
+
+class Inspector {
+public:
+    static Inspector &shared()
+    {
+        static Inspector i;
+        return i;
+    }
+    bool isVisible() const { return m_window && m_window->isVisible(); }
+
+    // -toggleInspector: (⌘I): shown, or hidden when it is in front
+    void toggle(const Document *doc, int page)
+    {
+        if (isVisible() && m_window->isKey()) {
+            m_window->close();
+            return;
+        }
+        if (!m_window) {
+            m_window = std::make_unique<Window>(Size{Width, 180}, tr("Inspector"));
+            m_window->setFloatingPanel(true);
+        }
+        m_doc = nullptr;
+        inspect(doc, page);
+        m_window->show();
+    }
+    void inspect(const Document *doc, int page)
+    {
+        if (!m_window)
+            return;
+        const bool changed = doc != m_doc;
+        m_doc = doc;
+        m_page = page;
+        if (changed)
+            m_panel = 0;
+        build();
+    }
+
+private:
+    static constexpr double Width = 320, Bar = 25, Overhang = 5;
+
+    std::vector<std::pair<std::string, std::string>> tabs() const   // (image, title)
+    {
+        if (!m_doc)
+            return {};
+        if (m_doc->isPDF())
+            return {{"InspectorGeneralInfo", "General Info"}, {"InspectorKeywords", "Keywords"}, {"InspectorEncryption", "Encryption"},
+                    {"InspectorMetrics", "Crop and Rotate"}, {"InspectorAnnotations", "Annotations"}};
+        return {{"InspectorGeneralInfo", "General Info"}, {"InspectorMoreInfo", "More Info"}, {"InspectorKeywords", "Keywords"},
+                {"InspectorAnnotations", "Annotations"}};
+    }
+
+    void build()
+    {
+        View *root = m_window->contentView();
+        root->removeAllSubviews();
+        const auto t = tabs();
+        if (t.empty()) {
+            // PVInspectorNoDocument.nib: 80 high, "No document" at (17, 47)
+            m_window->setContentSize({Width, 80 + Bar});
+            m_window->setTitle(tr("Inspector"));
+            auto *l = root->add<Label>("No document", Font::system(11));
+            l->style.align = Align::Center;
+            l->setFrame({17, Bar + 80 - 47 - 14, 286, 14});
+            return;
+        }
+        std::vector<Image> images;
+        std::vector<double> widths;
+        const double each = (Width - 4) / double(t.size());
+        for (size_t i = 0; i < t.size(); ++i) {
+            images.push_back(Image::load(res(t[i].first + ".png")));
+            widths.push_back(each + (i == 0 || i + 1 == t.size() ? Overhang : 0));
+        }
+        auto *seg = new SegmentedControl(CoreUI::SegmentStyle::Textured, std::vector<std::string>(t.size()), widths);
+        seg->glyph = [images](cairo_t *cr, int i, const Rect &r, bool enabled) {
+            const Image &img = images[size_t(i)];
+            img.draw(cr, Rect{std::floor(r.x + (r.w - img.width()) / 2), std::floor(r.y + (r.h - img.height()) / 2), double(img.width()), double(img.height())},
+                     enabled ? 1 : 0.35);
+        };
+        // the panels this port has; the others (Crop and Rotate, Annotations, More Info) not yet
+        std::vector<bool> enabled;
+        for (const auto &[img, title] : t)
+            enabled.push_back(title == "General Info" || title == "Keywords" || title == "Encryption");
+        seg->segmentEnabled = enabled;
+        seg->setSelected(m_panel);
+        seg->onSelect = [this](int i) {
+            m_panel = i;
+            App::shared().later([this] { build(); });
+        };
+        root->addSubview(seg);
+        double total = 0;
+        for (double w : widths)
+            total += w;
+        seg->setFrame({-Overhang + 2, 2, total, Bar - 4});
+        const std::string &title = t[size_t(m_panel)].second;
+        m_window->setTitle(tr(title));
+        if (title == "General Info")
+            generalInfo(root);
+        else if (title == "Keywords")
+            keywords(root);
+        else if (title == "Encryption")
+            encryption(root);
+    }
+
+    // a nib's row: its label (right aligned, 105 wide at x 2) and its value (207 at 109), from the
+    // panel's bottom
+    void row(View *root, double panelH, double y, const std::string &label, const std::string &value, double labelH = 14)
+    {
+        auto *l = root->add<Label>(label, Font::system(11));
+        l->style.align = Align::Right;
+        l->setFrame({2, Bar + panelH - y - labelH, 105, labelH});
+        auto *v = root->add<Label>(value, Font::system(11));
+        v->setFrame({109, Bar + panelH - y - 14, 207, 14});
+    }
+    void separator(View *root, double panelH, double y, double w = 300)
+    {
+        struct Line : View {
+            void draw(cairo_t *cr) override
+            {
+                fill(cr, Rect{0, 2, bounds().w, 1}, Color::gray(0, 0.2));
+                fill(cr, Rect{0, 3, bounds().w, 1}, Color::gray(255, 0.6));
+            }
+        };
+        root->add<Line>()->setFrame({10, Bar + panelH - y - 5, w, 5});
+    }
+
+    void generalInfo(View *root)
+    {
+        struct stat st{};
+        ::stat(m_doc->path().c_str(), &st);
+        const std::string name = fileName(m_doc->path());
+        if (m_doc->isPDF()) {
+            // PVInspectorPDFFileInfo.nib (320 × 299)
+            constexpr double H = 299;
+            m_window->setContentSize({Width, H + Bar});
+            const Document::Info info = m_doc->info();
+            const Size page = m_doc->pageSize(m_page);
+            // PVPDFPageSizeValueTransformer: inches (/ 72), or cm (× 0.0352777) where metric
+            char size[96];
+            std::snprintf(size, sizeof size, "%.2f × %.2f inches", page.w / 72, page.h / 72);
+            row(root, H, 277, "File name:", name, 17);
+            row(root, H, 258, "Document type:", "PDF document");
+            row(root, H, 236, "File size:", longFileSize(st.st_size));
+            separator(root, H, 227);
+            row(root, H, 207, "PDF version:", info.version);
+            row(root, H, 186, "Page count:", std::to_string(m_doc->pageCount()));
+            row(root, H, 165, "Page size:", size);
+            separator(root, H, 154);
+            row(root, H, 136, "Title:", info.title);
+            row(root, H, 115, "Author:", info.author);
+            row(root, H, 94, "Subject:", info.subject);
+            row(root, H, 73, "PDF Producer:", info.producer);
+            row(root, H, 52, "Content creator:", info.creator);
+            row(root, H, 30, "Creation date:", longDate(info.created));
+            row(root, H, 8, "Modification date:", longDate(info.modified));
+        } else {
+            // PVInspectorImageFileInfo.nib (320 × 212)
+            constexpr double H = 212;
+            m_window->setContentSize({Width, H + Bar});
+            const Size px = m_doc->pixelSize();
+            std::string ext = name.substr(name.rfind('.') + 1);
+            for (char &c : ext)
+                c = char(std::toupper(static_cast<unsigned char>(c)));
+            row(root, H, 193, "File name:", name);
+            row(root, H, 171, "Document type:", ext + " image");
+            row(root, H, 149, "File size:", longFileSize(st.st_size));
+            row(root, H, 127, "Creation date:", longDate(long(st.st_ctime)));
+            row(root, H, 102, "Modification date:", longDate(long(st.st_mtime)), 17);
+            separator(root, H, 94);
+            row(root, H, 74, "Image size:", std::to_string(int(px.w)) + " × " + std::to_string(int(px.h)) + " pixels");
+            row(root, H, 52, "Image DPI:", "72 pixels/inch");
+            row(root, H, 30, "Color model:", "RGB");
+            row(root, H, 8, "ColorSync profile:", "");
+        }
+    }
+
+    void keywords(View *root)
+    {
+        // PVInspectorPDFKeywords.nib (320 × 301): the list (0, 31) 320 × 261, + and − under it;
+        // "No Keywords" in its middle when empty
+        constexpr double H = 301;
+        m_window->setContentSize({Width, H + Bar});
+        const std::vector<std::string> words = m_doc->isPDF() ? m_doc->info().keywords : std::vector<std::string>{};
+        auto *list = root->add<TableView>();
+        list->columns = {{"Keywords", 316}};
+        list->header = false;
+        for (const std::string &w : words)
+            list->rows.push_back({w});
+        list->setFrame({0, Bar + H - 31 - 261, 320, 261});
+        list->reload();
+        if (words.empty()) {
+            auto *none = root->add<Label>(tr("No Keywords"), Font::system(13));
+            none->style.align = Align::Center;
+            none->style.color = Color::gray(0, 0.4);
+            none->setFrame({0, Bar + H - 153 - 17, 320, 17});
+        }
+        for (int i = 0; i < 2; ++i) {
+            auto *b = root->add<Button>(i == 0 ? "+" : "−", Button::SmallSquare);
+            b->setFrame({6.0 + 22 * i, Bar + H - 4 - 22, 23, 22});
+            b->setEnabled(false);   // Preview writes the keywords on saving: not ported
+        }
+    }
+
+    void encryption(View *root)
+    {
+        // PVInspectorPDFEncryption.nib (320 × 226): its tab view's first view without encryption,
+        // the second with: "Encrypted" Yes, the permissions with GreenCheck or RedExclamation
+        constexpr double H = 226;
+        m_window->setContentSize({Width, H + Bar});
+        const Document::Info info = m_doc->info();
+        auto *l = root->add<Label>("Encrypted", Font::boldSystem(11));
+        l->setFrame({7, Bar + H - 204 - 17, 67, 17});
+        auto *v = root->add<Label>(info.encrypted ? "Yes" : "No", Font::system(11));
+        v->setFrame({73, Bar + H - 207 - 14, 27, 14});
+        separator(root, H, 191);
+        auto *p = root->add<Label>("Permissions", Font::boldSystem(11));
+        p->setFrame({7, Bar + H - 174 - 14, 129, 14});
+        if (!info.encrypted) {
+            auto *t = root->add<Label>("You have full permissions for this PDF.  You can copy text, print or make changes to the PDF and save.",
+                                       Font::system(11));
+            t->wrap = true;
+            t->setFrame({7, Bar + H - 137 - 29, 300, 29});
+            return;
+        }
+        const Image yes = Image::load(res("GreenCheck.tif")), no = Image::load(res("RedExclamation.tif"));
+        struct Icon : View {
+            Image img;
+            void draw(cairo_t *cr) override { img.draw(cr, bounds()); }
+        };
+        const std::pair<double, std::pair<bool, std::string>> rows[] = {
+            {153, {true, tr("PermissionView")}},
+            {133, {info.canCopy, tr(info.canCopy ? "PermissionCopy" : "PermissionNoCopy")}},
+            {113, {info.canPrint, tr(info.canPrint ? "PermissionPrint" : "PermissionNoPrint")}},
+        };
+        for (const auto &[y, r] : rows) {
+            auto *i = root->add<Icon>();
+            i->img = r.first ? yes : no;
+            i->setFrame({9, Bar + H - y - 13, 13, 13});
+            auto *t = root->add<Label>(r.second, Font::system(11));
+            t->setFrame({27, Bar + H - y - 1 - 14, 276, 14});
+        }
+        separator(root, H, 59);
+    }
+
+    std::unique_ptr<Window> m_window;
+    const Document *m_doc = nullptr;
+    int m_page = 0;
+    int m_panel = 0;
+};
+
+// ---- the slideshow (-[PVWindowController slideshow:]: IKSlideshow, started paused at the page
+// shown, IKSlideshowModePDF for a PDF): the screen black, the page as large as it fits; ← → (and
+// the space bar to play), Escape ends it at the page it was on (-slideshowDidStop)
+class SlideshowView : public View {
+public:
+    const Document *doc = nullptr;
+    int page = 0;
+    bool playing = false;
+    std::function<void(int)> onEnd;
+    void draw(cairo_t *cr) override
+    {
+        fill(cr, bounds(), Color::gray(0));
+        if (!doc)
+            return;
+        const Size s = doc->pageSize(page);
+        const double k = std::min(bounds().w / s.w, bounds().h / s.h);
+        const double w = std::floor(s.w * k), h = std::floor(s.h * k);
+        const double x = std::floor((bounds().w - w) / 2), y = std::floor((bounds().h - h) / 2);
+        if (doc->isPDF()) {
+            fill(cr, Rect{x, y, w, h}, Color::gray(255));
+        }
+        cairo_save(cr);
+        cairo_translate(cr, x, y);
+        doc->draw(cr, page, k);
+        cairo_restore(cr);
+    }
+    void keyDown(Event &e) override
+    {
+        const uint32_t k = e.keysym;
+        if (k == XKB_KEY_Escape || k == XKB_KEY_q) {
+            if (onEnd)
+                onEnd(page);
+        } else if (k == XKB_KEY_Right || k == XKB_KEY_Down || k == XKB_KEY_Page_Down) {
+            step(1);
+        } else if (k == XKB_KEY_Left || k == XKB_KEY_Up || k == XKB_KEY_Page_Up) {
+            step(-1);
+        } else if (k == XKB_KEY_space) {
+            playing = !playing;
+            if (playing)
+                schedule();
+        }
+    }
+    void mouseDown(Event &) override { step(1); }
+    bool acceptsFirstResponder() const override { return true; }
+    ~SlideshowView() override
+    {
+        if (m_timer)
+            App::shared().removeTimer(m_timer);
+    }
+
+private:
+    void step(int d)
+    {
+        page = std::clamp(page + d, 0, doc->pageCount() - 1);
+        setNeedsDisplay();
+    }
+    void schedule()
+    {
+        if (m_timer)
+            App::shared().removeTimer(m_timer);
+        m_timer = App::shared().addTimer(3, true, [this] {
+            if (!playing || page + 1 >= doc->pageCount()) {
+                playing = false;
+                App::shared().removeTimer(m_timer);
+                m_timer = 0;
+                return;
+            }
+            step(1);
+        });
+    }
+    int m_timer = 0;
+};
+
+// lp, for Print… (the document's PDF or picture as it is; no print panel)
+void printFile(const std::string &path, const std::string &title)
+{
+    std::vector<std::string> argv = {"lp", "-t", title, path};
+    std::vector<char *> args;
+    for (std::string &a : argv)
+        args.push_back(a.data());
+    args.push_back(nullptr);
+    pid_t pid = 0;
+    if (posix_spawnp(&pid, "lp", nullptr, nullptr, args.data(), environ) == 0)
+        App::shared().addTimer(10, false, [pid] { waitpid(pid, nullptr, WNOHANG); });
+}
+
 // ---- the window
 
 class DocumentWindow {
@@ -214,6 +608,8 @@ public:
         m_divider->setHidden(!m_sidebarOpen);
         m_pdf->onPageChanged = [this](int page) {
             m_sidebar->setPage(page);
+            if (m_window && m_window->isKey())
+                Inspector::shared().inspect(m_doc.get(), page);
             m_window->setTitle(title());
             updateToolbar();
         };
@@ -246,8 +642,14 @@ public:
                 onKeyEquivalent(e);
         };
         m_window->onClose = [this] {
+            Inspector::shared().inspect(nullptr, 0);
             if (onClose)
                 onClose(this);
+        };
+        m_window->onKeyChanged = [this](bool key) {
+            // the Inspector follows the main window's document
+            if (key)
+                Inspector::shared().inspect(m_doc.get(), m_pdf->currentPage());
         };
         layout();
         m_pdf->goToPage(0);
@@ -326,6 +728,17 @@ public:
             return pdf && m_matchCount > 0;
         if (a == "doUseSelectionForFind:")
             return !sheet && pdf && !m_pdf->selectedText().empty();
+        if (a == "goToPageNumberPanel:")
+            return !sheet && pages > 1;
+        if (a == "toggleInspector:") {
+            // -[PVInspectorWindowController validateMenuItem:]
+            v.title = tr(Inspector::shared().isVisible() ? "Hide Inspector" : "Show Inspector");
+            return true;
+        }
+        if (a == "slideshow:")
+            return pages > 0;
+        if (a == "printCurrentDocument:" || a == "saveDocumentAs:")
+            return true;
         return false;
     }
 
@@ -361,6 +774,16 @@ public:
         } else if (a == "doFindNext:" || a == "doFindPrevious:") {
             m_match = (m_match + (a == "doFindNext:" ? 1 : m_matchCount - 1)) % m_matchCount;
             m_pdf->showMatch(m_match);
+        } else if (a == "goToPageNumberPanel:") {
+            goToPagePanel();
+        } else if (a == "toggleInspector:") {
+            Inspector::shared().toggle(m_doc.get(), m_pdf->currentPage());
+        } else if (a == "slideshow:") {
+            slideshow();
+        } else if (a == "printCurrentDocument:") {
+            print();
+        } else if (a == "saveDocumentAs:") {
+            saveAs();
         } else if (a == "doUseSelectionForFind:") {
             if (m_search) {
                 m_search->text = m_pdf->selectedText();
@@ -377,6 +800,95 @@ public:
     }
 
 private:
+    // Go to Page… (⌥⌘G, -goToPageNumberPanel:): PVPDFPageNumberPanel.nib as a sheet (172 × 92), the
+    // field "Page:" given the page's label (-currentPageNumberString); OK goes to the page with that
+    // label, else that number (-gotoMediaElementWithLabel:), a beep when there is none
+    void goToPagePanel()
+    {
+        constexpr double W = 172, H = 92;
+        auto *content = new View;
+        content->setFrame({0, 0, W, H});
+        auto at = [](double x, double y, double w, double h) { return Rect{x, H - y - h, w, h}; };
+        auto *l = content->add<Label>("Page:", Font::system(11));
+        l->style.align = Align::Right;
+        l->setFrame(at(17, 55, 33, 14));
+        auto *field = content->add<TextField>();
+        field->setFrame(at(55, 53, 97, 19));
+        field->text = m_doc->pageLabel(m_pdf->currentPage());
+        auto *cancel = content->add<Button>("Cancel", Button::Push);
+        cancel->small = true;
+        cancel->setFrame(at(15, 19, 72, 28));
+        auto *ok = content->add<Button>("OK", Button::Push);
+        ok->small = true;
+        ok->isDefault = true;
+        ok->setFrame(at(85, 19, 72, 28));
+        cancel->action = [this] { Sheet::end(m_window.get()); };
+        ok->action = [this, field] {
+            const std::string label = field->text;
+            Sheet::end(m_window.get());
+            int page = -1;
+            for (int i = 0; i < m_doc->pageCount() && page < 0; ++i)
+                if (m_doc->pageLabel(i) == label)
+                    page = i;
+            if (page < 0) {
+                const long n = std::atol(label.c_str());
+                if (n > 0 && n <= m_doc->pageCount())
+                    page = int(n - 1);
+            }
+            if (page < 0)
+                std::fputc('\a', stderr);   // NSBeep
+            else
+                m_pdf->goToPage(page);
+        };
+        Sheet::begin(m_window.get(), content, {W, H}, m_toolbarShown ? Toolbar::Height : 0);
+        field->selectAll();
+    }
+
+    void slideshow()
+    {
+        if (m_slideshow)
+            return;
+        const Rect screen = App::shared().screenFrame();
+        m_slideshow = std::make_unique<Window>(Size{screen.w, screen.h}, "Slideshow", Window::FullScreen);
+        auto *v = m_slideshow->contentView()->add<SlideshowView>();
+        v->setFrame({0, 0, screen.w, screen.h});
+        v->doc = m_doc.get();
+        v->page = m_pdf->currentPage();
+        v->onEnd = [this](int page) {
+            App::shared().later([this, page] {
+                m_slideshow.reset();
+                m_pdf->goToPage(page);
+            });
+        };
+        m_slideshow->makeFirstResponder(v);
+        m_slideshow->show();
+        m_slideshow->grabInput();
+    }
+
+    // -[PVDocument printCurrentDocument:]: a PDF that doesn't allow printing asks for its password
+    // (here: says it can't); else NSDocument's printing (here lp, no print panel)
+    void print()
+    {
+        if (m_doc->isPDF() && !m_doc->info().canPrint) {
+            Alert::beginSheet(m_window.get(), Image::load(res("preview.icns"), {64, 64}), tr("NoPrintPermsTitle"), {}, {"OK"}, nullptr);
+            return;
+        }
+        printFile(m_doc->path(), fileName(m_doc->path()));
+    }
+
+    // Save As… (⇧⌘S): the save panel; the document written there (a PDF through poppler)
+    void saveAs()
+    {
+        const std::string path = m_doc->path();
+        SavePanel::run("Save As", path, {}, [this](std::string to) {
+            if (to.empty())
+                return;
+            std::string error;
+            if (!m_doc->saveTo(to, &error))
+                Alert::beginSheet(m_window.get(), Image::load(res("preview.icns"), {64, 64}), tr("Couldn_t save document."), error, {"OK"}, nullptr);
+        });
+    }
+
     // The divider between the pages and the sidebar: 1 point (PVNSSplitView's dividerThickness, its
     // thin style), dragged in a few points around it
     class Divider : public View {
@@ -683,6 +1195,7 @@ private:
 
     std::unique_ptr<Document> m_doc;
     std::unique_ptr<Window> m_window;
+    std::unique_ptr<Window> m_slideshow;
     Rect m_visible;
     Toolbar *m_toolbar = nullptr;
     PDFView *m_pdf = nullptr;
