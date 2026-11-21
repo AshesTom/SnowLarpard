@@ -27,6 +27,9 @@ public:
     // -[PBAssetCollection appendNewAsset:]: the files written, the asset last, Recents.plist rewritten
     bool addPhoto(const AK::Image &photo);
     bool addFourUp(const std::vector<AK::Image> &photos);
+    // PBQTMovieAsset: "Movie on <date> at <time>.mov"; the name for a recording, then the movie added
+    std::string newMovieName() const;
+    bool addMovie(const std::string &name);
     // -[PBAsset delete]: the files moved to IntermediateTrashDirectory (in Photo Booth's application
     // support folder) until it quits, for Undo; -undoDelete moves them back
     Asset remove(int index);
@@ -37,7 +40,7 @@ public:
     void emptyIntermediateTrash();
     // -[PBImageAsset flip]: the picture mirrored, in its file
     void flip(int index);
-    AK::Image fullImage(int index) const;   // a 4-up's four in a square
+    AK::Image fullImage(int index) const;   // a 4-up's four in a square; a movie's first frame
     std::string path(int index, int file = 0) const;
 
 private:

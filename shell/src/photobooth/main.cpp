@@ -21,6 +21,11 @@
 #include <map>
 #include <memory>
 #include <spawn.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <cstring>
+#include <csignal>
 
 extern char **environ;
 
@@ -254,10 +259,12 @@ public:
 class CountdownView : public View {
 public:
     int counter = 4;
+    // PBQTMovieCountdownView: the video camera (countdown-video) in the camera's place
+    std::string camera = "countdown-cam";
     void draw(cairo_t *cr) override
     {
         art("countdown-background").draw(cr, bounds());
-        static const char *names[4] = {"countdown-no3", "countdown-no2", "countdown-no1", "countdown-cam"};
+        const char *names[4] = {"countdown-no3", "countdown-no2", "countdown-no1", camera.c_str()};
         const double w = art("countdown-no3").width();
         const double x0 = (frame().w - 4 * w - 36) * 0.5;   // -drawRect:
         for (int i = 0; i < 4; ++i)
@@ -723,6 +730,316 @@ private:
 // ---- PBApplicationControl, with what PBImagePickerController and the recording controllers do
 
 // IKSlideshow over the photos (IKSlideshowModeImages): black, the picture fitted; ← →, Escape
+
+// ---- Movies
+
+// PBRecordingTimerView (91 x 32): BrightRed under DarkRed, which pulses; the elapsed time HH MM SS in
+// the digits' pictures (0.png to 9.png), from 10 points in, 3 between a pair's digits, 8 between
+// pairs, centred down (-[PBRecordingTimerDigitsLayer _imageForDuration:])
+class RecordingTimerView : public View {
+public:
+    double started = 0;   // now()'s, 0: stopped
+    void draw(cairo_t *cr) override
+    {
+        art("BrightRed").draw(cr, bounds());
+        if (started > 0) {
+            const double pulse = 0.5 + 0.5 * std::cos((now() - started) * M_PI);   // pulseAnimation
+            art("DarkRed").draw(cr, bounds(), pulse);
+        } else {
+            art("DarkRed").draw(cr, bounds());
+        }
+        const long t = started > 0 ? long(now() - started) : 0;
+        const long h = t / 3600, m = (t / 60) % 60, sec = t % 60;
+        const long digits[6] = {h / 10, h % 10, m / 10, m % 10, sec / 10, sec % 10};
+        double x = 10;
+        for (int i = 0; i < 6; ++i) {
+            const Image &d = art(std::to_string(digits[i]));
+            d.draw(cr, Point{x, std::floor((frame().h - d.height()) / 2)});
+            x += d.width() + (i % 2 == 0 ? 3 : 8);
+        }
+    }
+};
+
+// FezAVRecorder (H.264 video, AAC audio, a QuickTime movie): here ffmpeg, given the frames as shown
+// (PBVideoRecordingAdapter's view) on its standard input, the microphone through PulseAudio
+class MovieRecorder {
+public:
+    bool start(const std::string &path)
+    {
+        int in[2];
+        if (pipe(in) != 0)
+            return false;
+        std::signal(SIGPIPE, SIG_IGN);   // ffmpeg gone: a write fails rather than ending Photo Booth
+        std::vector<std::string> argv = {"ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s",
+                                         std::to_string(VideoWidth) + "x" + std::to_string(VideoHeight), "-use_wallclock_as_timestamps", "1",
+                                         "-i", "-"};
+        const bool audio = std::system("pactl info >/dev/null 2>&1") == 0;
+        if (audio)
+            argv.insert(argv.end(), {"-f", "pulse", "-i", "default"});
+        argv.insert(argv.end(), {"-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-fps_mode", "vfr"});
+        if (audio)
+            argv.insert(argv.end(), {"-c:a", "aac", "-b:a", "128k"});
+        argv.push_back(path);
+        std::vector<char *> args;
+        for (std::string &a : argv)
+            args.push_back(a.data());
+        args.push_back(nullptr);
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+        posix_spawn_file_actions_addclose(&fa, in[1]);
+        const int ok = posix_spawnp(&m_pid, "ffmpeg", &fa, nullptr, args.data(), environ);
+        posix_spawn_file_actions_destroy(&fa);
+        close(in[0]);
+        if (ok != 0) {
+            close(in[1]);
+            return false;
+        }
+        m_fd = in[1];
+        return true;
+    }
+    void frame(const Image &image)
+    {
+        if (m_fd < 0 || image.isNull())
+            return;
+        Image f = image;
+        if (f.width() != VideoWidth || f.height() != VideoHeight)
+            f = f.scaled(VideoWidth, VideoHeight);
+        cairo_surface_t *s = f.surface();
+        cairo_surface_flush(s);
+        const unsigned char *data = cairo_image_surface_get_data(s);
+        const int stride = cairo_image_surface_get_stride(s);
+        for (int y = 0; y < VideoHeight; ++y)
+            if (write(m_fd, data + y * stride, VideoWidth * 4) < 0)
+                return;
+    }
+    // -saveRecording: the movie finished; done(true) once it is written
+    void stop(std::function<void(bool)> done)
+    {
+        if (m_fd >= 0)
+            close(m_fd);
+        m_fd = -1;
+        // the microphone has no end: ffmpeg told to finish the movie (as its q does)
+        if (m_pid > 0)
+            kill(m_pid, SIGINT);
+        const pid_t pid = m_pid;
+        m_pid = 0;
+        auto timer = std::make_shared<int>(0);
+        *timer = App::shared().addTimer(0.1, true, [pid, done, timer] {
+            int status = 0;
+            const pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == 0)
+                return;
+            App::shared().removeTimer(*timer);
+            done(r == pid && WIFEXITED(status));   // SIGINT's exit status varies: the file tells
+        });
+    }
+    bool recording() const { return m_fd >= 0; }
+
+private:
+    int m_fd = -1;
+    pid_t m_pid = 0;
+};
+
+// A movie of the tray played in the video's place (QTMovie, MovieLayer): its frames decoded by
+// ffmpeg at their pace (-re), its sound by ffplay; from a time, paused by stopping them
+class MoviePlayer {
+public:
+    std::function<void(const Image &)> onFrame;
+    std::function<void()> onEnd;
+    double duration = 0, position = 0;
+    bool playing() const { return m_pid > 0; }
+
+    void open(const std::string &path)
+    {
+        stop();
+        m_path = path;
+        position = 0;
+        duration = 0;
+        if (FILE *f = popen(("ffprobe -v quiet -show_entries format=duration -of csv=p=0 '" + path + "'").c_str(), "r")) {
+            char buf[64] = {};
+            if (std::fgets(buf, sizeof buf, f))
+                duration = std::atof(buf);
+            pclose(f);
+        }
+    }
+    void play()
+    {
+        if (m_path.empty() || playing())
+            return;
+        if (position >= duration - 0.05)
+            position = 0;
+        int out[2];
+        if (pipe(out) != 0)
+            return;
+        char from[32];
+        std::snprintf(from, sizeof from, "%.3f", position);
+        std::vector<std::string> argv = {"ffmpeg", "-loglevel", "quiet", "-re", "-ss", from, "-i", m_path, "-an", "-f", "rawvideo",
+                                         "-pix_fmt", "bgra", "-s", std::to_string(VideoWidth) + "x" + std::to_string(VideoHeight), "-"};
+        m_pid = spawnWithOutput(argv, out);
+        m_fd = out[0];
+        fcntl(m_fd, F_SETFL, O_NONBLOCK);
+        m_buffer.clear();
+        m_started = now() - position;
+        App::shared().watch(m_fd, [this] { readFrames(); });
+        std::vector<std::string> audio = {"ffplay", "-loglevel", "quiet", "-nodisp", "-autoexit", "-ss", from, m_path};
+        int none[2] = {-1, -1};
+        m_audio = spawnWithOutput(audio, none);
+    }
+    void pause()
+    {
+        if (!playing())
+            return;
+        position = std::min(duration, now() - m_started);
+        stop();
+    }
+    void seek(double t)
+    {
+        const bool was = playing();
+        stop();
+        position = std::clamp(t, 0.0, duration);
+        if (was)
+            play();
+    }
+    double current() const { return playing() ? std::min(duration, now() - m_started) : position; }
+    void stop()
+    {
+        if (m_fd >= 0) {
+            App::shared().unwatch(m_fd);
+            close(m_fd);
+            m_fd = -1;
+        }
+        for (pid_t *p : {&m_pid, &m_audio})
+            if (*p > 0) {
+                kill(*p, SIGTERM);
+                waitpid(*p, nullptr, 0);
+                *p = 0;
+            }
+    }
+    ~MoviePlayer() { stop(); }
+
+private:
+    static pid_t spawnWithOutput(std::vector<std::string> argv, int out[2])
+    {
+        std::vector<char *> args;
+        for (std::string &a : argv)
+            args.push_back(a.data());
+        args.push_back(nullptr);
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        if (out[1] >= 0) {
+            posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+            posix_spawn_file_actions_addclose(&fa, out[0]);
+        }
+        pid_t pid = 0;
+        posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
+        posix_spawn_file_actions_destroy(&fa);
+        if (out[1] >= 0)
+            close(out[1]);
+        return pid;
+    }
+    void readFrames()
+    {
+        const size_t frameBytes = size_t(VideoWidth) * VideoHeight * 4;
+        char buf[65536];
+        for (;;) {
+            const ssize_t n = read(m_fd, buf, sizeof buf);
+            if (n > 0) {
+                m_buffer.append(buf, size_t(n));
+                continue;
+            }
+            if (n == 0) {   // the end
+                App::shared().later([this] {
+                    position = duration;
+                    stop();
+                    if (onEnd)
+                        onEnd();
+                });
+            }
+            break;
+        }
+        Image last;
+        while (m_buffer.size() >= frameBytes) {
+            Image f(VideoWidth, VideoHeight);
+            cairo_surface_t *s = f.surface();
+            cairo_surface_flush(s);
+            unsigned char *data = cairo_image_surface_get_data(s);
+            const int stride = cairo_image_surface_get_stride(s);
+            for (int y = 0; y < VideoHeight; ++y)
+                std::memcpy(data + y * stride, m_buffer.data() + size_t(y) * VideoWidth * 4, size_t(VideoWidth) * 4);
+            cairo_surface_mark_dirty(s);
+            m_buffer.erase(0, frameBytes);
+            last = f;
+        }
+        if (!last.isNull() && onFrame)
+            onFrame(last);
+    }
+    std::string m_path, m_buffer;
+    int m_fd = -1;
+    pid_t m_pid = 0, m_audio = 0;
+    double m_started = 0;
+};
+
+// PBMovieControllerView: 640 × 36 of white 0.102 at 0.7 over the movie's bottom; the play / pause
+// button (MovieController_Play, _Pause, _Down) in its first 40 points, the slider after it 10 from
+// the end (the MovieController_Well caps and fill, its knob)
+class MovieControllerView : public View {
+public:
+    bool playing = false;
+    double value = 0;   // 0 to 1
+    std::function<void()> onPlayPause;
+    std::function<void(double)> onSeek;
+    void draw(cairo_t *cr) override
+    {
+        fill(cr, bounds(), Color{0.102, 0.102, 0.102, 0.7});
+        const Image &b = art(std::string(playing ? "MovieController_Pause" : "MovieController_Play") + (m_buttonDown ? "_Down" : ""));
+        b.draw(cr, Point{std::floor((40 - b.width()) / 2), std::floor((frame().h - b.height()) / 2)});
+        const Rect well = wellRect();
+        const Image &l = art("MovieController_WellLeftCap"), &r = art("MovieController_WellRightCap"), &f = art("MovieController_WellFill");
+        const double wy = std::floor(well.y + (well.h - f.height()) / 2);
+        l.draw(cr, Point{well.x, wy});
+        f.draw(cr, Rect{well.x + l.width(), wy, well.w - l.width() - r.width(), double(f.height())});
+        r.draw(cr, Point{well.right() - r.width(), wy});
+        const Image &k = art(m_dragging ? "MovieController_Knob_Down" : "MovieController_Knob");
+        const double kx = well.x + (well.w - k.width()) * std::clamp(value, 0.0, 1.0);
+        k.draw(cr, Point{std::ceil(kx), std::ceil(well.y + (well.h - k.height()) / 2)});
+    }
+    void mouseDown(Event &e) override
+    {
+        if (e.location.x < 40) {
+            m_buttonDown = true;
+        } else if (wellRect().contains(e.location)) {
+            m_dragging = true;
+            seekTo(e.location.x);
+        }
+        setNeedsDisplay();
+    }
+    void mouseDragged(Event &e) override
+    {
+        if (m_dragging)
+            seekTo(e.location.x);
+    }
+    void mouseUp(Event &e) override
+    {
+        if (m_buttonDown && e.location.x < 40 && onPlayPause)
+            onPlayPause();
+        m_buttonDown = m_dragging = false;
+        setNeedsDisplay();
+    }
+
+private:
+    Rect wellRect() const { return {40, std::floor((frame().h - 21) / 2), frame().w - 40 - 10, 21}; }
+    void seekTo(double x)
+    {
+        const Rect w = wellRect();
+        value = std::clamp((x - w.x) / w.w, 0.0, 1.0);
+        if (onSeek)
+            onSeek(value);
+        setNeedsDisplay();
+    }
+    bool m_buttonDown = false, m_dragging = false;
+};
+
 class SlideView : public View {
 public:
     Library *library = nullptr;
@@ -790,6 +1107,37 @@ public:
         buildStillTab();
         m_countdown = m_bar->add<CountdownView>();
         m_countdown->setFrame({0, 0, 640, 61});
+        // MainMenu.nib's MovieRecording tab: the stop button at (298, 7), the timer at (15, 14)
+        m_movieTab = m_bar->add<View>();
+        m_movieTab->setFrame({0, 0, 640, 61});
+        auto *stop = m_movieTab->add<ImageButton>();
+        stop->setFrame({298, 61 - 7 - 45, 43, 45});
+        stop->normal = art("stopBtn");
+        stop->pressed = art("stopBtn_click");
+        stop->action = [this] { stopMovie(); };
+        m_timer = m_movieTab->add<RecordingTimerView>();
+        m_timer->setFrame({15, 61 - 14 - 32, 91, 32});
+        // the movie's controller over the video's bottom
+        m_controller = content->add<MovieControllerView>();
+        m_controller->setFrame({0, 480 - 36, 640, 36});
+        m_controller->setHidden(true);
+        m_controller->onPlayPause = [this] {
+            if (m_player.playing())
+                m_player.pause();
+            else
+                m_player.play();
+            updateController();
+        };
+        m_controller->onSeek = [this](double v) {
+            m_player.seek(v * m_player.duration);
+            updateController();
+        };
+        m_player.onFrame = [this](const Image &f) {
+            m_video->still = f;
+            m_video->setNeedsDisplay();
+            updateController();
+        };
+        m_player.onEnd = [this] { updateController(); };
 
         // the tray between its scroll buttons (26 x 96), the count under it
         m_previous = scrollButton("scroll_left", 0);
@@ -827,7 +1175,7 @@ public:
     }
 
 private:
-    enum class Tab { Live, Still, CountDown };
+    enum class Tab { Live, Still, CountDown, MovieRecording };
 
     ImageButton *scrollButton(const std::string &name, double x)
     {
@@ -904,6 +1252,7 @@ private:
         m_liveTab->setHidden(tab != Tab::Live);
         m_stillTab->setHidden(tab != Tab::Still);
         m_countdown->setHidden(tab != Tab::CountDown);
+        m_movieTab->setHidden(tab != Tab::MovieRecording);
         m_bar->setNeedsDisplay();
     }
 
@@ -911,7 +1260,7 @@ private:
     {
         const bool camera = m_camera.status() == Camera::On;
         // movies (PBQTMovieController, the Fez recorders) are not done: nothing to record with
-        m_shutter->setEnabled(camera && !m_developing && !m_recording && m_option->selected != 2);
+        m_shutter->setEnabled(camera && !m_developing && !m_recording);
         m_effects->setEnabled(camera);
         m_effects->on = m_mosaic;
         m_effects->leftEnabled = m_mosaic && m_page > 0;                 // -updateButtons:currentPage:isMosaic:
@@ -982,6 +1331,8 @@ private:
             }
         } else if (m_video->mode == VideoView::Live || m_video->mode == VideoView::FourUp) {
             m_video->display = m_fx.apply(m_effect, frame, m_xy);
+            if (m_recorder.recording())
+                m_recorder.frame(m_video->display);
         }
         m_video->setNeedsDisplay();
     }
@@ -1033,7 +1384,7 @@ private:
     // -takeSnapshot: Option takes it at once, Shift without the flash
     void takeSnapshot(unsigned modifiers)
     {
-        if (m_tray->isScrollingEndForNewPhoto() || m_recording || m_developing || m_camera.status() != Camera::On || m_option->selected == 2)
+        if (m_tray->isScrollingEndForNewPhoto() || m_recording || m_developing || m_camera.status() != Camera::On)
             return;
         if (m_mosaic || m_video->mode == VideoView::Still)
             showEffect(m_effect);
@@ -1045,7 +1396,9 @@ private:
             return;
         }
         // -[PBCountdownController start]: the counter down every 0.8 s, four times; then the picture
+        // (a movie: PBQTMovieCountdownView's video camera, then -[PBQTMovieController record:])
         selectTab(Tab::CountDown);
+        m_countdown->camera = m_option->selected == 2 ? "countdown-video" : "countdown-cam";
         m_countdown->counter = 4;
         const int serial = ++m_serial;
         for (int i = 1; i <= 4; ++i)
@@ -1058,10 +1411,46 @@ private:
                     record();
             });
     }
+    // -[PBQTMovieController record:]: the movie's file named, the recorder prepared, action.aiff played
+    // and, once it has, the recording and its timer started (-sound:didFinishPlaying:)
+    void startMovie()
+    {
+        m_movieName = m_library.newMovieName();
+        if (!m_recorder.start(m_library.root() + "/" + m_movieName)) {
+            cancelRecording();
+            return;
+        }
+        spawn({"sh", "-c", "pw-play '" + Assets::path(std::string(Bundle) + "/Contents/Resources/action.aiff") + "' 2>/dev/null || paplay '" +
+                               Assets::path(std::string(Bundle) + "/Contents/Resources/action.aiff") + "' 2>/dev/null"});
+        selectTab(Tab::MovieRecording);
+        m_timer->started = now();
+        const int serial = m_serial;
+        m_timerTick = App::shared().addTimer(0.1, true, [this, serial] {
+            if (serial != m_serial)
+                return;
+            m_timer->setNeedsDisplay();
+        });
+    }
+    // -[PBQTMovieController stopRecording:]: the timer stopped, the movie saved and given to the tray
+    void stopMovie()
+    {
+        if (!m_recorder.recording())
+            return;
+        if (m_timerTick)
+            App::shared().removeTimer(m_timerTick);
+        m_timerTick = 0;
+        m_timer->started = 0;
+        const std::string name = m_movieName;
+        m_recorder.stop([this, name](bool ok) { developed(ok && m_library.addMovie(name)); });
+    }
     void cancelRecording()
     {
         if (!m_recording)
             return;
+        if (m_recorder.recording()) {   // Escape while a movie records: it stops and is kept (-cancelRecording:)
+            stopMovie();
+            return;
+        }
         ++m_serial;
         m_recording = false;
         m_paused = false;
@@ -1074,6 +1463,10 @@ private:
     void record()
     {
         const int serial = m_serial;
+        if (m_option->selected == 2) {
+            startMovie();
+            return;
+        }
         if (m_option->selected == 1) {
             m_video->fourUp.clear();
             m_video->mode = VideoView::FourUp;
@@ -1144,16 +1537,30 @@ private:
             switchToVideo();
             return;
         }
-        // -[PBImagePickerController showAsset:]
+        // -[PBImagePickerController showAsset:]; a movie with its controller (MovieLayer)
         m_mosaic = false;
+        m_player.stop();
+        const bool movie = m_library.assets()[size_t(index)].movie;
+        m_controller->setHidden(!movie);
+        if (movie)
+            m_player.open(m_library.path(index));
+        updateController();
         m_video->still = m_library.fullImage(index);
         m_video->mode = VideoView::Still;
         m_video->setNeedsDisplay();
         selectTab(Tab::Still);
         refreshControls();
     }
+    void updateController()
+    {
+        m_controller->playing = m_player.playing();
+        m_controller->value = m_player.duration > 0 ? m_player.current() / m_player.duration : 0;
+        m_controller->setNeedsDisplay();
+    }
     void leaveStill()
     {
+        m_player.stop();
+        m_controller->setHidden(true);
         if (m_video->mode != VideoView::Still)
             return;
         m_video->still = Image();
@@ -1450,6 +1857,13 @@ private:
     EffectsButton *m_effects = nullptr;
     PageIndicator *m_pages = nullptr;
     CountdownView *m_countdown = nullptr;
+    View *m_movieTab = nullptr;
+    RecordingTimerView *m_timer = nullptr;
+    MovieControllerView *m_controller = nullptr;
+    MovieRecorder m_recorder;
+    MoviePlayer m_player;
+    std::string m_movieName;
+    int m_timerTick = 0;
     TrayView *m_tray = nullptr;
     Label *m_count = nullptr;
     FlashView *m_flash = nullptr;

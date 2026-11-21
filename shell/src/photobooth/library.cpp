@@ -216,10 +216,35 @@ void Library::save() const
         std::rename(tmp.c_str(), file.c_str());
 }
 
+namespace {
+
+// -[PBQTMovieAsset _loadPreviewImageOnMainThread]: the movie's poster, its first frame (ffmpeg's)
+Image moviePoster(const std::string &path)
+{
+    const char *cache = std::getenv("XDG_CACHE_HOME");
+    const std::string dir = (cache && *cache ? std::string(cache) : home() + "/.cache") + "/snowleopard/photobooth";
+    makePath(dir);
+    const std::string png = dir + "/" + fileName(path) + ".png";
+    if (!isFile(png) || modified(png) < modified(path)) {
+        const std::string cmd = "ffmpeg -loglevel quiet -y -i '" + path + "' -frames:v 1 '" + png + "' </dev/null";
+        if (std::system(cmd.c_str()) != 0)
+            return {};
+    }
+    return Image::load(png);
+}
+
+} // namespace
+
 void Library::loadPreview(Asset &asset) const
 {
-    if (asset.movie)
+    if (asset.movie) {
+        const Image poster = moviePoster(m_root + "/" + asset.files[0]);
+        if (!poster.isNull()) {
+            const Size s = scaledToFit(poster.size(), Size{160, 160});
+            asset.preview = poster.scaled(std::max(1, int(s.w)), std::max(1, int(s.h)));
+        }
         return;
+    }
     // -[PBImageAsset loadPreviewImage]: a thumbnail of 160 pixels at most
     auto small = [this](const std::string &name) {
         const Image full = Image::load(m_root + "/" + name, Size{160, 120});
@@ -250,7 +275,7 @@ std::string Library::newName(const std::string &templ, const std::string &suffix
     std::strftime(hour, sizeof hour, "%H.%M", &tm);
     std::snprintf(name, sizeof name, templ.c_str(), date, hour);
     std::string base = name;
-    for (int n = 2; isFile(m_root + "/" + base + suffix + ".jpg"); ++n)
+    for (int n = 2; isFile(m_root + "/" + base + suffix + ".jpg") || isFile(m_root + "/" + base + suffix + ".mov"); ++n)
         base = std::string(name) + " #" + std::to_string(n);
     return base;
 }
@@ -261,6 +286,24 @@ bool Library::addPhoto(const Image &photo)
     a.files = {newName("Photo on %s at %s", "") + ".jpg"};
     if (!saveJpeg(photo, m_root + "/" + a.files[0]))
         return false;
+    loadPreview(a);
+    m_assets.push_back(std::move(a));
+    save();
+    return true;
+}
+
+std::string Library::newMovieName() const
+{
+    return newName("Movie on %s at %s", "") + ".mov";
+}
+
+bool Library::addMovie(const std::string &name)
+{
+    if (!isFile(m_root + "/" + name))
+        return false;
+    Asset a;
+    a.files = {name};
+    a.movie = true;
     loadPreview(a);
     m_assets.push_back(std::move(a));
     save();
@@ -378,8 +421,10 @@ void Library::flip(int index)
 
 Image Library::fullImage(int index) const
 {
-    if (index < 0 || index >= int(m_assets.size()) || m_assets[index].movie)
+    if (index < 0 || index >= int(m_assets.size()))
         return {};
+    if (m_assets[index].movie)
+        return moviePoster(m_root + "/" + m_assets[index].files[0]);
     const Asset &a = m_assets[index];
     if (a.files.size() < 4)
         return Image::load(m_root + "/" + a.files[0]);
