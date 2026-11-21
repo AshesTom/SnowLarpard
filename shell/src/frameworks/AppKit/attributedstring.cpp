@@ -130,7 +130,7 @@ bool Style::operator==(const Style &o) const
 {
     return family == o.family && face == o.face && bold == o.bold && italic == o.italic && size == o.size && underline == o.underline &&
            strike == o.strike && coloured == o.coloured && (!coloured || (colour.r == o.colour.r && colour.g == o.colour.g && colour.b == o.colour.b)) &&
-           script == o.script && baseline == o.baseline && align == o.align && para == o.para;
+           script == o.script && baseline == o.baseline && align == o.align && para == o.para && link == o.link;
 }
 
 bool ParagraphStyle::operator==(const ParagraphStyle &o) const
@@ -307,7 +307,7 @@ void RichText::compact()
 RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string> &files)
 {
     RichText out;
-    enum Dest { Text, FontTable, ColorTable, Ignore, Graphic, Info };
+    enum Dest { Text, FontTable, ColorTable, Ignore, Graphic, Info, FieldInstruction };
     struct State {
         Style style;
         Dest dest = Text;
@@ -326,12 +326,17 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
     uint32_t highSurrogate = 0;
     TabStop::Kind tabKind = TabStop::Left;   // \tqr and the like, for the next \tx
     long slValue = 0;                        // \sl, for \slmult1 after it
+    std::string fieldInstruction;            // the last \fldinst's text (HYPERLINK "url")
     stack[0].style.size = 12;
 
     auto put = [&](uint32_t c) {
         State &s = stack.back();
         if (s.skip > 0) {
             --s.skip;
+            return;
+        }
+        if (s.dest == FieldInstruction) {
+            appendUtf8(fieldInstruction, c);
             return;
         }
         if (s.dest == FontTable) {
@@ -461,8 +466,29 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                     s.info = doc.property(word);
                 else if (word == "stylesheet" || word == "listtable" || word == "listoverridetable" ||
                          word == "expandedcolortbl" || word == "header" || word == "footer" || word == "pict" || word == "object" ||
-                         word == "fldinst" || word == "themedata" || word == "colorschememapping" || word == "latentstyles")
+                         word == "themedata" || word == "colorschememapping" || word == "latentstyles")
                     s.dest = Ignore;
+                else if (word == "field")
+                    fieldInstruction.clear();
+                else if (word == "fldinst")
+                    s.dest = FieldInstruction;
+                else if (word == "fldrslt") {
+                    // a HYPERLINK field's result: its text linked (NSRTFReader's NSLink)
+                    const size_t h = fieldInstruction.find("HYPERLINK");
+                    if (h != std::string::npos) {
+                        std::string url = fieldInstruction.substr(h + 9);
+                        const size_t q = url.find('"');
+                        if (q != std::string::npos) {
+                            const size_t e = url.find('"', q + 1);
+                            url = url.substr(q + 1, e == std::string::npos ? std::string::npos : e - q - 1);
+                        }
+                        while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+                            url.erase(0, 1);
+                        while (!url.empty() && (url.back() == ' ' || url.back() == '\t'))
+                            url.pop_back();
+                        s.style.link = url;
+                    }
+                }
                 else if (word == "NeXTGraphic")
                     s.dest = Graphic, graphicName.clear();
                 else if (word == "width" && s.dest == Graphic)
@@ -727,18 +753,42 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
     };
     bool first = true;
     Style cur;
+    std::string link;          // the field open, its URL
+    Style beforeLink;          // the attributes in force where it opened (its group's end restores them)
     bool paragraphStart = true;
     Alignment paraAlign = Alignment::Left;
     ParagraphStyle paraStyle;
     size_t attachment = 0;
     for (size_t i = 0; i < t.text.size();) {
         const Style &s = t.styleAt(i);
+        if (!link.empty() && s.link != link) {
+            // the field closed before a paragraph's words (its group's end would undo them)
+            body += "}}";
+            cur = beforeLink;
+            paraAlign = beforeLink.align;   // the paragraph as it was outside the group
+            paraStyle = beforeLink.para;
+            link.clear();
+        }
         if (paragraphStart && (first || s.align != paraAlign || s.para != paraStyle)) {
             body += std::string(first ? "" : "\n") + paragraphWords(s) + "\n";
             paraAlign = s.align;
             paraStyle = s.para;
         }
         paragraphStart = false;
+        // NSRTFWriter: a link's run in {\field{\*\fldinst{HYPERLINK "url"}}{\fldrslt …}}
+        if (s.link != link) {
+            link = s.link;
+            if (!link.empty()) {
+                std::string url;
+                for (char ch : link) {
+                    if (ch == '\\' || ch == '{' || ch == '}' || ch == '"')
+                        url += '\\';
+                    url += ch;
+                }
+                body += "{\\field{\\*\\fldinst{HYPERLINK \"" + url + "\"}}{\\fldrslt ";
+                beforeLink = cur;
+            }
+        }
         if (first || s != cur) {
             std::string w;
             if (first || s.postScriptName() != cur.postScriptName())
@@ -806,6 +856,8 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
             }
         }
     }
+    if (!link.empty())
+        body += "}}";
 
     std::string out = "{\\rtf1\\ansi\\ansicpg1252\\cocoartf1038\\cocoasubrtf360\n{\\fonttbl";
     for (size_t f = 0; f < fonts.size(); ++f)

@@ -66,6 +66,7 @@ struct Style {
     double baseline = 0;                 // points up (\up, \dn: Raise, Lower)
     Alignment align = Alignment::Left;   // its paragraph's
     ParagraphStyle para;                 // its paragraph's (the first character's decides)
+    std::string link;                    // NSLinkAttributeName: the URL ({\field{\*\fldinst{HYPERLINK "…"}}{\fldrslt …}})
 
     bool operator==(const Style &o) const;
     bool operator!=(const Style &o) const { return !(*this == o); }

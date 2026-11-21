@@ -1150,7 +1150,7 @@ bool Document::validate(const MainMenuItem &it, MenuValidation &v)
         a == "unscript:" || a == "raiseBaseline:" || a == "lowerBaseline:" || a == "copyFont:" || a == "alignLeft:" ||
         a == "alignCenter:" || a == "alignRight:" || a == "alignJustified:")
         return rich || (a == "copyFont:" && isRichText());
-    if (a == "chooseAndAttachFiles:" || a == "orderFrontSpacingPanel:")
+    if (a == "chooseAndAttachFiles:" || a == "orderFrontSpacingPanel:" || a == "orderFrontLinkPanel:")
         return rich;
     if (a == "runPageLayout:")
         return true;
@@ -1175,6 +1175,8 @@ void Document::perform(const MainMenuItem &it)
         chooseAndAttachFiles();
     else if (a == "runPageLayout:")
         runPageLayout();
+    else if (a == "orderFrontLinkPanel:")
+        TextRulerOptions::setLink(m_window.get(), tv);
     else if (a == "orderFrontSpacingPanel:")
         // NSTextView's: NSTextRulerOptions' spacing sheet over the window
         TextRulerOptions::setSpacing(m_window.get(), tv);

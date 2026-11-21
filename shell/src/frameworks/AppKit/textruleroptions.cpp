@@ -8,6 +8,7 @@
 #include <pango/pangocairo.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -105,7 +106,181 @@ void endSpacing()
     App::shared().later([gone] { delete gone; });
 }
 
+struct LinkSheet {
+    std::unique_ptr<Nib> nib;
+    Window *window = nullptr;
+    TextView *text = nullptr;
+    TextField *field = nullptr;
+};
+
+std::unique_ptr<LinkSheet> s_link;
+
+std::string trimmed(std::string s)
+{
+    const char *ws = " \t\n\r";
+    const size_t a = s.find_first_not_of(ws);
+    if (a == std::string::npos)
+        return {};
+    s.erase(0, a);
+    s.erase(s.find_last_not_of(ws) + 1);
+    return s;
+}
+
+bool startsWith(const std::string &s, const char *p) { return s.rfind(p, 0) == 0; }
+bool endsWith(const std::string &s, const std::string &p) { return s.size() >= p.size() && s.compare(s.size() - p.size(), p.size(), p) == 0; }
+
+void endLink(bool ok)
+{
+    if (!s_link)
+        return;
+    LinkSheet *gone = s_link.release();
+    const std::string typed = gone->field ? trimmed(gone->field->text) : std::string();
+    TextView *t = gone->text;
+    Sheet::end(gone->window);
+    App::shared().later([gone] { delete gone; });
+    if (!ok || !t)
+        return;
+    // -sheetDidEnd:returnCode:contextInfo:: NSLink added ("Edit Link") or removed ("Remove Link")
+    const std::string url = typed.empty() ? std::string() : TextRulerOptions::urlForString(typed);
+    t->changeStyle([url](Style &s) { s.link = url; });
+}
+
 } // namespace
+
+std::string TextRulerOptions::urlForString(const std::string &in)
+{
+    std::string s = trimmed(in);
+    if (s.find(':') == std::string::npos && !startsWith(s, ".")) {
+        const std::string host = s.substr(0, s.find('/'));
+        if (!host.empty() && (startsWith(host, "www.") || startsWith(host, "web.") || startsWith(host, "ftp.") ||
+                              endsWith(host, ".com") || endsWith(host, ".net") || endsWith(host, ".org") || endsWith(host, ".gov") ||
+                              endsWith(host, ".edu") || endsWith(host, ".mil")))
+            s = "http://" + s;
+    }
+    // URLWithString: refuses spaces and the like: percent escapes for them
+    std::string out;
+    for (unsigned char c : s) {
+        if (c <= ' ' || c == '"' || c == '<' || c == '>' || c == '\\' || c == '^' || c == '`' || c == '{' || c == '|' || c == '}' || c >= 0x7f) {
+            char buf[4];
+            std::snprintf(buf, sizeof buf, "%%%02X", c);
+            out += buf;
+        } else {
+            out += char(c);
+        }
+    }
+    return out;
+}
+
+void TextRulerOptions::setLink(Window *window, TextView *text)
+{
+    if (!window || !text || Sheet::isOpen(window))
+        return;
+    auto st = std::make_unique<LinkSheet>();
+    st->nib = std::make_unique<Nib>();
+    const std::string dir = RulerOptionsNib;
+    if (!st->nib->load(Assets::path(dir + "/keyedobjects.nib"), Assets::path(dir)))
+        return;
+    const int object = st->nib->outletObject("linkPanel");
+    if (object < 0)
+        return;
+    Size size;
+    View *content = st->nib->instantiateWindow(object, &size);
+    if (!content)
+        return;
+    Nib &nib = *st->nib;
+    st->window = window;
+    st->text = text;
+    st->field = nib.outlet<TextField>("linkField");
+
+    // -orderFrontLinkPanel:: the link where the selection is (all of it selected), else the text
+    const RichText &t = text->text();
+    size_t a = text->selectionStart(), b = text->selectionEnd();
+    std::string value;
+    const size_t probe = a < t.size() ? a : (a > 0 ? a - 1 : a);
+    if (probe < t.size() && !t.styleAt(probe).link.empty()) {
+        value = t.styleAt(probe).link;
+        if (a == b) {
+            while (a > 0 && t.styleAt(a - 1).link == value)
+                --a;
+            while (b < t.size() && t.styleAt(b).link == value)
+                ++b;
+            text->select(a, b);
+        }
+        // shown unescaped (stringByReplacingPercentEscapesUsingEncoding:)
+        std::string plain;
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '%' && i + 2 < value.size() && std::isxdigit((unsigned char)value[i + 1]) && std::isxdigit((unsigned char)value[i + 2])) {
+                plain += char(std::strtol(value.substr(i + 1, 2).c_str(), nullptr, 16));
+                i += 2;
+            } else {
+                plain += value[i];
+            }
+        }
+        value = plain;
+    } else if (a != b) {
+        std::string sel;
+        for (size_t i = a; i < b; ++i)
+            if (t.text.compare(i, 3, AttachmentCharacter) == 0)
+                i += 2;
+            else
+                sel += t.text[i];
+        value = trimmed(sel);
+    }
+    if (st->field) {
+        st->field->setText(value);
+        st->field->selectAll();
+    }
+    // the label's text is an attributed string with an RTF line break left in it: its first line
+    std::function<void(View *)> fixLabels = [&fixLabels](View *v) {
+        if (auto *l = dynamic_cast<Label *>(v)) {
+            const std::string t = l->text();
+            if (t.find('\n') != std::string::npos)
+                l->setText(t.substr(0, t.find('\n')));
+        }
+        for (View *c : v->subviews())
+            fixLabels(c);
+    };
+    fixLabels(content);
+    LinkSheet *s = st.get();
+    for (View *v : nib.withAction("confirmSheet:"))
+        if (auto *btn = dynamic_cast<Button *>(v)) {
+            btn->isDefault = true;
+            btn->action = [s] {
+                if (s_link.get() == s)
+                    endLink(true);
+            };
+        }
+    for (View *v : nib.withAction("cancelSheet:"))
+        if (auto *btn = dynamic_cast<Button *>(v))
+            btn->action = [s] {
+                if (s_link.get() == s)
+                    endLink(false);
+            };
+    for (View *v : nib.withAction("removeLink:"))
+        if (auto *btn = dynamic_cast<Button *>(v))
+            btn->action = [s] {
+                if (s_link.get() != s)
+                    return;
+                if (s->field)
+                    s->field->setText("");
+                endLink(true);
+            };
+    if (st->field)
+        st->field->onEnter = [s] {
+            if (s_link.get() == s)
+                endLink(true);
+        };
+
+    s_link = std::move(st);
+    Sheet::begin(window, content, size, 0, [] {
+        if (s_link) {
+            LinkSheet *gone = s_link.release();
+            App::shared().later([gone] { delete gone; });
+        }
+    });
+    if (s->field)
+        window->makeFirstResponder(s->field);
+}
 
 void TextRulerOptions::setSpacing(Window *window, TextView *text, std::function<void()> changed)
 {

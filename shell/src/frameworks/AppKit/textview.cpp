@@ -3,6 +3,7 @@
 
 #include "controls.h"
 #include "coreui.h"
+#include "panels.h"
 #include "rulerview.h"
 
 #include "foundation.h"
@@ -663,16 +664,18 @@ void TextView::drawGlyphs(cairo_t *cr, double top, double bottom)
                 }
                 continue;
             }
-            const Color c = st.coloured ? st.colour : Color::gray(0);
+            // a link in NSTextView's linkTextAttributes: blue, underlined
+            const bool linked = !st.link.empty();
+            const Color c = linked ? Color{0, 0, 1, 1} : st.coloured ? st.colour : Color::gray(0);
             const double y = baseline - rise(st);
             cairo_move_to(cr, x, y);
             pango_cairo_glyph_string_path(cr, run->item->analysis.font, run->glyphs);
             c.set(cr);
             fillTextPath(cr, st.size);
-            if (st.underline || st.strike) {
+            if (st.underline || st.strike || linked) {
                 PangoFontMetrics *m = pango_font_get_metrics(run->item->analysis.font, nullptr);
                 const double w = logical.width / double(PANGO_SCALE);
-                if (st.underline) {
+                if (st.underline || linked) {
                     const double t = std::max(1.0, pango_font_metrics_get_underline_thickness(m) / double(PANGO_SCALE));
                     const double pos = pango_font_metrics_get_underline_position(m) / double(PANGO_SCALE);
                     fill(cr, Rect{x, std::round(y - pos), w, std::round(t)}, c);
@@ -816,7 +819,8 @@ void TextView::insertText(const std::string &s)
     if (!editable)
         return;
     snapshot(true);
-    const Style typing = m_typing;
+    Style typing = m_typing;
+    typing.link.clear();   // NSTextView's typing attributes never carry the link
     const size_t a = selectionStart();
     m_text.erase(a, selectionEnd());
     m_text.insert(a, s, typing);
@@ -1026,6 +1030,11 @@ void TextView::mouseDown(Event &e)
         window()->makeFirstResponder(this);
     const size_t at = indexAt(Point{e.location.x / m_zoom, e.location.y / m_zoom});
     m_clickCount = e.clickCount;
+    // a click on a link follows it (-clickedOnLink:atIndex:: NSWorkspace opens the URL)
+    if (e.clickCount == 1 && !(e.modifiers & (Shift | Command)) && at < m_text.size() && !m_text.styleAt(at).link.empty()) {
+        Workspace::openFile(m_text.styleAt(at).link);
+        return;
+    }
     if (e.clickCount == 2) {
         size_t s = at, t = at;
         if (wordChar(m_text.text, at) || (at > 0 && wordChar(m_text.text, prevChar(m_text.text, at)))) {
