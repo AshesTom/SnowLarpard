@@ -30,6 +30,7 @@
 #include <cstring>
 #include <ctime>
 #include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <langinfo.h>
@@ -368,8 +369,27 @@ public:
     void print();
     void saveAsPDF();
     void chooseAndAttachFiles();
+    // NSDocument's autosaving (AppKit 10.6): the file the unsaved changes were last written to
+    const std::string &autosavedPath() const { return m_autosavedPath; }
+    // -[NSDocument _deleteAutosavedContents]: that file removed (saved, reverted, closed, discarded)
+    void deleteAutosavedContents();
+    // -[NSDocumentController reopenDocumentForURL:withContentsOfURL:error:]: read from the autosaved
+    // contents, the document's own file (none: untitled) kept, edited
+    bool reopen(const std::string &documentPath, const std::string &autosaved, std::string *error);
 
 private:
+    // -[NSDocument updateChangeCount:] (0x2689ae): a one-shot timer of autosavingDelay seconds once
+    // there are unautosaved changes; -_autosaveForTimer: (0x36e531) autosaves an edited document,
+    // else deletes the autosaved contents; a sheet up: again in 5 seconds
+    void scheduleAutosave();
+    void autosaveForTimer();
+    void autosave();
+    Type autosavingType() const;
+    std::string autosavingPath(Type type) const;
+    std::string m_autosavedPath;
+    bool m_unautosaved = false;
+    int m_autosaveTimer = 0;
+
     void build();
     void updateTitle();
     void setEdited(bool e);
@@ -432,6 +452,11 @@ public:
     std::vector<Document *> documents() const { return m_order; }
     void documentBecameMain(Document *d);
     void documentClosed(Document *d);
+    // -[NSDocumentController _writeAutoreopenRecords:] (0x26cf07): the documents with autosaved
+    // contents, for the next launch; none: the record removed
+    void writeAutoreopenRecords();
+    // -[NSDocumentController _autoreopenDocuments] (0x13f98a): true when some were reopened
+    bool autoreopenDocuments();
     void documentsChanged() { updateWindowsMenu(); }
     void noteRecent(const std::string &path);
     MainMenu &menu() { return m_menu; }
@@ -502,7 +527,11 @@ Document::Document(Controller &c, int untitled) : m_c(c), m_untitled(untitled)
     m_paper = sharedPaper();
 }
 
-Document::~Document() = default;
+Document::~Document()
+{
+    if (m_autosaveTimer)
+        App::shared().removeTimer(m_autosaveTimer);
+}
 
 std::string Document::displayName() const
 {
@@ -826,6 +855,152 @@ void Document::textChanged()
 {
     m_toggleUndo.reset();
     setEdited(true);
+    m_unautosaved = true;
+    scheduleAutosave();
+}
+
+// ---- autosaving: TextEdit binds -[NSDocumentController autosavingDelay] to values.AutosaveDelay
+// (-[DocumentController awakeFromNib] 0x100001832); the rest is NSDocument's (AppKit 10.6)
+
+namespace {
+
+// NSAutosavedInformationDirectory (~/Library/Autosave Information), in the XDG data folder
+std::string autosaveDirectory()
+{
+    const char *data = std::getenv("XDG_DATA_HOME");
+    return (data && *data ? std::string(data) : home() + "/.local/share") + "/snowleopard/Autosave Information";
+}
+
+// -[NSDocumentController _autosaveRecordPathCreateIfNecessary:] (0x13fdad): the bundle identifier's
+// record in that folder (AppKit's: a property list of bookmarks; here a path pair a line)
+std::string autoreopenRecordPath() { return autosaveDirectory() + "/com.apple.TextEdit.autoreopen"; }
+
+} // namespace
+
+void Document::scheduleAutosave()
+{
+    if (m_autosaveTimer || !m_unautosaved || prefInt("AutosaveDelay") <= 0)
+        return;
+    m_autosaveTimer = App::shared().addTimer(double(prefInt("AutosaveDelay")), false, [this] {
+        m_autosaveTimer = 0;
+        autosaveForTimer();
+    });
+}
+
+void Document::autosaveForTimer()
+{
+    if (m_closing || prefInt("AutosaveDelay") <= 0)
+        return;
+    if (Sheet::isOpen(m_window.get())) {
+        m_autosaveTimer = App::shared().addTimer(5, false, [this] {
+            m_autosaveTimer = 0;
+            autosaveForTimer();
+        });
+        return;
+    }
+    if (m_edited) {
+        autosave();
+    } else {
+        deleteAutosavedContents();
+        m_unautosaved = false;
+    }
+}
+
+Type Document::autosavingType() const
+{
+    // -[Document autosavingFileType] (0x100007e7c): RTFD when the rich text has attachments
+    if (m_type == Type::RTF && !textView()->text().attachments.empty())
+        return Type::RTFD;
+    return m_type;
+}
+
+std::string Document::autosavingPath(Type type) const
+{
+    // -[NSDocument _autosavingContentsURLWithFileNameExtension:] (0x373a9e): "<name> (Autosaved)"
+    // beside the document's file; untitled, "Unsaved TextEdit Document", "… 2"… in the autosave
+    // folder, the first not there
+    const std::string ext = type == Type::Plain ? "txt" : type == Type::RTFD ? "rtfd" : "rtf";
+    if (!m_path.empty()) {
+        std::string stem = fileName(m_path);
+        while (!stem.empty() && stem.back() == '/')
+            stem.pop_back();
+        if (const size_t dot = stem.find_last_of('.'); dot != std::string::npos && dot > 0)
+            stem.erase(dot);
+        return dirName(m_path) + "/" + format(docString("%@ (Autosaved)", "%@ (Autosaved)"), {stem}) + "." + ext;
+    }
+    const std::string dir = autosaveDirectory();
+    makePath(dir);
+    for (long n = 1;; ++n) {
+        std::string name = n > 1 ? docString("Unsaved %@ Document %ld", "Unsaved %1$@ Document %2$ld")
+                                 : docString("Unsaved %@ Document", "Unsaved %@ Document");
+        for (const char *count : {"%2$ld", "%ld"})
+            if (const size_t at = name.find(count); at != std::string::npos)
+                name.replace(at, std::strlen(count), std::to_string(n));
+        name = format(name, {"TextEdit"});
+        const std::string path = dir + "/" + name + "." + ext;
+        if (!std::filesystem::exists(path))
+            return path;
+    }
+}
+
+void Document::autosave()
+{
+    // -[NSDocument autosaveDocumentWithDelegate:didAutosaveSelector:contextInfo:] (0x36d341): the
+    // autosaved contents' file kept while its type stays the same
+    const Type type = autosavingType();
+    std::string path = m_autosavedPath;
+    const char *ext = type == Type::Plain ? "txt" : type == Type::RTFD ? "rtfd" : "rtf";
+    if (path.empty() || extension(path) != ext) {
+        deleteAutosavedContents();
+        path = autosavingPath(type);
+    }
+    // the document's own encoding and type are not the autosave's to change
+    const Type keepType = m_type;
+    const unsigned long long keepEncoding = m_encoding;
+    std::string error;
+    std::error_code ec;
+    if (type == Type::RTFD)
+        std::filesystem::remove_all(path, ec);
+    const bool ok = writeTo(path, type, &error);
+    m_type = keepType;
+    m_encoding = keepEncoding;
+    if (!ok) {
+        std::filesystem::remove_all(path, ec);
+        Alert::beginSheet(m_window.get(), m_c.appIcon(),
+                          format(docString("The document \\U201C%@\\U201D could not be autosaved. %@", "The document “%1$@” could not be autosaved. %2$@"),
+                                 {displayName(), ""}),
+                          error, {tr("OK")}, nullptr);
+        return;
+    }
+    m_autosavedPath = path;
+    m_unautosaved = false;
+    // -[NSDocumentController _noteAutosavedContentsOfDocument:] (0x375372)
+    m_c.writeAutoreopenRecords();
+}
+
+void Document::deleteAutosavedContents()
+{
+    if (m_autosaveTimer) {
+        App::shared().removeTimer(m_autosaveTimer);
+        m_autosaveTimer = 0;
+    }
+    if (m_autosavedPath.empty())
+        return;
+    std::error_code ec;
+    std::filesystem::remove_all(m_autosavedPath, ec);
+    m_autosavedPath.clear();
+    m_c.writeAutoreopenRecords();
+}
+
+bool Document::reopen(const std::string &documentPath, const std::string &autosaved, std::string *error)
+{
+    if (!read(autosaved, error))
+        return false;
+    m_path = documentPath;
+    m_autosavedPath = autosaved;
+    setEdited(true);
+    updateTitle();
+    return true;
 }
 
 // ---- Make Plain Text / Make Rich Text (-[DocumentWindowController toggleRich:], 0x10000f1ad)
@@ -1012,8 +1187,10 @@ void Document::perform(const MainMenuItem &it)
                                   return;
                               std::string error;
                               const std::string p = m_path;
-                              if (read(p, &error))
+                              if (read(p, &error)) {
                                   setEdited(false);
+                                  deleteAutosavedContents();
+                              }
                           });
     } else if (a == "performMiniaturize:")
         m_window->miniaturize();
@@ -1200,6 +1377,9 @@ void Document::save(bool as, std::function<void(bool)> done)
         m_path = path;
         m_transient = false;
         setEdited(false);
+        // -[NSDocument _updateAfterReadingFromOrWritingToURL:ofType:] (0x36dcf4)
+        m_unautosaved = false;
+        deleteAutosavedContents();
         updateTitle();
         m_c.noteRecent(path);
         if (done)
@@ -1329,6 +1509,7 @@ void Document::performClose(std::function<void(bool)> done)
 void Document::close()
 {
     m_closing = true;
+    deleteAutosavedContents();
     if (m_window) {
         m_window->onClose = nullptr;
         m_window->onKeyChanged = nullptr;
@@ -2034,13 +2215,71 @@ void Controller::openPanel()
                    true, [this](std::vector<std::string> files) { openFiles(files); });
 }
 
+void Controller::writeAutoreopenRecords()
+{
+    std::string records;
+    for (Document *d : m_order)
+        if (!d->autosavedPath().empty())
+            records += d->path() + "\t" + d->autosavedPath() + "\n";
+    std::error_code ec;
+    if (records.empty()) {
+        std::filesystem::remove(autoreopenRecordPath(), ec);
+        return;
+    }
+    makePath(autosaveDirectory());
+    writeFile(autoreopenRecordPath(), records);
+}
+
+bool Controller::autoreopenDocuments()
+{
+    // the documents autosaved when TextEdit last ended without closing them, edited again, each
+    // where its file was (untitled ones numbered anew)
+    std::ifstream in(autoreopenRecordPath());
+    std::string line;
+    bool any = false;
+    while (std::getline(in, line)) {
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos)
+            continue;
+        const std::string docPath = line.substr(0, tab), autosaved = line.substr(tab + 1);
+        if (!std::filesystem::exists(autosaved))
+            continue;
+        int n = 0;
+        if (docPath.empty()) {
+            n = 1;
+            while (std::find(m_untitledUsed.begin(), m_untitledUsed.end(), n) != m_untitledUsed.end())
+                ++n;
+            m_untitledUsed.push_back(n);
+        }
+        auto doc = std::make_unique<Document>(*this, n);
+        std::string error;
+        if (!doc->reopen(docPath, autosaved, &error)) {
+            Alert::run(m_icon,
+                       format(docString("The autosaved document \\U201C%@\\U201D could not be reopened. %@",
+                                        "The autosaved document “%1$@” could not be reopened. %2$@"),
+                              {fileName(autosaved), error}),
+                       "", {tr("OK")}, nullptr);
+            continue;
+        }
+        Document *d = doc.get();
+        m_documents.push_back(std::move(doc));
+        m_order.insert(m_order.begin(), d);
+        d->show(nextCascadePoint());
+        any = true;
+    }
+    if (any)
+        writeAutoreopenRecords();
+    return any;
+}
+
 void Controller::start(const std::vector<std::string> &files)
 {
     m_menu.publish();
     updateRecentMenu();
+    const bool reopened = autoreopenDocuments();
     if (!files.empty()) {
         openFiles(files);
-    } else {
+    } else if (!reopened) {
         // -[DocumentController openUntitledDocumentAndDisplay:error:] (0x100001966): the one opened at
         // launch (an 'oapp' or 'rapp' event) is transient
         newDocument(true);
@@ -2337,8 +2576,11 @@ void Controller::quit()
                [this](int b) {
                    if (b == 0)
                        reviewAndQuit(0);
-                   else if (b == 2)
+                   else if (b == 2) {
+                       for (Document *d : m_order)
+                           d->deleteAutosavedContents();
                        App::shared().quit();
+                   }
                });
 }
 
