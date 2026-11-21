@@ -8,6 +8,7 @@
 #include "appkit.h"
 #include "attributedstring.h"
 #include "controls.h"
+#include "fontpanel.h"
 #include "foundation.h"
 #include "mainmenu.h"
 #include "nib.h"
@@ -2314,6 +2315,13 @@ void Controller::start(const std::vector<std::string> &files)
 {
     m_menu.publish();
     updateRecentMenu();
+    // the font panel acts on the front document's text (NSFontManager's target: the key window's
+    // first responder), a rich one
+    FontPanel::setTarget([this]() -> TextView * {
+        for (Document *d : m_order)
+            return d->isRichText() && !d->isReadOnly() ? d->textView() : nullptr;
+        return nullptr;
+    });
     const bool reopened = autoreopenDocuments();
     if (!files.empty()) {
         openFiles(files);
@@ -2490,6 +2498,8 @@ bool Controller::validate(const MainMenuItem &it, MenuValidation &v)
         v.title = m_properties && m_properties->isVisible() ? "Hide Properties" : "Show Properties";
         return true;
     }
+    if (a == "orderFrontFontPanel:")
+        return true;   // NSFontManager's, always there
     if (a == "showHelp:")
         return Assets::exists(std::string(Bundle) + "/Contents/Resources/TextEdit.help/Contents/Resources/English.lproj/index.html");
     if (a == "openRecentDocument:" || a == "clearRecentDocuments:")
@@ -2529,6 +2539,8 @@ void Controller::perform(const MainMenuItem &it)
         return it.title.find("Line") != std::string::npos ? showLinePanel() : showPreferences();
     if (a == "toggleWindow:")
         return toggleProperties();
+    if (a == "orderFrontFontPanel:")
+        return FontPanel::show();
     if (a == "showHelp:")
         return Workspace::openFile(Assets::path(std::string(Bundle) + "/Contents/Resources/TextEdit.help/Contents/Resources/English.lproj/index.html"));
     if (a == "openRecentDocument:") {
