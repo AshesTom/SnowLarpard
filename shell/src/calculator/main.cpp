@@ -16,8 +16,10 @@
 #include "engine.h"
 #include "foundation.h"
 #include "mainmenu.h"
+#include "panels.h"
 #include "programmer.h"
 #include "text.h"
+#include "textview.h"
 #include "toolbar.h"
 
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -26,7 +28,15 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <fstream>
+#include <map>
 #include <memory>
+#include <sstream>
+#include <spawn.h>
+#include <sys/wait.h>
+
+extern char **environ;
 
 using namespace AK;
 using namespace Calculator;
@@ -120,10 +130,22 @@ public:
     std::string text, mode;
     std::string left;   // the Programmer view's: the number as an ASCII or Unicode character
     bool memory = false, parentheses = false;
+    // RPN (-[LCDController setRPNState:]): the stack table (RPNTableView, rows 18 high, in the
+    // nib's scroll view at (10, 33) from the box's bottom, 82 high) in place of the number: as many
+    // rows as the stack and x, at least 4, scrolled to its last (x); "RPN" under it (the nib's
+    // field at (144, 8))
+    bool rpn = false;
+    std::vector<std::string> rows;   // the top of the table first, x last
     LCD()
     {
         for (const char *n : {"topleft", "topmid", "topright", "leftmid", "mid", "rightmid", "bottomleft", "bottommid", "bottomright"})
             m_pieces.push_back(Image::load(res(std::string("lcd-") + n + ".tif")));
+    }
+    std::function<void(Event &)> onContextMenu;   // the nib's LCD menu: RPN, Large Type
+    void rightMouseDown(Event &e) override
+    {
+        if (onContextMenu)
+            onContextMenu(e);
     }
     void draw(cairo_t *cr) override
     {
@@ -150,7 +172,20 @@ public:
         TextStyle big;
         big.font = Font::system(14);
         big.align = Align::Right;
-        drawText(cr, text, Rect{10, h - 33 - 18, frame().w - 22, 18}, big);
+        if (rpn) {
+            // -[LCDController tableView:objectValueForTableColumn:row:]: the last row x, the
+            // others the stack (y over x), empty past it
+            cairo_save(cr);
+            cairo_rectangle(cr, 11, h - 34 - 80, frame().w - 22, 80);
+            cairo_clip(cr);
+            for (size_t k = 0; k < rows.size(); ++k) {
+                const double bottom = h - 34 - 18.0 * double(rows.size() - 1 - k);
+                drawText(cr, rows[k], Rect{10, bottom - 18, frame().w - 22, 18}, big);
+            }
+            cairo_restore(cr);
+        } else {
+            drawText(cr, text, Rect{10, h - 33 - 18, frame().w - 22, 18}, big);
+        }
         if (!left.empty()) {
             TextStyle l = big;
             l.align = Align::Left;
@@ -164,6 +199,8 @@ public:
             drawText(cr, "( )", Rect{82, h - 8 - 15, 28, 15}, small);
         if (!mode.empty())
             drawText(cr, mode, Rect{109, h - 8 - 15, 30, 15}, small);
+        if (rpn)
+            drawText(cr, tr("RPN"), Rect{144, h - 8 - 15, 43, 15}, small);
     }
 
 private:
@@ -352,6 +389,522 @@ std::string pasteText()
     return out;
 }
 
+
+// ---- Large Type (-[LCDController drawLargeType:], CustomWindow, CustomView)
+//
+// The number shown (0 when it is 0) in white bold system type, sized so that it is the screen's
+// width less 160 at most, 200 points at most (contentRectForString:), in a window as tall as the
+// type's size and its width plus 60, centred on the screen; the view a black rounded rectangle at
+// 0.64 (corners 20) under the text, with a shadow. CustomWindow: borderless, at the status level,
+// gone at a key, a click, or when another window becomes key.
+class LargeTypeView : public View {
+public:
+    std::string value;
+    double size = 72;
+    void draw(cairo_t *cr) override
+    {
+        const double w = frame().w, h = frame().h, r = 20;
+        // the corners: no alpha channel to leave them clear, black as the rest at the window's 0.64
+        cairo_set_source_rgb(cr, 0, 0, 0);
+        cairo_paint(cr);
+        cairo_new_path(cr);
+        cairo_arc(cr, w - r, r, r, -M_PI / 2, 0);
+        cairo_arc(cr, w - r, h - r, r, 0, M_PI / 2);
+        cairo_arc(cr, r, h - r, r, M_PI / 2, M_PI);
+        cairo_arc(cr, r, r, r, M_PI, 1.5 * M_PI);
+        cairo_close_path(cr);
+        cairo_set_source_rgb(cr, 0, 0, 0);
+        cairo_fill(cr);
+        TextStyle t;
+        t.font = Font::boldSystem(size);
+        t.align = Align::Center;
+        t.elide = false;
+        t.color = Color::gray(0, 0.5);
+        drawText(cr, value, Rect{1, -2, w, h}, t);   // the shadow
+        t.color = Color::gray(255);
+        drawText(cr, value, Rect{0, -3, w, h}, t);
+    }
+    void mouseDown(Event &) override
+    {
+        if (onDismiss)
+            onDismiss();
+    }
+    std::function<void()> onDismiss;
+};
+
+class LargeType {
+public:
+    void show(const std::string &value)
+    {
+        const Rect screen = App::shared().visibleFrame();
+        // contentRectForString:: measured at 72, the size the screen's width less 160 allows
+        double size = (screen.w - 100 - 60) * 72 / std::max(1.0, textWidth(value, Font::boldSystem(72)));
+        if (size > 200)
+            size = 200;
+        const double width = textWidth(value, Font::boldSystem(size)) + 60;
+        m_window = std::make_unique<Window>(Size{width, size}, "Large Type");
+        m_window->setBorderless();
+        m_window->setFloating(true);
+        // AquaKit's windows have no alpha channel: the window at 0.64 as a whole rather than its
+        // background alone
+        m_window->setAlphaValue(0.64);
+        auto *v = m_window->contentView()->add<LargeTypeView>();
+        v->setFrame({0, 0, width, size});
+        v->value = value;
+        v->size = size;
+        v->onDismiss = [this] { dismiss(); };
+        m_window->onUnhandledKey = [this](Event &) { dismiss(); };
+        m_window->onKeyChanged = [this](bool key) {
+            if (!key)
+                dismiss();
+        };
+        m_window->moveTo({screen.x + screen.w / 2 - width / 2, screen.y + screen.h / 2 - size / 2});
+        m_window->show();
+    }
+    void dismiss()
+    {
+        if (m_window)
+            App::shared().later([this] { m_window.reset(); });
+    }
+
+private:
+    std::unique_ptr<Window> m_window;
+};
+
+// ---- The paper tape (PaperTapeController, Calculator.nib's window: 228 x 267, its text view in a
+// scroll view at (10, 32) 208 x 225, Clear at (161, 8) 58 x 16 in Lucida Grande 9)
+class PaperTape {
+public:
+    std::function<void(bool shown)> onShownChanged;
+    bool isShown() const { return m_window && m_window->isVisible(); }
+    bool hasText() const { return !m_text.empty(); }
+    const std::string &text() const { return m_text; }
+
+    // -setCurrentEquation:: the tape's last line becomes the equation
+    void setCurrentEquation(const std::string &eq)
+    {
+        const size_t nl = m_text.rfind('\n');
+        m_text = (nl == std::string::npos ? std::string() : m_text.substr(0, nl + 1)) + eq;
+        update();
+    }
+    // -completeEquationWithResult:: "\n=%@", then -startNewEquation: "\n\n"
+    void completeEquation(const std::string &result)
+    {
+        m_text += "\n=" + result + "\n\n";
+        update();
+    }
+    void clear()
+    {
+        m_text.clear();
+        update();
+    }
+
+    void show(Window *parent)
+    {
+        if (!m_window) {
+            // the nib's style 263: textured (one gradient with the title bar), closable, miniaturizable;
+            // at the normal level (-awakeFromNib)
+            m_window = std::make_unique<Window>(Size{228, 267}, "Paper Tape");
+            m_window->setRoundedBottomCorners(true);
+            m_window->setUnifiedToolbarHeight(267);
+            View *root = m_window->contentView();
+            root->add<Background>()->setFrame({0, 0, 228, 267});
+            m_scroll = root->add<TextScrollView>();
+            m_scroll->setFrame({10, 267 - 32 - 225, 208, 225});
+            m_scroll->textView()->editable = false;
+            auto *clear = root->add<Button>("Clear", Button::Push);
+            clear->small = true;
+            clear->setFrame({161, 267 - 8 - 16, 58, 16});
+            clear->action = [this] { this->clear(); };
+            m_window->onClose = [this] {
+                // -windowWillClose:: hidden, the menu's title back to Show Paper Tape
+                Settings("calculator").set("PaperTapeVisibleDefaultsKey", false);
+                if (onShownChanged)
+                    onShownChanged(false);
+            };
+            update();
+        }
+        // -adjustTapeWindowPosition:: 20 points right of the calculator
+        if (parent) {
+            const AK::Point p = parent->screenOrigin();
+            m_window->moveTo({p.x + parent->size().w + 20, p.y});
+        }
+        m_window->show();
+        Settings("calculator").set("PaperTapeVisibleDefaultsKey", true);
+        if (onShownChanged)
+            onShownChanged(true);
+    }
+    void hide()
+    {
+        if (!m_window)
+            return;
+        m_window->close();
+    }
+
+    // -saveTape:: the save panel with "tape.txt", the text written as UTF-8
+    void save()
+    {
+        const char *home = std::getenv("HOME");
+        SavePanel::run("Save Tape As", std::string(home ? home : "") + "/Documents/" + tr("tapeSavedFileName"), {},
+                       [text = m_text](std::string path) {
+                           if (path.empty())
+                               return;
+                           std::ofstream f(path, std::ios::binary);
+                           f << text;
+                       });
+    }
+    // -printTape:: NSPrintOperation over the text view, not centred; here the text given to lp
+    void print()
+    {
+        char tmpl[] = "/tmp/calculator-tape-XXXXXX";
+        const int fd = mkstemp(tmpl);
+        if (fd < 0)
+            return;
+        if (FILE *f = fdopen(fd, "w")) {
+            std::fputs(m_text.c_str(), f);
+            std::fclose(f);
+        }
+        std::vector<std::string> argv = {"lp", "-t", "Calculator", tmpl};
+        std::vector<char *> args;
+        for (std::string &a : argv)
+            args.push_back(a.data());
+        args.push_back(nullptr);
+        pid_t pid = 0;
+        if (posix_spawnp(&pid, "lp", nullptr, nullptr, args.data(), environ) == 0) {
+            const std::string file = tmpl;
+            App::shared().addTimer(5, false, [pid, file] {
+                waitpid(pid, nullptr, WNOHANG);
+                std::remove(file.c_str());
+            });
+        } else {
+            std::remove(tmpl);
+        }
+    }
+
+private:
+    void update()
+    {
+        if (!m_scroll)
+            return;
+        Style st;
+        st.family = "Lucida Grande";
+        st.size = 10;
+        TextView *tv = m_scroll->textView();
+        tv->setText(fromPlainText(m_text, st));
+        tv->scrollTo(tv->maxScrollOffset());   // moveToEndOfDocument:
+        tv->setNeedsDisplay();
+    }
+    std::string m_text;
+    std::unique_ptr<Window> m_window;
+    TextScrollView *m_scroll = nullptr;
+};
+
+// ---- Conversions (ConversionController, ConversionSheet.nib, CalcConversion)
+//
+// ConversionCategories.plist's categories in the Convert menu, sorted by their names (UnitNames),
+// each "…" (prepareConversion:); the sheet (326 x 187): Convert: the category, From: and To: their
+// units (UnitNames' names, sorted), the last conversion of the category chosen again; Convert
+// (executeConversion:): the number shown times ConversionsFromBase's factor for the unit from, times
+// ConversionsToBase's for the unit to (temperature: their operations, in turn), worked by a fresh
+// RPNEngine (-[BasicAdvancedController handleConversion:]: enter, the number, the operator); currency
+// by FinancialRates.xml's rates from the dollar (the rate to, times one over the rate from), "Last
+// Updated:" its timestamp. The conversion goes first in Recent Conversions (20 at most, kept in
+// RecentConversionsDefaultsKey_2), "%@ to %@".
+struct Conversion {
+    std::string type, from, to;
+    bool operator==(const Conversion &o) const { return type == o.type && from == o.from && to == o.to; }
+};
+
+class Conversions {
+public:
+    Conversions()
+    {
+        m_categories = readStringArray(res("ConversionCategories.plist"));
+        m_from = readTable(res("ConversionsFromBase.plist"));
+        m_to = readTable(res("ConversionsToBase.plist"));
+        loadCurrency();
+        Settings prefs("calculator");
+        std::stringstream ss(prefs.string("RecentConversionsDefaultsKey_2", ""));
+        for (std::string line; std::getline(ss, line, ';');) {
+            const size_t a = line.find('|'), b = line.find('|', a + 1);
+            if (a != std::string::npos && b != std::string::npos)
+                m_recent.push_back({line.substr(0, a), line.substr(a + 1, b - a - 1), line.substr(b + 1)});
+        }
+    }
+
+    static std::string unitName(const std::string &key) { return Assets::tr(Bundle, "UnitNames", key, key); }
+
+    std::vector<std::string> sortedCategories() const
+    {
+        std::vector<std::string> c = m_categories;
+        std::sort(c.begin(), c.end(), [](const std::string &a, const std::string &b) { return lower(unitName(a)) < lower(unitName(b)); });
+        return c;
+    }
+    // the units of a category, as the popups list them: (their key, their title)
+    std::vector<std::pair<std::string, std::string>> units(const std::string &type) const
+    {
+        std::vector<std::pair<std::string, std::string>> out;
+        if (type == "currency") {
+            for (const auto &[code, rate] : m_rates)
+                out.push_back({code, currencyName(code)});
+            std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return lower(a.second) < lower(b.second); });
+            return out;
+        }
+        auto it = m_from.find(type);
+        if (it == m_from.end())
+            return out;
+        for (const auto &[unit, ops] : it->second)
+            out.push_back({unit, unitName(unit)});
+        std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return lower(a.second) < lower(b.second); });
+        return out;
+    }
+
+    // executeConversion:'s operations: (operator, number) pairs
+    std::vector<std::pair<std::string, std::string>> operations(const Conversion &c) const
+    {
+        std::vector<std::pair<std::string, std::string>> ops;
+        if (c.type == "currency") {
+            auto f = m_rates.find(c.from), t = m_rates.find(c.to);
+            if (f == m_rates.end() || t == m_rates.end() || std::strtold(f->second.c_str(), nullptr) == 0)
+                return ops;
+            char one[64];
+            std::snprintf(one, sizeof one, "%.16Lg", 1 / std::strtold(f->second.c_str(), nullptr));
+            ops.push_back({"*", t->second});
+            ops.push_back({"*", one});
+            return ops;
+        }
+        auto pairs = [](const std::vector<std::string> &v) {
+            std::vector<std::pair<std::string, std::string>> out;
+            if (v.size() == 1)
+                out.push_back({"*", v[0]});
+            for (size_t i = 0; i + 1 < v.size(); i += 2)
+                out.push_back({v[i], v[i + 1]});
+            return out;
+        };
+        auto look = [](const auto &table, const std::string &type, const std::string &unit) -> std::vector<std::string> {
+            auto t = table.find(type);
+            if (t == table.end())
+                return {};
+            auto u = t->second.find(unit);
+            return u == t->second.end() ? std::vector<std::string>{} : u->second;
+        };
+        for (const auto &p : pairs(look(m_from, c.type, c.from)))
+            ops.push_back(p);
+        for (const auto &p : pairs(look(m_to, c.type, c.to)))
+            ops.push_back(p);
+        return ops;
+    }
+
+    // -[CalcConversion localizedTitle]
+    std::string title(const Conversion &c) const
+    {
+        const bool money = c.type == "currency";
+        std::string t = tr("%@ to %@");
+        const std::string a = money ? currencyName(c.from) : unitName(c.from), b = money ? currencyName(c.to) : unitName(c.to);
+        const size_t p = t.find("%@");
+        if (p != std::string::npos)
+            t.replace(p, 2, a);
+        const size_t q = t.find("%@", p == std::string::npos ? 0 : p + a.size());
+        if (q != std::string::npos)
+            t.replace(q, 2, b);
+        return t;
+    }
+
+    const std::vector<Conversion> &recent() const { return m_recent; }
+    // -addRecentConversion:
+    void addRecent(const Conversion &c)
+    {
+        auto it = std::find(m_recent.begin(), m_recent.end(), c);
+        if (it == m_recent.begin() && it != m_recent.end())
+            return;
+        if (it != m_recent.end())
+            m_recent.erase(it);
+        m_recent.insert(m_recent.begin(), c);
+        if (m_recent.size() > 20)
+            m_recent.pop_back();
+        save();
+    }
+    void clearRecent()
+    {
+        m_recent.clear();
+        save();
+    }
+    const Conversion *lastOfType(const std::string &type) const
+    {
+        for (const Conversion &c : m_recent)
+            if (c.type == type)
+                return &c;
+        return nullptr;
+    }
+    std::string ratesDate() const
+    {
+        // the timestamp of FinancialRates.xml, as the sheet's "Last Updated: 01/20/2009"
+        if (!m_timestamp)
+            return {};
+        char buf[32];
+        const time_t t = time_t(m_timestamp);
+        std::strftime(buf, sizeof buf, "%m/%d/%Y", std::localtime(&t));
+        return tr("last updated") + buf;
+    }
+
+    static std::string currencyName(const std::string &code)
+    {
+        // NSLocale's displayNameForKey:NSLocaleCurrencyCode for the rates' currencies (English)
+        static const std::map<std::string, std::string> names = {
+            {"AED", "UAE Dirham"}, {"AUD", "Australian Dollar"}, {"BHD", "Bahraini Dinar"}, {"BND", "Brunei Dollar"},
+            {"BRL", "Brazilian Real"}, {"CAD", "Canadian Dollar"}, {"CHF", "Swiss Franc"}, {"CLP", "Chilean Peso"},
+            {"CNY", "Chinese Yuan Renminbi"}, {"CYP", "Cyprus Pound"}, {"CZK", "Czech Republic Koruna"}, {"DKK", "Danish Krone"},
+            {"EUR", "Euro"}, {"GBP", "British Pound Sterling"}, {"HKD", "Hong Kong Dollar"}, {"HUF", "Hungarian Forint"},
+            {"IDR", "Indonesian Rupiah"}, {"ILS", "Israeli New Sheqel"}, {"INR", "Indian Rupee"}, {"ISK", "Icelandic Krona"},
+            {"JPY", "Japanese Yen"}, {"KRW", "South Korean Won"}, {"KWD", "Kuwaiti Dinar"}, {"KZT", "Kazakhstan Tenge"},
+            {"LKR", "Sri Lanka Rupee"}, {"MTL", "Maltese Lira"}, {"MUR", "Mauritius Rupee"}, {"MXN", "Mexican Peso"},
+            {"MYR", "Malaysian Ringgit"}, {"NOK", "Norwegian Krone"}, {"NPR", "Nepalese Rupee"}, {"NZD", "New Zealand Dollar"},
+            {"OMR", "Rial Omani"}, {"PKR", "Pakistan Rupee"}, {"QAR", "Qatari Rial"}, {"RUB", "Russian Ruble"},
+            {"SAR", "Saudi Riyal"}, {"SEK", "Swedish Krona"}, {"SGD", "Singapore Dollar"}, {"SKK", "Slovak Koruna"},
+            {"THB", "Thai Baht"}, {"TWD", "New Taiwan Dollar"}, {"USD", "US Dollar"}, {"VEB", "Venezuelan Bolivar"},
+            {"ZAR", "South African Rand"},
+        };
+        auto it = names.find(code);
+        return it == names.end() ? code : it->second;
+    }
+
+private:
+    static std::string lower(std::string s)
+    {
+        for (char &c : s)
+            c = char(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    }
+    static std::string slurp(const std::string &path)
+    {
+        std::ifstream f(path, std::ios::binary);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        return ss.str();
+    }
+    // the XML property lists: <array> of <string>, and <dict> of <dict> of <string> or <array>
+    static std::vector<std::string> readStringArray(const std::string &path)
+    {
+        std::vector<std::string> out;
+        const std::string x = slurp(path);
+        for (size_t at = 0; (at = x.find("<string>", at)) != std::string::npos;) {
+            const size_t e = x.find("</string>", at);
+            out.push_back(x.substr(at + 8, e - at - 8));
+            at = e;
+        }
+        return out;
+    }
+    using Table = std::map<std::string, std::map<std::string, std::vector<std::string>>>;
+    static Table readTable(const std::string &path)
+    {
+        Table t;
+        const std::string x = slurp(path);
+        size_t at = x.find("<dict>");
+        if (at == std::string::npos)
+            return t;
+        at += 6;
+        auto token = [&](size_t &p) -> std::pair<std::string, std::string> {   // (tag, contents)
+            p = x.find('<', p);
+            if (p == std::string::npos)
+                return {};
+            const size_t e = x.find('>', p);
+            std::string tag = x.substr(p + 1, e - p - 1);
+            p = e + 1;
+            if (tag == "key" || tag == "string") {
+                const size_t c = x.find("</" + tag + ">", p);
+                std::string v = x.substr(p, c - p);
+                p = c + tag.size() + 3;
+                return {tag, v};
+            }
+            return {tag, {}};
+        };
+        std::string category, unit;
+        int depth = 1;
+        while (depth > 0) {
+            auto [tag, v] = token(at);
+            if (tag.empty())
+                break;
+            if (tag == "dict") {
+                ++depth;
+            } else if (tag == "/dict") {
+                --depth;
+            } else if (tag == "key") {
+                (depth == 1 ? category : unit) = v;
+            } else if (tag == "string" && depth == 2) {
+                t[category][unit].push_back(v);
+            }
+        }
+        return t;
+    }
+    void loadCurrency()
+    {
+        // FinancialRates.xml: /response/result[@timestamp]/list/conversion: from USD, to, convertedamount
+        const std::string x = slurp(res("FinancialRates.xml"));
+        const size_t ts = x.find("timestamp=\"");
+        if (ts != std::string::npos)
+            m_timestamp = std::atol(x.c_str() + ts + 11);
+        for (size_t at = 0; (at = x.find("<conversion>", at)) != std::string::npos;) {
+            const size_t end = x.find("</conversion>", at);
+            auto field = [&](const std::string &name) {
+                const size_t a = x.find("<" + name + ">", at);
+                if (a == std::string::npos || a > end)
+                    return std::string();
+                const size_t b = x.find("</" + name + ">", a);
+                return x.substr(a + name.size() + 2, b - a - name.size() - 2);
+            };
+            const std::string to = field("to"), amount = field("convertedamount");
+            if (!to.empty() && !amount.empty())
+                m_rates[to] = amount;
+            at = end;
+        }
+    }
+    void save()
+    {
+        std::string out;
+        for (const Conversion &c : m_recent)
+            out += (out.empty() ? "" : ";") + c.type + "|" + c.from + "|" + c.to;
+        Settings("calculator").set("RecentConversionsDefaultsKey_2", out);
+    }
+    std::vector<std::string> m_categories;
+    Table m_from, m_to;
+    std::map<std::string, std::string> m_rates;
+    long m_timestamp = 0;
+    std::vector<Conversion> m_recent;
+};
+
+// ---- Speech (SpeechController): what a key says (its Functions.xml speechName, or Speakable.plist's
+// word), the totals; NSSpeechSynthesizer here espeak-ng or spd-say when there is one. Only in English.
+class Speech {
+public:
+    bool buttons = false, total = false;
+    static bool available() { return Workspace::inPath("espeak-ng") || Workspace::inPath("spd-say") || Workspace::inPath("espeak"); }
+    static void say(std::string text)
+    {
+        if (text.empty())
+            return;
+        // the speech commands embedded in the names ("[[emph -]] equals, ")
+        for (size_t a; (a = text.find("[[")) != std::string::npos;) {
+            const size_t b = text.find("]]", a);
+            text.erase(a, b == std::string::npos ? std::string::npos : b + 2 - a);
+        }
+        const char *prog = Workspace::inPath("espeak-ng") ? "espeak-ng" : Workspace::inPath("spd-say") ? "spd-say" : "espeak";
+        std::vector<std::string> argv = {prog, text};
+        std::vector<char *> args;
+        for (std::string &a : argv)
+            args.push_back(a.data());
+        args.push_back(nullptr);
+        pid_t pid = 0;
+        if (posix_spawnp(&pid, prog, nullptr, nullptr, args.data(), environ) == 0)
+            App::shared().addTimer(10, false, [pid] { waitpid(pid, nullptr, WNOHANG); });
+    }
+    static std::string speakable(const std::string &key)
+    {
+        static const std::map<std::string, std::string> words = Assets::plistStrings(std::string(Bundle) + "/Contents/Resources/Speakable.plist");
+        auto it = words.find(key);
+        return it == words.end() ? key : it->second;
+    }
+};
+
 class CalculatorWindow {
 public:
     CalculatorWindow()
@@ -367,6 +920,25 @@ public:
         m_separators = prefs.boolean("ShowSeparators", false);
         m_engine.load(Assets::path(std::string(PlugIn) + "/Contents/Resources/Functions.xml"));
         m_engine.beep = [] { std::fputc('\a', stderr); };
+        m_engine.tapePrecision = m_decimals;
+        m_engine.onTapeEquation = [this](const std::string &eq) { m_tape.setCurrentEquation(eq); };
+        m_engine.onTapeResult = [this](const std::string &r) { m_tape.completeEquation(r); };
+        // SpeechController: SpeaksButtonPressedDefaultsKey, SpeaksTotalDefaultsKey
+        m_speech.buttons = prefs.boolean("SpeaksButtonPressedDefaultsKey", false);
+        m_speech.total = prefs.boolean("SpeaksTotalDefaultsKey", false);
+        m_engine.onSpeakButton = [this](const std::string &name) {
+            if (m_speech.buttons && m_view != ProgrammerView)
+                Speech::say(Speech::speakable(name));
+        };
+        m_engine.onSpeakTotal = [this](const std::string &total) {
+            if (m_speech.total && m_view != ProgrammerView)
+                Speech::say(total);
+        };
+        // -[CalculatorController toggleRPNMode:]'s RPNDefaultsKey
+        m_rpn = prefs.boolean("RPNDefaultsKey", false);
+        m_engine.setRPN(m_rpn && m_view != ProgrammerView);
+        m_programmer.setRPN(m_rpn && m_view == ProgrammerView);
+        m_tape.onShownChanged = [](bool) {};
 
         m_window = std::make_unique<Window>(contentSize(), "Calculator", Window::Titled);
         m_window->setIcon(Image::load(res("Calculator.icns"), {128, 128}));
@@ -377,15 +949,25 @@ public:
         build();
         loadMenus();
         m_window->show();
+        if (prefs.boolean("PaperTapeVisibleDefaultsKey", false))
+            App::shared().later([this] { m_tape.show(m_window.get()); });
     }
 
 private:
+    // RPN (-[LCDController _showRegRPNView], _showWideRPNView): Basic's LCD 76 taller with the
+    // stack and its four keys under it (the window 111 taller); Scientific's ("wide") 76 taller and
+    // 52 narrower, the keys in a column at its right
+    bool rpnShown() const { return m_rpn; }   // the three views support it (supportsRPN)
+    bool rpnWide() const { return m_view != BasicView; }
+    double rpnExtra() const { return rpnShown() ? (rpnWide() ? 76 : 111) : 0; }
+    double displayHeight() const { return DisplayHeight + (rpnShown() ? 76 : 0); }
+
     Size contentSize() const
     {
         if (m_view == ProgrammerView)
-            return {ProgrammerWidth + 14, programmerHeight() + DisplayHeight + 8};
+            return {ProgrammerWidth + 14, programmerHeight() + DisplayHeight + 8 + rpnExtra()};
         const double boxes = BasicWidth + (m_view == ScientificView ? ScientificWidth : 0);
-        return {boxes + 14, BoxHeight + DisplayHeight + 8};
+        return {boxes + 14, BoxHeight + DisplayHeight + 8 + rpnExtra()};
     }
 
     // The nib's segmented controls' labels: Lucida Grande 11, white on the selected (dark) segment
@@ -420,6 +1002,8 @@ private:
             k->title = {d.title};
             k->fontSize = d.font;
             k->code = d.tag ? 1000 + d.tag : 2000;
+            if (rpnShown() && d.tag == PEquals)
+                k->title = {tr("enter")};   // -[HexadecimalController setRPNMode:]
             k->action = [this, k] { pressProgrammer(k); };
             m_keys.push_back(k);
         }
@@ -475,7 +1059,26 @@ private:
         auto *bg = root->add<Background>();
         bg->setFrame({0, 0, s.w, s.h});
         m_lcd = root->add<LCD>();
-        m_lcd->setFrame({9, 0, s.w - 18, DisplayHeight});
+        const bool wide = rpnShown() && rpnWide();
+        m_lcd->setFrame({9, 0, s.w - 18 - (wide ? 52 : 0), displayHeight()});
+        m_lcd->onContextMenu = [this](Event &e) { contextMenu(e); };
+        if (rpnShown()) {
+            // Calculator.nib's RPN keys: x↔y (tag 80), R↓ (81), R↑ (82), drop (83); Basic's in a row
+            // under the LCD ((-1, -35) from it, 49 x 30 at 2, 52, 102, 152), the wide view's in a
+            // column at the LCD's right (52 x 128, the keys at 96, 64, 32, 0 from its bottom)
+            const std::pair<const char *, int> keys[] = {{"x↔y", RPNExchange}, {"R↓", RPNRollDown}, {"R↑", RPNRollUp}, {"drop", RPNDrop}};
+            for (int i = 0; i < 4; ++i) {
+                auto *k = root->add<Key>();
+                if (wide)
+                    k->setFrame({9 + m_lcd->frame().w + 1, 2 + 32.0 * i, 49, 30});
+                else
+                    k->setFrame({8 + 2 + 50.0 * i, displayHeight() + 5, 49, 30});
+                k->title = {keys[i].first};
+                k->code = keys[i].second;
+                k->action = [this, k] { press(k); };
+                m_keys.push_back(k);
+            }
+        }
         // the boxes at (7, 7) from the bottom left; Scientific's first, Basic's after it
         const double top = s.h - 7 - BoxHeight;
         if (m_view == ProgrammerView) {
@@ -502,6 +1105,13 @@ private:
         k->setFrame({boxX + d.x, boxTop + BoxHeight - d.y - d.h, d.w, d.h - 2});
         k->title = d.title;
         k->code = d.code;
+        // -[BasicAdvancedController setRPNMode:]: = becomes enter (tag 6), the parentheses disabled
+        if (rpnShown() && d.code == Equals) {
+            k->title = {tr("ENTER")};
+            k->code = Enter;
+        }
+        if (rpnShown() && (d.code == LeftParen || d.code == RightParen))
+            k->setEnabled(false);
         k->action = [this, k] { press(k); };
         m_keys.push_back(k);
     }
@@ -531,6 +1141,19 @@ private:
     void press(Key *k)
     {
         const int code = k->code;
+        if (m_view == ProgrammerView) {
+            // the RPN keys over the Programmer view (HexadecimalController's rpnExchange...)
+            if (code == RPNExchange)
+                m_programmer.rpnExchange();
+            else if (code == RPNDrop)
+                m_programmer.rpnDrop();
+            else if (code == RPNRollUp || code == RPNRollDown)
+                m_programmer.rpnRoll(code == RPNRollUp);
+            refresh();
+            return;
+        }
+        if (m_speech.buttons && code >= Digit0 && code <= Digit0 + 9)
+            Speech::say(Speech::speakable(std::to_string(code - Digit0)));
         if (code >= Digit0 && code <= Digit0 + 9)
             m_engine.digit(code - Digit0);
         else if (code == Point)
@@ -556,6 +1179,8 @@ private:
         const int tag = k->code - 1000;
         if (k->code == 2000)
             m_programmer.digit(k->title.base);
+        else if (tag == PEquals && m_programmer.rpn)
+            m_programmer.enter();
         else if (tag == PEquals)
             m_programmer.equals();
         else if (tag == PClear)
@@ -577,6 +1202,17 @@ private:
             m_lcd->text = m_programmer.error() ? tr("DivByZero") : m_programmer.display();
             m_lcd->memory = m_lcd->parentheses = false;
             m_lcd->mode.clear();
+            m_lcd->rpn = rpnShown();
+            m_lcd->rows.clear();
+            if (rpnShown()) {
+                const std::vector<uint64_t> &stack = m_programmer.stack();
+                const size_t n = std::max<size_t>(4, stack.size() + 1);
+                for (size_t r = 0; r + 1 < n; ++r) {
+                    const size_t index = n - 2 - r;
+                    m_lcd->rows.push_back(index < stack.size() ? m_programmer.rowString(stack[index]) : std::string());
+                }
+                m_lcd->rows.push_back(m_lcd->text);
+            }
             // the left LCD: the number as a character (ASCII: up to 127; Unicode: a code point)
             m_lcd->left.clear();
             if (m_unicode ? (v >= 32 && v < 0x110000 && (v < 0xD800 || v > 0xDFFF) && v != 127) : (v >= 32 && v < 127)) {
@@ -616,6 +1252,17 @@ private:
         }
         m_lcd->left.clear();
         m_lcd->text = m_engine.display(m_decimals, m_separators);
+        m_lcd->rpn = rpnShown();
+        m_lcd->rows.clear();
+        if (rpnShown()) {
+            const std::vector<long double> stack = m_engine.rpnStack();
+            const size_t n = std::max<size_t>(4, stack.size() + 1);
+            for (size_t r = 0; r + 1 < n; ++r) {
+                const size_t index = n - 2 - r;   // the deepest first
+                m_lcd->rows.push_back(index < stack.size() ? formatNumber(stack[index], m_decimals, m_separators) : std::string());
+            }
+            m_lcd->rows.push_back(m_lcd->text);
+        }
         m_lcd->memory = m_engine.memoryShown();
         m_lcd->parentheses = m_engine.parenthesesOpen();
         m_lcd->mode = m_view == ScientificView ? (m_engine.radians ? tr("Rad") : tr("Deg")) : std::string();
@@ -684,6 +1331,14 @@ private:
     // the delete key (userDeletedDigit), the menus' with Command
     void key(Event &e)
     {
+        // ⌘↑ and ⌘↓: R↑ and R↓ in RPN (keyDown:'s NSUpArrowFunctionKey, NSDownArrowFunctionKey)
+        if ((e.modifiers & (Command | Control)) && rpnShown() && (e.keysym == XKB_KEY_Up || e.keysym == XKB_KEY_Down)) {
+            if (Key *key = keyFor(e.keysym == XKB_KEY_Up ? RPNRollUp : RPNRollDown)) {
+                key->flash();
+                press(key);
+            }
+            return;
+        }
         if (e.modifiers & (Command | Control)) {
             m_menu.performKeyEquivalent(e);
             return;
@@ -706,8 +1361,10 @@ private:
             code = Times;
         else if (k == XKB_KEY_slash || k == XKB_KEY_KP_Divide)
             code = Divide;
-        else if (k == XKB_KEY_equal || k == XKB_KEY_Return || k == XKB_KEY_KP_Enter || k == XKB_KEY_KP_Equal)
-            code = Equals;
+        else if (k == XKB_KEY_Return || k == XKB_KEY_KP_Enter)
+            code = rpnShown() ? Enter : Equals;
+        else if (k == XKB_KEY_equal || k == XKB_KEY_KP_Equal)
+            code = rpnShown() ? 0 : Equals;   // -[BasicAdvancedController keyDown:]: = for AlgebraicEngine only
         else if (k == XKB_KEY_Escape || k == XKB_KEY_Clear)
             code = Clear;
         else if (k == XKB_KEY_percent)
@@ -766,9 +1423,216 @@ private:
             }
             m.items.insert(m.items.begin(), views.begin(), views.end());
         }
+        populateConvertMenu();
         m_menu.validate = [this](const MainMenuItem &it, MenuValidation &v) { return validate(it, v); };
         m_menu.perform = [this](const MainMenuItem &it) { perform(it); };
         m_menu.publish();
+    }
+
+    // -[CalculatorController populateConvertMenu]: the categories after Recent Conversions, each
+    // "…" (prepareConversion:); -updateRecentConversionsMenu: the conversions over Clear Menu
+    void populateConvertMenu()
+    {
+        for (MainMenuItem &m : m_menu.menus()) {
+            if (m.title != "Convert")
+                continue;
+            m.items.erase(std::remove_if(m.items.begin(), m.items.end(), [](const MainMenuItem &i) { return i.action == "prepareConversion:"; }),
+                          m.items.end());
+            const std::vector<std::string> cats = m_conversions.sortedCategories();
+            for (size_t i = 0; i < cats.size(); ++i) {
+                MainMenuItem it;
+                it.title = Conversions::unitName(cats[i]) + tr("Ellipsis");
+                it.action = "prepareConversion:";
+                it.tag = 3000 + int(i);
+                m.items.push_back(it);
+            }
+            for (MainMenuItem &r : m.items) {
+                if (r.tag != 2000)
+                    continue;
+                std::vector<MainMenuItem> items;
+                for (size_t i = 0; i < m_conversions.recent().size(); ++i) {
+                    MainMenuItem it;
+                    it.title = m_conversions.title(m_conversions.recent()[i]);
+                    it.action = "convert:";
+                    it.tag = 4000 + int(i);
+                    items.push_back(it);
+                }
+                if (!items.empty()) {
+                    MainMenuItem line;
+                    line.separator = true;
+                    items.push_back(line);
+                }
+                for (const MainMenuItem &old : r.items)
+                    if (old.action == "clearRecentConversionsMenu:")
+                        items.push_back(old);
+                r.items = items;
+            }
+        }
+    }
+
+    void recentConversionsChanged()
+    {
+        populateConvertMenu();
+        m_menu.publish();
+    }
+
+    // -[BasicAdvancedController handleConversion:]: the number shown through the operations
+    // (enter, the number, the operator, on a fresh RPNEngine), given back as a number
+    void handleConversion(const Conversion &c)
+    {
+        long double v = m_engine.value();
+        for (const auto &[op, number] : m_conversions.operations(c)) {
+            const long double n = std::strtold(number.c_str(), nullptr);
+            if (op == "*")
+                v *= n;
+            else if (op == "/")
+                v = n != 0 ? v / n : v;
+            else if (op == "+")
+                v += n;
+            else if (op == "-")
+                v -= n;
+        }
+        m_engine.number(v);
+        m_conversions.addRecent(c);
+        recentConversionsChanged();
+        refresh();
+    }
+
+    // -[ConversionController prepareConversion:]: ConversionSheet.nib over the window
+    void prepareConversion(const std::string &type)
+    {
+        if (m_engine.error() || Sheet::isOpen(m_window.get())) {
+            std::fputc('\a', stderr);   // readyForConversion
+            return;
+        }
+        constexpr double W = 326, H = 187;
+        auto *content = new View;
+        content->setFrame({0, 0, W, H});
+        auto at = [](double x, double y, double w, double h) { return Rect{x, H - y - h, w, h}; };   // the nib's, from the bottom
+        auto label = [&](const std::string &text, Rect r, double size = 13, Align align = Align::Right) {
+            auto *l = content->add<Label>(text, Font::system(size));
+            l->style.align = align;
+            l->setFrame(r);
+            return l;
+        };
+        label("Convert:", at(26, 150, 58, 17));
+        label("From:", at(38, 111, 41, 17));
+        label("To:", at(54, 85, 25, 17));
+        const std::vector<std::string> cats = m_conversions.sortedCategories();
+        auto *typePopup = content->add<PopUpButton>();
+        typePopup->setFrame(at(86, 144, 223, 26));
+        for (const std::string &c : cats)
+            typePopup->items.push_back(MenuItem(Conversions::unitName(c)));
+        auto *fromPopup = content->add<PopUpButton>();
+        fromPopup->setFrame(at(86, 105, 223, 26));
+        auto *toPopup = content->add<PopUpButton>();
+        toPopup->setFrame(at(86, 79, 223, 26));
+        Label *updated = label({}, at(94, 61, 185, 14), 11, Align::Center);
+        Label *legal = label("Actual conversion rates may vary.", at(36, 0, 254, 13), 9, Align::Center);
+        auto *update = content->add<Button>("Update", Button::Push);
+        update->setFrame(at(14, 13, 85, 32));
+        auto *cancel = content->add<Button>("Cancel", Button::Push);
+        cancel->setFrame(at(138, 13, 84, 32));
+        auto *convert = content->add<Button>("Convert", Button::Push);
+        convert->setFrame(at(222, 13, 90, 32));
+        convert->isDefault = true;
+
+        struct State {
+            std::string type;
+            std::vector<std::pair<std::string, std::string>> units;
+        };
+        auto state = std::make_shared<State>();
+        // -populateConvertPopupsForKey:, -showOrHideCaveatsForKey:: the units, To the second;
+        // currency from the dollar, Update, the date and the caveat shown
+        auto populate = [this, state, fromPopup, toPopup, updated, legal, update](const std::string &key) {
+            state->type = key;
+            state->units = m_conversions.units(key);
+            fromPopup->items.clear();
+            toPopup->items.clear();
+            for (const auto &[unit, title] : state->units) {
+                fromPopup->items.push_back(MenuItem(title));
+                toPopup->items.push_back(MenuItem(title));
+            }
+            const bool money = key == "currency";
+            int from = 0, to = state->units.size() > 1 ? 1 : 0;
+            if (money)
+                for (size_t i = 0; i < state->units.size(); ++i)
+                    if (state->units[i].first == "USD")
+                        from = int(i);
+            if (const Conversion *last = m_conversions.lastOfType(key))
+                for (size_t i = 0; i < state->units.size(); ++i) {
+                    if (state->units[i].first == last->from)
+                        from = int(i);
+                    if (state->units[i].first == last->to)
+                        to = int(i);
+                }
+            fromPopup->setSelected(from);
+            toPopup->setSelected(to);
+            update->setHidden(!money);
+            updated->setHidden(!money);
+            legal->setHidden(!money);
+            updated->setText(m_conversions.ratesDate());
+            fromPopup->setNeedsDisplay();
+            toPopup->setNeedsDisplay();
+        };
+        int index = 0;
+        for (size_t i = 0; i < cats.size(); ++i)
+            if (cats[i] == type)
+                index = int(i);
+        typePopup->setSelected(index);
+        populate(type);
+        typePopup->onSelect = [cats, populate](int i) {
+            if (i >= 0 && size_t(i) < cats.size())
+                populate(cats[size_t(i)]);
+        };
+        cancel->action = [this] { Sheet::end(m_window.get()); };
+        update->action = [] {
+            // -updateCurrencyRates:: Apple's rates server is gone
+            Alert::run({}, tr("Currency Rate update failed"), {}, {"OK"}, [](int) {});
+        };
+        convert->action = [this, state, fromPopup, toPopup] {
+            // -okayConvertSheet:: nothing when From and To are the same
+            const int f = fromPopup->selected(), t = toPopup->selected();
+            Sheet::end(m_window.get());
+            if (f == t || f < 0 || t < 0 || size_t(f) >= state->units.size() || size_t(t) >= state->units.size())
+                return;
+            handleConversion({state->type, state->units[size_t(f)].first, state->units[size_t(t)].first});
+        };
+        Sheet::begin(m_window.get(), content, {W, H}, 0);
+    }
+
+    // Calculator.nib's LCD menu: RPN, Large Type
+    void contextMenu(Event &e)
+    {
+        std::vector<MenuItem> items;
+        items.push_back(MenuItem(tr("RPN"), false, true, m_rpn));
+        items.push_back(MenuItem::line());
+        items.push_back(MenuItem("Large Type"));
+        Menu::popUp(m_window.get(), m_lcd->toWindow(e.location), items, 0, Font::system(), [this](int i) {
+            if (i == 0)
+                toggleRPN();
+            else if (i == 2)
+                largeType();
+        });
+    }
+
+    void largeType()
+    {
+        // -[LCDController drawLargeType:]: 0, else the LCD's text
+        const std::string text = m_view == ProgrammerView ? m_programmer.display() : m_engine.display(m_decimals, m_separators);
+        m_largeType.show(m_view != ProgrammerView && m_engine.value() == 0 && !m_engine.error() ? "0" : text);
+    }
+
+    // -[CalculatorController toggleRPNMode:]: the menu items' state, RPNDefaultsKey, the LCD and the
+    // view's engine
+    void toggleRPN()
+    {
+        m_rpn = !m_rpn;
+        Settings("calculator").set("RPNDefaultsKey", m_rpn);
+        m_engine.setRPN(rpnShown() && m_view != ProgrammerView);
+        m_programmer.setRPN(rpnShown() && m_view == ProgrammerView);
+        m_window->setContentSize(contentSize());
+        build();
     }
 
     bool validate(const MainMenuItem &it, MenuValidation &v)
@@ -776,6 +1640,29 @@ private:
         const std::string &a = it.action;
         if (a == "terminate:" || a == "hide:" || a == "hideOtherApplications:" || a == "unhideAllApplications:" ||
             a == "performClose:" || a == "miniaturize:" || a == "copy:" || a == "paste:" || a == "clear:")
+            return true;
+        if (a == "toggleRPNMode:") {
+            v.checked = m_rpn;
+            return true;
+        }
+        if (a == "toggleTape:") {
+            // -[PaperTapeController toggleTape:]'s titles; canShowTape: (not Programmer)
+            v.title = tr(m_tape.isShown() ? "HideTape" : "ShowTape");
+            return m_view != ProgrammerView;
+        }
+        if (a == "saveTape:" || a == "printTape:")
+            return m_tape.isShown() && m_tape.hasText();   // -validateTapeMenuItems
+        if (a == "prepareConversion:")
+            return m_view != ProgrammerView;   // supportsConversions
+        if (a == "convert:")
+            return m_view != ProgrammerView && size_t(it.tag - 4000) < m_conversions.recent().size();
+        if (a == "clearRecentConversionsMenu:")
+            return !m_conversions.recent().empty();   // recentConversionsAreClearable
+        if (a == "speechMenu:") {
+            v.checked = it.title == "Speak Button Pressed" ? m_speech.buttons : m_speech.total;
+            return m_view != ProgrammerView && Speech::available();   // supportsSpeech
+        }
+        if (a == "drawLargeType:")
             return true;
         if (a == "setCurrentView:") {
             v.checked = it.tag == m_view;
@@ -820,6 +1707,10 @@ private:
             if (it.tag != m_view) {
                 m_view = CalcView(it.tag);
                 m_second = false;
+                m_engine.setRPN(rpnShown() && m_view != ProgrammerView);
+                m_programmer.setRPN(rpnShown() && m_view == ProgrammerView);
+                if (m_view == ProgrammerView)
+                    m_tape.hide();
                 const char *names[] = {"Basic", "Advanced", "Programmers"};
                 prefs.set("ViewDefaultsKey", names[m_view]);
                 m_window->setContentSize(contentSize());
@@ -830,7 +1721,39 @@ private:
             prefs.set("ShowSeparators", m_separators);
         } else if (a == "setPrecision:") {
             m_decimals = it.tag - 1;
+            m_engine.tapePrecision = m_decimals;
             prefs.set("Precision", m_decimals);
+        } else if (a == "toggleRPNMode:") {
+            toggleRPN();
+        } else if (a == "toggleTape:") {
+            if (m_tape.isShown())
+                m_tape.hide();
+            else
+                m_tape.show(m_window.get());
+        } else if (a == "saveTape:") {
+            m_tape.save();
+        } else if (a == "printTape:") {
+            m_tape.print();
+        } else if (a == "prepareConversion:") {
+            const std::vector<std::string> cats = m_conversions.sortedCategories();
+            if (size_t(it.tag - 3000) < cats.size())
+                prepareConversion(cats[size_t(it.tag - 3000)]);
+        } else if (a == "convert:") {
+            if (size_t(it.tag - 4000) < m_conversions.recent().size())
+                handleConversion(Conversion(m_conversions.recent()[size_t(it.tag - 4000)]));
+        } else if (a == "clearRecentConversionsMenu:") {
+            m_conversions.clearRecent();
+            recentConversionsChanged();
+        } else if (a == "speechMenu:") {
+            // -[SpeechController speechMenu:]: "Speech Enabled" said when the first is turned on
+            const bool wasOn = m_speech.buttons || m_speech.total;
+            bool &flag = it.title == "Speak Button Pressed" ? m_speech.buttons : m_speech.total;
+            flag = !flag;
+            prefs.set(it.title == "Speak Button Pressed" ? "SpeaksButtonPressedDefaultsKey" : "SpeaksTotalDefaultsKey", flag);
+            if (!wasOn && flag)
+                Speech::say("Speech Enabled");
+        } else if (a == "drawLargeType:") {
+            largeType();
         }
         refresh();
     }
@@ -843,7 +1766,11 @@ private:
     Programmer m_programmer;
     BitsView *m_bits = nullptr;
     CalcView m_view = BasicView;
-    bool m_second = false, m_separators = false, m_unicode = true, m_binaryShown = false;
+    bool m_second = false, m_separators = false, m_unicode = true, m_binaryShown = false, m_rpn = false;
+    PaperTape m_tape;
+    LargeType m_largeType;
+    Conversions m_conversions;
+    Speech m_speech;
     int m_decimals = 12;
 };
 

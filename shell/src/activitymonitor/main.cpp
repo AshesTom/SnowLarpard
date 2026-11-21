@@ -389,11 +389,218 @@ public:
 
 // ---- the window
 
+
+// ---- The CPU windows (SMCPUMonitor)
+//
+// CPU Usage (Window ▸ CPU Usage ⌘2, CPUUsage.nib, -loadStandardWindow): a utility panel, a meter a
+// processor: "base image + inset.tif" under one of s00.tif to s18.tif chosen by the load
+// (-setCpuLoads:: under 2 %, 7.7, then every 5.7 to 98: s00 to s17, s18 above), the processors from
+// the last at the left; one centred (cpuImageViewSP1), two side by side 32 apart (MP1, MP2), each
+// more 32 further and the window 32 wider. CPU History (⌘3, CPUHistory.nib, -loadExpandedWindow): a
+// resizable utility panel, a CPUHistoryView a processor one under another in its split view, at
+// least three processors' worth of height a quarter (procs ÷ 4) taller. The floating window (⌘4
+// Horizontal, ⌘5 Vertical, None; -resetWindow): borderless over the windows, CPUView's bars 13
+// points a processor, WindowSize (140) long: light grey, the load in the user colour, SeperatorCount
+// (20) black separators, a black frame.
+class CPUMeterView : public View {
+public:
+    std::vector<double> loads;   // a processor's user + system + nice, in %
+    Image base, meters[19];
+    static int meterFor(double load)
+    {
+        static const double limits[] = {2, 7.7, 12.5, 18.2, 23.9, 29.6, 35.3, 41.0, 46.7, 52.4, 58.1, 63.8, 69.5, 75.2, 80.9, 86.6, 92.3, 98.0};
+        for (int i = 0; i < 18; ++i)
+            if (load < limits[i])
+                return i;
+        return 18;
+    }
+    void draw(cairo_t *cr) override
+    {
+        // the nib's box at (6, 6), its image views 34 × 88: SP1 at 14, MP1 at -3, MP2 at 29
+        const size_t n = std::max<size_t>(1, loads.size());
+        for (size_t i = 0; i < n; ++i) {
+            const double x = n == 1 ? 14 : -3 + 32.0 * double(i);
+            const Rect cell{6 + x, frame().h - 6 - 1 - 88, 34, 88};
+            if (!base.isNull())
+                base.draw(cr, Rect{cell.x + (cell.w - base.width()) / 2, cell.y + (cell.h - base.height()) / 2, double(base.width()), double(base.height())});
+            // -setCpuLoads: walks the loads backwards: the first view the last processor
+            const double load = loads.empty() ? 0 : loads[loads.size() - 1 - i];
+            const Image &m = meters[meterFor(load)];
+            if (!m.isNull())
+                m.draw(cr, Rect{cell.x + (cell.w - m.width()) / 2, cell.y + (cell.h - m.height()) / 2, double(m.width()), double(m.height())});
+        }
+    }
+};
+
+class FloatingCPUView : public View {
+public:
+    std::vector<double> loads;
+    bool horizontal = false;
+    Color color = Color::rgb(0, 255, 0);
+    int separators = 20;
+    void draw(cairo_t *cr) override
+    {
+        // -[CPUView drawRect:]: a bar a processor, 13 points across with the frame's line
+        const Rect b = bounds();
+        for (size_t i = 0; i < loads.size(); ++i) {
+            const double load = std::clamp(loads[i], 0.0, 100.0) / 100;
+            Rect bar = horizontal ? Rect{0, 13.0 * double(i), b.w, 14} : Rect{13.0 * double(i), 0, 14, b.h};
+            fill(cr, bar, Color::gray(170));
+            const double len = (horizontal ? bar.w : bar.h) * load;
+            fill(cr, horizontal ? Rect{bar.x, bar.y, len, bar.h} : Rect{bar.x, bar.bottom() - len, bar.w, len}, color);
+            for (int k = 1; k < separators; ++k) {
+                if (horizontal)
+                    fill(cr, Rect{bar.x + bar.w * k / separators, bar.y, 1, bar.h}, Color::gray(0));
+                else
+                    fill(cr, Rect{bar.x, bar.y + bar.h * k / separators, bar.w, 1}, Color::gray(0));
+            }
+            Color::gray(0).set(cr);
+            cairo_set_line_width(cr, 1);
+            cairo_rectangle(cr, bar.x + 0.5, bar.y + 0.5, bar.w - 1, bar.h - 1);
+            cairo_stroke(cr);
+        }
+    }
+};
+
+class CPUWindows {
+public:
+    bool onTop = true;   // OnTop (Keep CPU Windows on Top)
+
+    void showUsage(size_t cpus)
+    {
+        if (!m_usage) {
+            const double w = 74 + 32.0 * double(std::max<size_t>(2, cpus) - 2);
+            m_usage = std::make_unique<Window>(Size{w, 96}, "");
+            m_usage->setFloatingPanel(true);
+            m_usage->setFloating(onTop);
+            m_meters = m_usage->contentView()->add<CPUMeterView>();
+            m_meters->setFrame({0, 0, w, 96});
+            m_meters->base = Image::load(res("base image + inset.tif"));
+            for (int i = 0; i < 19; ++i) {
+                char name[16];
+                std::snprintf(name, sizeof name, "s%02d.tif", i);
+                m_meters->meters[i] = Image::load(res(name));
+            }
+        }
+        m_usage->show();
+    }
+
+    void showHistory(size_t cpus)
+    {
+        if (!m_history) {
+            Size size{361, 214};
+            if (cpus > 3)
+                size.h *= double(cpus / 4);   // -loadExpandedWindow without a saved frame
+            m_history = std::make_unique<Window>(size, tr("CPU History"));
+            m_history->setFloatingPanel(true);
+            m_history->setFloating(onTop);
+            m_history->setResizable({109, 76});
+            m_history->onResize = [this](Size) { layoutHistory(); };
+            for (size_t i = 0; i < std::max<size_t>(1, cpus); ++i)
+                m_graphs.push_back(m_history->contentView()->add<CPUHistoryView>());
+            layoutHistory();
+        }
+        m_history->show();
+    }
+
+    void showFloating(bool horizontal, size_t cpus)
+    {
+        // -resetWindow: Position (0 vertical, 1 horizontal), WindowSize 140, Transparency 0 (1.0)
+        const double length = 140, across = double(cpus) * 13 + 1;
+        const Size size = horizontal ? Size{length, across} : Size{across, length};
+        if (!m_floating) {
+            m_floating = std::make_unique<Window>(size, "CPU");
+            m_floating->setBorderless();
+            m_floating->setFloating(true);   // the main menu's level
+            m_bars = m_floating->contentView()->add<FloatingCPUView>();
+            const Rect vf = App::shared().visibleFrame();
+            m_floating->moveTo({vf.x + 20, vf.bottom() - size.h - 20});
+        } else {
+            m_floating->setContentSize(size);
+        }
+        m_bars->horizontal = horizontal;
+        m_bars->setFrame({0, 0, size.w, size.h});
+        m_floating->show();
+        Settings("activitymonitor").set("Position", horizontal ? 1 : 0);
+        m_floatingShown = horizontal ? 1 : 2;
+    }
+    void hideFloating()
+    {
+        if (m_floating)
+            m_floating->close();
+        m_floatingShown = 0;
+    }
+    int floatingShown() const { return m_floatingShown; }   // 0 none, 1 horizontal, 2 vertical
+
+    void setOnTop(bool top)
+    {
+        onTop = top;
+        for (Window *w : {m_usage.get(), m_history.get()})
+            if (w)
+                w->setFloating(top);
+    }
+
+    // a sample: a processor's user, system, nice
+    void update(const std::vector<std::array<double, 3>> &cpus)
+    {
+        std::vector<double> loads;
+        for (const auto &c : cpus)
+            loads.push_back(c[0] + c[1] + c[2]);
+        if (m_meters) {
+            m_meters->loads = loads;
+            m_meters->setNeedsDisplay();
+        }
+        if (m_bars) {
+            m_bars->loads = loads;
+            m_bars->setNeedsDisplay();
+        }
+        for (size_t i = 0; i < cpus.size(); ++i) {
+            if (i >= m_samples.size())
+                m_samples.emplace_back();
+            m_samples[i].push_back(cpus[i]);
+            while (m_samples[i].size() > 400)
+                m_samples[i].pop_front();
+        }
+        for (size_t i = 0; i < m_graphs.size() && i < m_samples.size(); ++i) {
+            m_graphs[i]->history = m_samples[i];
+            m_graphs[i]->setNeedsDisplay();
+        }
+    }
+    // Clear CPU History (⌘K, -[CPUHistoryView clearHistory])
+    void clear()
+    {
+        m_samples.clear();
+        for (CPUHistoryView *g : m_graphs) {
+            g->history.clear();
+            g->setNeedsDisplay();
+        }
+    }
+
+private:
+    void layoutHistory()
+    {
+        // the split view at (6, 5), its views' height shared (-splitView:resizeSubviewsWithOldSize:)
+        const Size s = m_history->size();
+        const double divider = 9, w = s.w - 12, h = s.h - 11;
+        const size_t n = m_graphs.size();
+        const double each = (h - double(n - 1) * divider) / double(n);
+        for (size_t i = 0; i < n; ++i)
+            m_graphs[i]->setFrame({6, 6 + double(i) * (each + divider), w, each});
+    }
+    std::unique_ptr<Window> m_usage, m_history, m_floating;
+    CPUMeterView *m_meters = nullptr;
+    FloatingCPUView *m_bars = nullptr;
+    std::vector<CPUHistoryView *> m_graphs;
+    std::vector<std::deque<std::array<double, 3>>> m_samples;
+    int m_floatingShown = 0;
+};
+
 class Monitor {
 public:
     Monitor()
     {
         m_period = std::max(0.5, std::atof(Settings("activitymonitor").string("UpdatePeriod", "2").c_str()));
+        m_cpuWindows.onTop = Settings("activitymonitor").integer("OnTop", 1) != 0;
         m_menu.load(res("English.lproj/ActivityMonitor.nib"));
         m_menu.validate = [this](const MainMenuItem &it, MenuValidation &v) { return validate(it, v); };
         m_menu.perform = [this](const MainMenuItem &it) { perform(it); };
@@ -779,6 +986,7 @@ private:
         }
         if (m_history2)
             m_history2->setHidden(cpus.size() < 2);
+        m_cpuWindows.update(cpus);
     }
 
     void updateMemory()
@@ -982,6 +1190,18 @@ private:
             v.checked = it.tag >= 0 && it.tag < 4 && std::abs(periods[it.tag] - m_period) < 0.01;
             return true;
         }
+        // -[SMCPUMonitor validateCPUMenus]
+        if (a == "displayFloatingViewHorizontally:" || a == "displayFloatingViewVertically:" || a == "hideFloatingView:") {
+            const int shown = m_cpuWindows.floatingShown();
+            v.checked = a == "hideFloatingView:" ? shown == 0 : a == "displayFloatingViewHorizontally:" ? shown == 1 : shown == 2;
+            return true;
+        }
+        if (a == "toggleCPUWindowsOnTop:") {
+            v.checked = m_cpuWindows.onTop;
+            return true;
+        }
+        if (a == "displayStandardView:" || a == "displayExpandedView:" || a == "clearHistory:")
+            return true;
         return a == "terminate:" || a == "hide:" || a == "hideOtherApplications:" || a == "unhideAllApplications:" ||
                a == "performClose:" || a == "performMiniaturize:" || a == "showProcessWindow:" || a == "filter:" ||
                a == "orderFrontStandardAboutPanel:";
@@ -1002,7 +1222,27 @@ private:
             m_window->show();
         else if (a == "filter:" && m_filter)
             m_window->makeFirstResponder(m_filter);
-        else if (a == "changeUpdateFrequency:") {
+        else if (a == "displayStandardView:")
+            m_cpuWindows.showUsage(std::max<size_t>(1, m_sampler.perCPU.size()));
+        else if (a == "displayExpandedView:")
+            m_cpuWindows.showHistory(std::max<size_t>(1, m_sampler.perCPU.size()));
+        else if (a == "displayFloatingViewHorizontally:" || a == "displayFloatingViewVertically:")
+            m_cpuWindows.showFloating(a == "displayFloatingViewHorizontally:", std::max<size_t>(1, m_sampler.perCPU.size()));
+        else if (a == "hideFloatingView:")
+            m_cpuWindows.hideFloating();
+        else if (a == "clearHistory:") {
+            // -[SMBase clearHistory:]: the CPU tab's graphs too
+            m_cpuWindows.clear();
+            for (CPUHistoryView *v : {m_history1, m_history2})
+                if (v) {
+                    v->history.clear();
+                    v->setNeedsDisplay();
+                }
+        }
+        else if (a == "toggleCPUWindowsOnTop:") {
+            m_cpuWindows.setOnTop(!m_cpuWindows.onTop);
+            Settings("activitymonitor").set("OnTop", m_cpuWindows.onTop ? 1 : 0);
+        } else if (a == "changeUpdateFrequency:") {
             static const double periods[] = {0.5, 1, 2, 5};
             if (it.tag >= 0 && it.tag < 4) {
                 m_period = periods[it.tag];
@@ -1024,6 +1264,7 @@ private:
     PopUpButton *m_show = nullptr, *m_volumes = nullptr;
     SearchField *m_filter = nullptr;
     Sampler m_sampler;
+    CPUWindows m_cpuWindows;
     std::vector<Proc> m_shown;
     int m_selectedPid = 0;
     double m_period = 2;

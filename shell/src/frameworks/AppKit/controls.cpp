@@ -2151,10 +2151,11 @@ void Sheet::begin(Window *w, View *content, Size size, double top, std::function
     host->panelSize = size;
     host->ended = std::move(ended);
     host->oldWindow = w->size();
-    // a sheet taller than the window: the window grows for it
+    // a sheet taller or wider than the window (Calculator's conversion sheet over Basic): the window
+    // grows for it, AquaKit's sheets being inside their window
     const double need = top + size.h + 12;
-    if (need > w->size().h)
-        w->setContentSize({std::max(w->size().w, size.w), need});
+    if (need > w->size().h || size.w > w->size().w)
+        w->setContentSize({std::max(w->size().w, size.w), std::max(w->size().h, need)});
     host->setFrame(root->bounds());
     host->clip = host->add<SheetClip>();
     host->clip->setFrame({0, top, root->frame().w, root->frame().h - top});

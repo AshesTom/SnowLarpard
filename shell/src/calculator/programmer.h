@@ -36,6 +36,18 @@ public:
     void setBit(int bit, bool on);   // the binary view's buttons
     void deleteDigit();
 
+    // RPN (-[HexadecimalController setRPNMode:]: = becomes enter): enter puts the number on the
+    // stack; a number typed after a result puts the result on it first; the operators take y from
+    // it (performRPNOperation:withX:), the bit keys work on x; drop, x↔y, R↑ and R↓
+    bool rpn = false;
+    void setRPN(bool on);
+    void enter();
+    void rpnDrop();
+    void rpnExchange();
+    void rpnRoll(bool up);
+    const std::vector<uint64_t> &stack() const { return m_stack; }   // its top (y) first
+    std::string rowString(uint64_t v) const;   // as the LCD's stack rows write it
+
     uint64_t value() const { return m_value; }
     std::string display() const;   // in the base: 0x... in hexadecimal
     bool error() const { return m_error; }
@@ -50,7 +62,9 @@ private:
     bool evaluate(const std::vector<Item> &eq, uint64_t &out) const;
     void show(uint64_t v);
 
-    enum State { Initial = 0, Typing = 1, AfterOperator = 2, AfterEquals = 4, AfterShift = 5 } m_state = Initial;
+    void rpnOp(int key);   // performRPNOperation:withX:
+    enum State { Initial = 0, Typing = 1, AfterOperator = 2, AfterEnter = 3, AfterEquals = 4, AfterShift = 5 } m_state = Initial;
+    std::vector<uint64_t> m_stack;
     std::string m_input;   // the digits typed, in the base
     std::vector<Item> m_equation;
     uint64_t m_value = 0;

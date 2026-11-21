@@ -126,6 +126,8 @@ bool Engine::load(const std::string &functionsXml)
                 fn.name = value;
             else if (key == "selector")
                 fn.selector = value;
+            else if (key == "speechName")
+                fn.speechName = value;
             else if (key == "operator")
                 fn.op = std::atoi(value.c_str());
             else if (key == "paramsRequired")
@@ -162,13 +164,119 @@ void Engine::clear()
     m_exponentInput.clear();
     m_inExponent = false;
     m_shown = 0;
+    m_shownTape.clear();
     m_error.clear();
+    m_lastIsResult = false;
+}
+
+void Engine::setRPN(bool rpn)
+{
+    // -[BasicAdvancedController setRPNMode:]: a new engine of the other kind, given the number shown
+    if (rpn == m_rpn)
+        return;
+    const long double v = value();
+    clear();
+    m_stack.clear();
+    m_rpn = rpn;
+    enterNumber(v);
+}
+
+std::vector<long double> Engine::rpnStack() const
+{
+    std::vector<long double> out;
+    for (const Item &it : m_stack)
+        out.push_back(it.value);
+    return out;
+}
+
+std::string Engine::tapeString(long double v) const
+{
+    // _tapeStringForNumber: "%.16lg", then "%.<n>lg" with n the characters before its point and
+    // EngineNumber's precision (the Decimal Places)
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "%.16Lg", v);
+    const std::string s = buf;
+    const size_t point = s.find('.');
+    const int before = int(point == std::string::npos ? s.size() : point);
+    std::snprintf(buf, sizeof buf, "%.*Lg", std::max(1, before + tapePrecision), v);
+    return buf;
+}
+
+std::string Engine::tapeFor(const Function *f, const std::vector<std::string> &a) const
+{
+    // the Function selectors' tape formats (BasicAndSci's __cfstring: "%@+%@", "pow(%@,2)", "sin(%@%@)"...)
+    const std::string &s = f->selector;
+    auto at = [&a](size_t i) { return i < a.size() ? a[i] : std::string("0"); };
+    const std::string x = a.empty() ? std::string("0") : a.back();
+    const std::string deg = radians ? "" : "º";
+    if (s == "plus:")
+        return at(0) + "+" + at(1);
+    if (s == "minus:")
+        return at(0) + "-" + at(1);
+    if (s == "times:")
+        return at(0) + "*" + at(1);
+    if (s == "divide:")
+        return at(0) + "/" + at(1);
+    if (s == "power:")
+        return "pow(" + at(0) + "," + at(1) + ")";
+    if (s == "xrooty:")
+        return "pow(" + at(0) + ",1/" + at(1) + ")";
+    if (s == "percent:")
+        return "%" + x;
+    if (s == "oneOverX:")
+        return "1/" + x;
+    if (s == "squared:")
+        return "pow(" + x + ",2)";
+    if (s == "cubed:")
+        return "pow(" + x + ",3)";
+    if (s == "sqrt:")
+        return "pow(" + x + ",1/2)";
+    if (s == "cuberoot:")
+        return "pow(" + x + ",1/3)";
+    if (s == "factorial:")
+        return x + "!";
+    if (s == "etox:")
+        return "pow(e," + x + ")";
+    if (s == "tentox:")
+        return "pow(10," + x + ")";
+    if (s == "twoToPow:")
+        return "pow(2," + x + ")";
+    for (const char *trig : {"sin", "cos", "tan", "asin", "acos", "atan"})
+        if (s == std::string(trig) + ":")
+            return std::string(trig) + "(" + x + deg + ")";
+    if (s == "log:")
+        return "log_10(" + x + ")";
+    if (s == "log2:")
+        return "log_2(" + x + ")";
+    if (s == "ln:")
+        return "ln(" + x + ")";
+    for (const char *h : {"sinh", "cosh", "tanh", "asinh", "acosh", "atanh"})
+        if (s == std::string(h) + ":")
+            return std::string(h) + "(" + x + ")";
+    return {};   // changeSign:, the constants: the number itself
+}
+
+void Engine::updateTape()
+{
+    // -[AlgebraicEngine updateTape]: the list's one number, or the number, the operator waiting
+    // and the number after it
+    if (!onTapeEquation)
+        return;
+    if (m_postfix.size() == 1 && m_postfix[0].isNumber)
+        onTapeEquation(tapeOf(m_postfix[0]));
+    else if (m_postfix.size() == 2 && !m_ops.empty() && m_postfix[0].isNumber && m_postfix[1].isNumber)
+        onTapeEquation(tapeOf(m_postfix[0]) + m_ops.back()->name + tapeOf(m_postfix[1]));
 }
 
 void Engine::digit(int d)
 {
     if (error())
         clear();
+    if (m_rpn && m_lastIsResult && m_input.empty()) {
+        // -[RPNEngine userEnteredDigit:]: a result goes onto the stack first
+        m_stack.insert(m_stack.begin(), Item{true, m_shown, nullptr, {}});
+        m_lastIsResult = false;
+    }
     if (m_inExponent) {
         if (m_exponentInput.size() < 3 + (m_exponentInput[0] == '-' ? 1 : 0))
             m_exponentInput += char('0' + d);
@@ -191,6 +299,10 @@ void Engine::decimalPoint()
         clear();
     if (m_inExponent)
         return;
+    if (m_rpn && m_lastIsResult && m_input.empty()) {
+        m_stack.insert(m_stack.begin(), Item{true, m_shown, nullptr, {}});
+        m_lastIsResult = false;
+    }
     if (m_input.empty())
         m_input = "0.";
     else if (m_input.find('.') == std::string::npos)
@@ -204,6 +316,7 @@ void Engine::exponent()
         return beep ? beep() : void();
     if (m_input.empty())
         m_input = formatNumber(m_shown, 15, false);
+    m_lastIsResult = false;   // -[RPNEngine userEnteredEEMode]
     m_inExponent = true;
     m_exponentInput.clear();
 }
@@ -258,16 +371,120 @@ void Engine::enterTyped()
     enterNumber(v);
 }
 
-void Engine::enterNumber(long double v)
+void Engine::enterNumber(long double v, const std::string &tape)
 {
+    m_error.clear();
+    m_shown = v;
+    m_shownTape = tape;
+    if (m_rpn) {
+        // -[RPNEngine userEnteredToken:] for a number: it is x
+        m_lastIsResult = false;
+        return;
+    }
     // -[AlgebraicEngine userEnteredToken:] for a number: it takes the place of the list's last one
     // after a result, or after another number
-    m_error.clear();
     if ((m_lastToken == NoToken || m_ops.empty() || m_lastToken == NumberToken) && !m_postfix.empty())
         m_postfix.pop_back();
-    m_postfix.push_back({true, v, nullptr});
+    m_postfix.push_back({true, v, nullptr, tape});
     m_lastToken = NumberToken;
-    m_shown = v;
+}
+
+void Engine::rpnApply(const Function *f)
+{
+    // -[RPNEngine applyFunction:]: x and the stack's numbers the function needs; the tape line is
+    // x, the function's name and the numbers taken (x first, as RPNEngine writes it); a function
+    // of precedence 99 its own (sin(x)...)
+    if (int(m_stack.size()) < f->params - 1)
+        return beep ? beep() : void();
+    std::vector<long double> args{m_shown};
+    std::vector<std::string> tapes{m_shownTape.empty() ? tapeString(m_shown) : m_shownTape};
+    std::string line = f->precedence == 99 ? std::string() : tapes.back() + f->name;
+    for (int i = 1; i < f->params; ++i) {
+        const Item it = m_stack.front();
+        m_stack.erase(m_stack.begin());
+        args.insert(args.begin(), it.value);
+        tapes.insert(tapes.begin(), tapeOf(it));
+        if (f->precedence != 99)
+            line += tapeOf(it);
+    }
+    for (int i = 0; i < f->peek && !m_stack.empty(); ++i) {
+        args.insert(args.begin(), m_stack.front().value);
+        tapes.insert(tapes.begin(), tapeOf(m_stack.front()));
+    }
+    const long double r = perform(f, args);
+    if (error())
+        return;
+    if (std::isnan(r))
+        return fail("NaN");
+    if (std::isinf(r))
+        return fail("Over");
+    if (f->precedence == 99) {
+        line = tapeFor(f, tapes);
+        if (line.empty())
+            line = tapeString(r);
+    }
+    m_shown = r;
+    m_shownTape.clear();   // setTapeRepresentation: nil
+    m_lastIsResult = true;
+    if (onTapeEquation)
+        onTapeEquation(line);
+    if (onTapeResult)
+        onTapeResult(tapeString(r));
+    if (const Function *eq = function(Equals); eq && onSpeakButton)
+        onSpeakButton(eq->speechName);
+    if (onSpeakTotal)
+        onSpeakTotal(formatNumber(r, tapePrecision, false));
+}
+
+void Engine::rpnToken(int code)
+{
+    // -[RPNEngine userEnteredToken:]
+    const Function *f = function(code);
+    if (code == Equals || code == LeftParen || code == RightParen)
+        return;   // not RPNEngine's (its = is enter)
+    if (code == RPNDrop) {
+        m_error.clear();
+        m_lastIsResult = false;
+        if (m_stack.empty()) {
+            m_shown = 0;
+            m_shownTape.clear();
+        } else {
+            m_shown = m_stack.front().value;
+            m_shownTape = m_stack.front().tape;
+            m_stack.erase(m_stack.begin());
+        }
+        return;
+    }
+    if (error())
+        return beep ? beep() : void();
+    const Item x{true, m_shown, nullptr, m_shownTape};
+    auto popX = [this] {
+        m_shown = m_stack.front().value;
+        m_shownTape = m_stack.front().tape;
+        m_stack.erase(m_stack.begin());
+        m_lastIsResult = false;
+    };
+    if (code == RPNExchange) {
+        if (m_stack.empty())
+            return;
+        m_stack.insert(m_stack.begin(), x);
+        std::swap(m_stack[0], m_stack[1]);
+        popX();
+    } else if (code == RPNRollUp) {
+        // the deepest number comes to x, the others one deeper
+        m_stack.insert(m_stack.begin(), x);
+        std::rotate(m_stack.begin(), m_stack.end() - 1, m_stack.end());
+        popX();
+    } else if (code == RPNRollDown) {
+        // x goes to the bottom, y comes to x
+        m_stack.insert(m_stack.begin(), x);
+        std::rotate(m_stack.begin(), m_stack.begin() + 1, m_stack.end());
+        popX();
+    } else if (code == Enter) {
+        m_stack.insert(m_stack.begin(), x);
+    } else if (f) {
+        rpnApply(f);
+    }
 }
 
 void Engine::op(int code)
@@ -275,8 +492,21 @@ void Engine::op(int code)
     const Function *f = function(code);
     if (!f)
         return;
+    if (onSpeakButton && code != Equals)
+        onSpeakButton(f->speechName);
     // -[CalculatorEngine userEnteredToken:]: clear, the memory, and the constants
     if (code == Clear) {
+        if (m_rpn) {
+            // -[CalculatorEngine clear]: x only, the stack kept
+            m_input.clear();
+            m_exponentInput.clear();
+            m_inExponent = false;
+            m_error.clear();
+            m_shown = 0;
+            m_shownTape.clear();
+            m_lastIsResult = false;
+            return;
+        }
         clear();
         return;
     }
@@ -298,6 +528,11 @@ void Engine::op(int code)
         number(perform(f, {}));
         return;
     }
+    if (m_rpn) {
+        enterTyped();
+        rpnToken(code);
+        return;
+    }
     // BasicAdvancedController handleOperatorPress: the number being typed first
     enterTyped();
     if (error())
@@ -311,15 +546,25 @@ void Engine::op(int code)
         }
         if (!m_ops.empty()) {
             while (!m_ops.empty()) {
-                m_postfix.push_back({false, 0, m_ops.back()});
+                m_postfix.push_back({false, 0, m_ops.back(), {}});
                 m_ops.pop_back();
             }
         } else if (m_hasLastNumber && m_lastFunction && m_postfix.size() == 1) {
             // = again: the last operation, with its last operand
-            m_postfix.push_back({true, m_lastNumber, nullptr});
-            m_postfix.push_back({false, 0, m_lastFunction});
+            m_postfix.push_back({true, m_lastNumber, nullptr, {}});
+            m_postfix.push_back({false, 0, m_lastFunction, {}});
         }
         evaluate();
+        if (!error()) {
+            // -[AlgebraicEngine userEnteredToken:] for =: the total said, the tape's line, its result
+            if (onSpeakButton)
+                onSpeakButton(f->speechName);
+            if (onSpeakTotal)
+                onSpeakTotal(formatNumber(m_shown, tapePrecision, false));
+            updateTape();
+            if (onTapeResult)
+                onTapeResult(tapeString(m_shown));
+        }
     } else if (f->precedence == 99) {
         // after an operator, the function applies to the number before it (2 + √: √2)
         if (m_lastToken == OperatorToken && !m_postfix.empty() && m_lastTokenOp != Equals && m_lastTokenOp != RightParen)
@@ -338,7 +583,7 @@ void Engine::op(int code)
             return beep ? beep() : void();
         bool popped = false;
         while (!m_ops.empty() && m_ops.back()->op != LeftParen) {
-            m_postfix.push_back({false, 0, m_ops.back()});
+            m_postfix.push_back({false, 0, m_ops.back(), {}});
             m_ops.pop_back();
             popped = true;
         }
@@ -347,6 +592,13 @@ void Engine::op(int code)
         --m_leftParens;
         if (popped) {
             evaluate();
+            // the result in parentheses (-[EngineNumber setInParenthesis:]: "(%@)")
+            if (!error() && !m_postfix.empty()) {
+                Item &r = m_postfix.back();
+                r.tape = "(" + tapeOf(r) + ")";
+                m_shownTape = r.tape;
+            }
+            updateTape();
             m_lastFunction = !m_ops.empty() && m_ops.back()->op != LeftParen ? m_ops.back() : nullptr;
         }
         return;
@@ -356,12 +608,14 @@ void Engine::op(int code)
             m_ops.pop_back();
         bool popped = false;
         while (!m_ops.empty() && m_ops.back()->precedence >= f->precedence) {
-            m_postfix.push_back({false, 0, m_ops.back()});
+            m_postfix.push_back({false, 0, m_ops.back(), {}});
             m_ops.pop_back();
             popped = true;
         }
-        if (popped)
+        if (popped) {
             evaluate();
+            updateTape();
+        }
         m_ops.push_back(f);
         m_lastFunction = f;
     }
@@ -373,42 +627,47 @@ void Engine::evaluate()
 {
     // -[AlgebraicEngine evaluateTOS]: the list, left to right, on a stack; a function short of
     // operands takes the last number seen (2 + = is 2 + 2)
-    std::vector<long double> stack;
+    std::vector<Item> stack;
     bool seen = false;
-    long double last = 0;
+    Item last;
     for (const Item &it : m_postfix) {
         if (it.isNumber) {
-            stack.push_back(it.value);
-            last = it.value;
+            stack.push_back(it);
+            last = it;
             seen = true;
             continue;
         }
         std::vector<long double> args;
+        std::vector<std::string> tapes;
         for (int i = 0; i < it.f->params; ++i) {
             if (stack.empty()) {
-                args.push_back(seen ? last : 0);
+                const Item filler = seen ? last : Item{};
+                args.push_back(filler.value);
+                tapes.push_back(tapeOf(filler));
             } else {
-                args.insert(args.begin(), stack.back());
+                args.insert(args.begin(), stack.back().value);
+                tapes.insert(tapes.begin(), tapeOf(stack.back()));
                 stack.pop_back();
             }
         }
-        stack.push_back(perform(it.f, args));
+        const long double v = perform(it.f, args);
+        stack.push_back({true, v, nullptr, tapeFor(it.f, tapes)});
         if (error())
             break;
     }
     if (seen) {
-        m_lastNumber = last;
+        m_lastNumber = last.value;
         m_hasLastNumber = true;
     }
     m_postfix.clear();
     if (error())
         return;
-    const long double r = stack.empty() ? 0 : stack.back();
+    const Item r = stack.empty() ? Item{} : stack.back();
     if (!stack.empty())
         stack.pop_back();
-    for (long double v : stack)
-        m_postfix.push_back({true, v, nullptr});
-    result(r);
+    for (const Item &v : stack)
+        m_postfix.push_back(v);
+    result(r.value, r.tape);
 }
 
 void Engine::immediate(const Function *f)
@@ -416,33 +675,40 @@ void Engine::immediate(const Function *f)
     // -[AlgebraicEngine immediateFunction:]: its operands from the list's end, then the numbers it
     // peeks at before them (% of the number before)
     std::vector<long double> args;
+    std::vector<std::string> tapes;
     for (int i = 0; i < f->params; ++i) {
         if (m_postfix.empty() || !m_postfix.back().isNumber)
             continue;
         args.insert(args.begin(), m_postfix.back().value);
+        tapes.insert(tapes.begin(), tapeOf(m_postfix.back()));
         m_postfix.pop_back();
     }
     for (int i = 1; i <= f->peek && size_t(i) <= m_postfix.size(); ++i) {
         const Item &it = m_postfix[m_postfix.size() - size_t(i)];
-        if (it.isNumber)
+        if (it.isNumber) {
             args.insert(args.begin(), it.value);
+            tapes.insert(tapes.begin(), tapeOf(it));
+        }
     }
-    if (args.empty())
+    if (args.empty()) {
         args.push_back(m_shown);
+        tapes.push_back(m_shownTape.empty() ? tapeString(m_shown) : m_shownTape);
+    }
     const long double v = perform(f, args);
     if (!error())
-        result(v);
+        result(v, tapeFor(f, tapes));
 }
 
-void Engine::result(long double v)
+void Engine::result(long double v, const std::string &tape)
 {
     // -[AlgebraicEngine processOperationResult:]
     if (std::isnan(v))
         return fail("NaN");
     if (std::isinf(v))
         return fail("Over");
-    m_postfix.push_back({true, v, nullptr});
+    m_postfix.push_back({true, v, nullptr, tape});
     m_shown = v;
+    m_shownTape = tape;
 }
 
 void Engine::fail(const std::string &key)
@@ -452,6 +718,7 @@ void Engine::fail(const std::string &key)
     m_postfix.clear();
     m_ops.clear();
     m_leftParens = 0;
+    m_lastIsResult = false;
 }
 
 long double Engine::perform(const Function *f, const std::vector<long double> &args)

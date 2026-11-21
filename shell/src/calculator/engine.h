@@ -21,6 +21,7 @@ namespace Calculator {
 struct Function {
     std::string name;       // "+", "sin", "y^x"...
     std::string selector;   // "plus:", "sin:"...; empty for the engine's own (clear, =, parentheses, memory)
+    std::string speechName; // what Speech says for its key
     int op = 0;             // the operator code
     int params = 0;         // paramsRequired
     int peek = 0;           // peekParameters: numbers before them it reads without taking them (%)
@@ -33,7 +34,9 @@ enum Op {
     RightParen = 15, Negate = 16, Percent = 17, Squared = 18, Cubed = 19, Sin = 20, ASin = 21, Cos = 22, ACos = 23,
     Tan = 24, ATan = 25, Log10 = 26, TenToX = 27, OneOverX = 28, EToX = 29, Ln = 30, Factorial = 31, Sinh = 32,
     ASinh = 33, Cosh = 34, ACosh = 35, XRootY = 36, Tanh = 37, ATanh = 38, Random = 39, MemPlus = 46, MemMinus = 47,
-    MemClear = 48, MemRecall = 49, Pi = 50, E = 51, CubeRoot = 52, Log2 = 53, TwoToX = 54
+    MemClear = 48, MemRecall = 49, Pi = 50, E = 51, CubeRoot = 52, Log2 = 53, TwoToX = 54,
+    // RPNEngine's own (Functions.xml: enter, RPNDrop, RPNRollUp, RPNRollDown, RPNExchange)
+    Enter = 6, RPNDrop = 42, RPNRollUp = 43, RPNRollDown = 44, RPNExchange = 45
 };
 
 class Engine {
@@ -53,6 +56,23 @@ public:
     void clear();
 
     bool radians = false;
+    // RPN (-[BasicAdvancedController setRPNMode:] swaps AlgebraicEngine for RPNEngine, the number
+    // shown carried over): the numbers entered go on a stack (enter), the operators take theirs
+    // from it
+    void setRPN(bool rpn);
+    bool isRPN() const { return m_rpn; }
+    // the stack, its top (y) first
+    std::vector<long double> rpnStack() const;
+
+    // The paper tape (PaperTapeController): setCurrentEquation: the equation evaluated so far, in
+    // place of the tape's last line; completeEquationWithResult: "\n=" and the result, then a new
+    // equation ("\n\n")
+    std::function<void(const std::string &)> onTapeEquation, onTapeResult;
+    // _tapeStringForNumber: %.16lg's digits before the point and the decimal places
+    int tapePrecision = 12;
+    std::string tapeString(long double v) const;
+    // what the engine is told to say (SpeechController): the keys' speechName, the totals
+    std::function<void(const std::string &)> onSpeakButton, onSpeakTotal;
     // What the LCD shows: the number being typed as typed, else the last result; an error's text
     std::string display(int decimals, bool separators) const;
     long double value() const;   // the number shown
@@ -66,13 +86,19 @@ private:
         bool isNumber = true;
         long double value = 0;
         const Function *f = nullptr;
+        std::string tape;   // EngineNumber's tapeRepresentation (empty: the number itself)
     };
+    std::string tapeOf(const Item &it) const { return it.tape.empty() ? tapeString(it.value) : it.tape; }
+    std::string tapeFor(const Function *f, const std::vector<std::string> &args) const;
+    void updateTape();   // -[AlgebraicEngine updateTape]
+    void rpnToken(int code);   // -[RPNEngine userEnteredToken:]
+    void rpnApply(const Function *f);   // -[RPNEngine applyFunction:]
     void enterTyped();   // the number being typed, as a token
-    void enterNumber(long double v);
+    void enterNumber(long double v, const std::string &tape = {});
     void evaluate();     // evaluateTOS
     void immediate(const Function *f);
     long double perform(const Function *f, const std::vector<long double> &args);
-    void result(long double v);   // processOperationResult:
+    void result(long double v, const std::string &tape = {});   // processOperationResult:
     void fail(const std::string &key);
 
     std::vector<Function> m_functions;
@@ -90,6 +116,10 @@ private:
     std::string m_exponentInput;            // after EE
     bool m_inExponent = false;
     long double m_shown = 0;
+    std::string m_shownTape;   // the shown result's tapeRepresentation
+    bool m_rpn = false;
+    std::vector<Item> m_stack;              // RPNEngine's mStack, its top first
+    bool m_lastIsResult = false;            // mLastNumberIsOperationResult
     std::string m_error;                    // the Localizable.strings key of the error shown
 };
 
