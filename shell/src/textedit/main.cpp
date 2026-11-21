@@ -11,6 +11,7 @@
 #include "foundation.h"
 #include "mainmenu.h"
 #include "nib.h"
+#include "pagelayout.h"
 #include "panels.h"
 #include "rulerview.h"
 #include "text.h"
@@ -417,6 +418,9 @@ private:
     bool m_hasMultiplePages = false;
     // -[Document printInfo] (0x10000207a): the shared print info's paper, the margins 72 points
     TextView::PageGeometry m_paper;
+    // NSPrintInfo's page format besides the paper's size: its name, the scale (Page Setup)
+    PrintInfo m_printInfo = PageLayout::defaultPrintInfo();
+    void runPageLayout();
     // NSViewSizeDocumentAttribute: the view's size the file was saved with (none: 0 x 0)
     Size m_viewSize{0, 0};
     bool writeTo(const std::string &path, Type type, std::string *error);
@@ -501,19 +505,12 @@ namespace {
 // +[NSPrintInfo sharedPrintInfo]'s paper: the region's (here the locale's LC_PAPER: A4, US Letter...)
 TextView::PageGeometry sharedPaper()
 {
-    TextView::PageGeometry g;   // US Letter, 612 x 792
-    if (locale_t l = newlocale(LC_PAPER_MASK, "", locale_t(0))) {
-        const unsigned w = unsigned(uintptr_t(nl_langinfo_l(_NL_PAPER_WIDTH, l)));
-        const unsigned h = unsigned(uintptr_t(nl_langinfo_l(_NL_PAPER_HEIGHT, l)));
-        freelocale(l);
-        if (w == 210 && h == 297) {
-            g.paperWidth = 595;   // the printers' A4: 595 x 842
-            g.paperHeight = 842;
-        } else if (w > 0 && h > 0 && w < 2000 && h < 2000 && !(w == 216 && h == 279)) {
-            g.paperWidth = std::round(w * 72 / 25.4);
-            g.paperHeight = std::round(h * 72 / 25.4);
-        }
-    }
+    // the shared print info's paper: Page Setup's Save as Default, else the locale's (US Letter,
+    // A4…), turned for landscape; the margins 72 points
+    const PrintInfo p = PageLayout::defaultPrintInfo();
+    TextView::PageGeometry g;
+    g.paperWidth = p.pageWidth();
+    g.paperHeight = p.pageHeight();
     return g;
 }
 
@@ -1155,6 +1152,8 @@ bool Document::validate(const MainMenuItem &it, MenuValidation &v)
         return rich || (a == "copyFont:" && isRichText());
     if (a == "chooseAndAttachFiles:" || a == "orderFrontSpacingPanel:")
         return rich;
+    if (a == "runPageLayout:")
+        return true;
     // spelling, substitutions, speech, the font, colour, link, list, table and spacing panels, the
     // ruler, Page Setup: not here
     return false;
@@ -1174,6 +1173,8 @@ void Document::perform(const MainMenuItem &it)
         saveAsPDF();
     else if (a == "chooseAndAttachFiles:")
         chooseAndAttachFiles();
+    else if (a == "runPageLayout:")
+        runPageLayout();
     else if (a == "orderFrontSpacingPanel:")
         // NSTextView's: NSTextRulerOptions' spacing sheet over the window
         TextRulerOptions::setSpacing(m_window.get(), tv);
@@ -1416,6 +1417,34 @@ void Document::save(bool as, std::function<void(bool)> done)
                 path += ".txt";
         }
         write(path);
+    });
+}
+
+void Document::runPageLayout()
+{
+    // -[NSDocument runPageLayout:] (AppKit 0x36d276): NSPageLayout as a sheet with the document's
+    // print info; OK: -setPrintInfo: (0x37047b, "Change Print Settings" for undo), and TextEdit's
+    // -[DocumentWindowController printInfoUpdated] (0x10000eb1b) lays the pages out again
+    PrintInfo cur = m_printInfo;
+    cur.landscape = m_paper.paperWidth > m_paper.paperHeight;
+    cur.paperWidth = std::min(m_paper.paperWidth, m_paper.paperHeight);
+    cur.paperHeight = std::max(m_paper.paperWidth, m_paper.paperHeight);
+    if (cur.paperWidth != m_printInfo.paperWidth || cur.paperHeight != m_printInfo.paperHeight)
+        cur.paperName.clear();   // the file's paper: found by its size
+    PageLayout::beginSheet(m_window.get(), cur, [this](bool ok, const PrintInfo &p) {
+        if (!ok)
+            return;
+        const bool same = p.paperWidth == m_printInfo.paperWidth && p.paperHeight == m_printInfo.paperHeight &&
+                          p.landscape == (m_paper.paperWidth > m_paper.paperHeight) && p.scale == m_printInfo.scale &&
+                          p.pageWidth() == m_paper.paperWidth;
+        m_printInfo = p;
+        if (same)
+            return;
+        m_paper.paperWidth = p.pageWidth();
+        m_paper.paperHeight = p.pageHeight();
+        if (m_hasMultiplePages)
+            setHasMultiplePages(true);
+        setEdited(true);
     });
 }
 

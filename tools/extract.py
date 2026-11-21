@@ -89,6 +89,14 @@ WANTED = {
         "./System/Library/PreferencePanes/ParentalControls.prefPane/Contents/Resources/English.lproj/*",
     ],
     "Essentials.pkg": [
+        # NSPageLayout (shell/src/frameworks/AppKit/pagelayout.cpp): PrintingPrivate's page setup
+        # sheet, its Page Attributes panel, their pictures and strings
+        "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintCocoaUI.bundle/Contents/Resources/English.lproj/CocoaPageSetupWindow.nib/*",
+        "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintCocoaUI.bundle/Contents/Resources/English.lproj/Localizable.strings",
+        "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintingCocoaPDEs.bundle/Contents/Resources/English.lproj/PageAttributes.nib/*",
+        "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintingCocoaPDEs.bundle/Contents/Resources/English.lproj/Localizable.strings",
+        "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintingCocoaPDEs.bundle/Contents/Resources/Portrait.tiff",
+        "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintingCocoaPDEs.bundle/Contents/Resources/Landscape.tiff",
         # Calculator (shell/src/calculator): its LCD, the tape's button, the keys' pictures, its nibs,
         # strings and the conversions' tables
         "./Applications/Calculator.app/Contents/Resources/*.tif",

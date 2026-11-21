@@ -348,7 +348,13 @@ std::string tr(const std::string &bundle, const std::string &table, const std::s
 {
     static std::map<std::string, std::map<std::string, std::string>> cache;
     // an application's Contents/Resources, a framework's version's Resources (AppKit.framework/Versions/C)
-    const bool framework = bundle.find(".framework/Versions/") != std::string::npos;
+    // (a bundle inside a framework, PrintingPrivate's plug-ins, is a bundle)
+    auto last = [&bundle](const char *what) {
+        const size_t p = bundle.rfind(what);
+        return p == std::string::npos ? -1L : long(p);
+    };
+    const long fw = last(".framework/Versions/");
+    const bool framework = fw >= 0 && std::max(last(".bundle"), last(".app")) < fw;
     const std::string file = path(bundle + (framework ? "/Resources/English.lproj/" : "/Contents/Resources/English.lproj/") + table + ".strings.json");
     auto it = cache.find(file);
     if (it == cache.end())
