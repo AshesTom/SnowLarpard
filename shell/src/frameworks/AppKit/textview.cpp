@@ -287,7 +287,7 @@ void TextView::layout() const
         pango_layout_set_tabs(p.layout, tabs);
         pango_tab_array_free(tabs);
         // the lines' height: lineHeightMultiple times their own, lineSpacing after each
-        if (ps.lineHeightMultiple > 0)
+        if (ps.lineHeightMultiple > 0 && ps.minimumLineHeight <= 0 && ps.maximumLineHeight <= 0)
             pango_layout_set_line_spacing(p.layout, float(ps.lineHeightMultiple));
         if (ps.lineSpacing > 0)
             pango_layout_set_spacing(p.layout, int(ps.lineSpacing * PANGO_SCALE));
@@ -336,15 +336,31 @@ void TextView::layout() const
         }
         pango_layout_set_attributes(p.layout, attrs);
         pango_attr_list_unref(attrs);
+        // the minimum and maximum line heights (NSParagraphStyle's): the multiple of the first line's
+        // own height kept within them, as the factor of every line (pango has no bounds of its own)
+        double factor = ps.lineHeightMultiple;
+        if (ps.minimumLineHeight > 0 || ps.maximumLineHeight > 0) {
+            PangoRectangle natural;
+            pango_layout_line_get_extents(pango_layout_get_line_readonly(p.layout, 0), nullptr, &natural);
+            const double h = natural.height / double(PANGO_SCALE);
+            if (h > 0) {
+                double target = h * (ps.lineHeightMultiple > 0 ? ps.lineHeightMultiple : 1);
+                if (ps.maximumLineHeight > 0)
+                    target = std::min(target, ps.maximumLineHeight);
+                target = std::max(target, ps.minimumLineHeight);
+                factor = target / h;
+                pango_layout_set_line_spacing(p.layout, float(factor));
+            }
+        }
         PangoRectangle logical;
         pango_layout_get_extents(p.layout, nullptr, &logical);
         // paragraphSpacingBefore above it, paragraphSpacing below; the first line's multiple too
         // (pango's line spacing leaves it: the extra above it, the glyphs at the bottom as Cocoa's)
         y += ps.paragraphSpacingBefore;
-        if (ps.lineHeightMultiple > 1) {
+        if (factor > 1) {
             PangoRectangle first;
             pango_layout_line_get_extents(pango_layout_get_line_readonly(p.layout, 0), nullptr, &first);
-            y += (ps.lineHeightMultiple - 1) * first.height / double(PANGO_SCALE);
+            y += (factor - 1) * first.height / double(PANGO_SCALE);
         }
         p.y = y;
         p.height = logical.height / double(PANGO_SCALE) + ps.lineSpacing;

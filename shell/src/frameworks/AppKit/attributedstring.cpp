@@ -138,6 +138,7 @@ bool ParagraphStyle::operator==(const ParagraphStyle &o) const
     return firstLineHeadIndent == o.firstLineHeadIndent && headIndent == o.headIndent && tailIndent == o.tailIndent &&
            hasTabs == o.hasTabs && tabStops == o.tabStops && defaultTabInterval == o.defaultTabInterval &&
            lineHeightMultiple == o.lineHeightMultiple && lineSpacing == o.lineSpacing &&
+           minimumLineHeight == o.minimumLineHeight && maximumLineHeight == o.maximumLineHeight &&
            paragraphSpacingBefore == o.paragraphSpacingBefore && paragraphSpacing == o.paragraphSpacing;
 }
 
@@ -545,10 +546,18 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                     st.para.firstLineHeadIndent = st.para.headIndent + param / 20.0;
                 else if (word == "ri" && hasParam)
                     st.para.tailIndent = -param / 20.0;
-                else if (word == "sl" && hasParam)
+                else if (word == "sl" && hasParam) {
+                    // alone, a line height: at least that much, exactly when negative
                     slValue = param;
-                else if (word == "slmult" && hasParam && param == 1 && slValue > 0)
+                    st.para.minimumLineHeight = std::abs(param) / 20.0;
+                    st.para.maximumLineHeight = param < 0 ? -param / 20.0 : 0;
+                } else if (word == "slmult" && hasParam && param == 1 && slValue > 0) {
                     st.para.lineHeightMultiple = slValue / 240.0;
+                    st.para.minimumLineHeight = st.para.maximumLineHeight = 0;
+                } else if (word == "slminimum" && hasParam)
+                    st.para.minimumLineHeight = param / 20.0;
+                else if (word == "slmaximum" && hasParam)
+                    st.para.maximumLineHeight = param / 20.0;
                 else if (word == "slleading" && hasParam)
                     st.para.lineSpacing = param / 20.0;
                 else if (word == "sb" && hasParam)
@@ -684,8 +693,29 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
             w += "\\fi" + std::to_string(long(std::floor((p.firstLineHeadIndent - p.headIndent) * 20 + 0.01)));
         if (p.tailIndent < 0)
             w += "\\ri" + std::to_string(long(std::floor(0.01 - p.tailIndent * 20)));
-        if (p.lineHeightMultiple > 0 && p.lineHeightMultiple != 1)
-            w += "\\sl" + std::to_string(long(std::floor(p.lineHeightMultiple * 12 * 20 + 0.01))) + "\\slmult1";
+        // -[NSRTFWriter writeParagraphStyle:] (0x2479f2): the multiple (12 points a line) with the
+        // minimum and maximum after it; else the minimum alone, negative when it is the maximum too
+        // (exactly); a maximum of 0 or 10000000 is none
+        {
+            const double mult = p.lineHeightMultiple, mn = p.minimumLineHeight, mx = p.maximumLineHeight;
+            const bool noMax = mx == 0 || mx >= 10000000;
+            if (mult > 0 && mult != 1) {
+                const std::string sl = "\\sl" + std::to_string(long(std::floor(mult * 12 * 20 + 0.01))) + "\\slmult1";
+                if (noMax)
+                    w += mn > 0 ? sl + "\\slminimum" + twips(mn) : sl;
+                else if (mn == mx)
+                    w += "\\sl-" + twips(mn);
+                else
+                    w += sl + "\\slminimum" + twips(mn) + "\\slmaximum" + twips(mx);
+            } else if (noMax) {
+                if (mn > 0)
+                    w += "\\sl" + twips(mn);
+            } else if (mn == mx) {
+                w += "\\sl-" + twips(mn);
+            } else {
+                w += "\\sl" + twips(mn) + "\\slmaximum" + twips(mx);
+            }
+        }
         if (p.lineSpacing > 0)
             w += "\\slleading" + twips(p.lineSpacing);
         if (p.paragraphSpacingBefore > 0)

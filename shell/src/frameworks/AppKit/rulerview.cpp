@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "rulerview.h"
+#include "textruleroptions.h"
 
 #include "controls.h"
 #include "coreui.h"
@@ -100,10 +101,12 @@ void TextRulerView::buildAccessory()
         };
         const int single = index("Single"), twice = index("Double"), other = index("Other");
         if (single >= 0 && twice >= 0) {
-            // _rulerAccViewSpacingAction:: Single, Double (Other…: NSTextRulerOptions' sheet, not here)
-            if (other >= 0)
-                p->items[size_t(other)].enabled = false;
-            p->onSelect = [this, single, twice](int i) {
+            // _rulerAccViewSpacingAction:: Single, Double; Other…: NSTextRulerOptions' spacing sheet
+            p->onSelect = [this, single, twice, other](int i) {
+                if (i == other && other >= 0) {
+                    TextRulerOptions::setSpacing(m_text->window(), m_text, [this] { update(); });
+                    return;
+                }
                 if (i != single && i != twice)
                     return;
                 const double multiple = i == twice ? 2 : 0;

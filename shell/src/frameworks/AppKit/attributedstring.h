@@ -40,6 +40,7 @@ struct TabStop {
 //   tabStops                          \tx..., given (hasTabs) or the text's defaults; then every
 //                                     defaultTabInterval (\pardeftab)
 //   lineHeightMultiple                \sl (240 a line) \slmult1; lineSpacing \slleading
+//   minimumLineHeight, maximumLineHeight   \sl alone (at least; negative: exactly), \slminimum, \slmaximum
 //   paragraphSpacingBefore, paragraphSpacing   \sb, \sa
 struct ParagraphStyle {
     double firstLineHeadIndent = 0, headIndent = 0, tailIndent = 0;
@@ -47,6 +48,7 @@ struct ParagraphStyle {
     std::vector<TabStop> tabStops;
     double defaultTabInterval = 0;
     double lineHeightMultiple = 0, lineSpacing = 0;
+    double minimumLineHeight = 0, maximumLineHeight = 0;   // points, 0: none
     double paragraphSpacingBefore = 0, paragraphSpacing = 0;
     bool operator==(const ParagraphStyle &o) const;
     bool operator!=(const ParagraphStyle &o) const { return !(*this == o); }

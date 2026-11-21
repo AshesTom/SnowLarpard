@@ -76,6 +76,8 @@ WANTED = {
         "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/NSFindPanel.nib/*",
         "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/FindPanel.strings",
         "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/NSTextRulerAccessory.nib/*",
+        # NSTextRulerOptions' sheets (Spacing, Link, List)
+        "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/NSTextRulerOptions.nib/*",
         "./System/Library/Frameworks/AppKit.framework/Versions/C/Resources/English.lproj/Ruler.strings",
         "./Applications/Utilities/*.app/Contents/Info.plist",
         "./Applications/Utilities/*.app/Contents/Resources/*.icns",

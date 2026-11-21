@@ -14,6 +14,7 @@
 #include "panels.h"
 #include "rulerview.h"
 #include "text.h"
+#include "textruleroptions.h"
 #include "textview.h"
 
 #include <cairo-pdf.h>
@@ -1152,7 +1153,7 @@ bool Document::validate(const MainMenuItem &it, MenuValidation &v)
         a == "unscript:" || a == "raiseBaseline:" || a == "lowerBaseline:" || a == "copyFont:" || a == "alignLeft:" ||
         a == "alignCenter:" || a == "alignRight:" || a == "alignJustified:")
         return rich || (a == "copyFont:" && isRichText());
-    if (a == "chooseAndAttachFiles:")
+    if (a == "chooseAndAttachFiles:" || a == "orderFrontSpacingPanel:")
         return rich;
     // spelling, substitutions, speech, the font, colour, link, list, table and spacing panels, the
     // ruler, Page Setup: not here
@@ -1173,6 +1174,9 @@ void Document::perform(const MainMenuItem &it)
         saveAsPDF();
     else if (a == "chooseAndAttachFiles:")
         chooseAndAttachFiles();
+    else if (a == "orderFrontSpacingPanel:")
+        // NSTextView's: NSTextRulerOptions' spacing sheet over the window
+        TextRulerOptions::setSpacing(m_window.get(), tv);
     else if (a == "printDocument:")
         print();
     else if (a == "revertDocumentToSaved:") {
