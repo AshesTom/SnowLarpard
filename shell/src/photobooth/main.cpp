@@ -12,6 +12,7 @@
 #include "foundation.h"
 #include "library.h"
 #include "mainmenu.h"
+#include "panels.h"
 #include "text.h"
 
 #include <algorithm>
@@ -521,6 +522,18 @@ public:
         if (onScrolled)
             onScrolled();
     }
+    // UndoDeleteViewLayout: a photo deleted put back, the others making room (0.4 s)
+    void insertNode(int index)
+    {
+        ++m_serial;
+        m_scrollingForNew = false;
+        m_nodes.insert(m_nodes.begin() + std::clamp(index, 0, int(m_nodes.size())), Node{});
+        const double w = frame().w;
+        m_right = std::clamp(m_right + Pitch, w, std::max(w, m_nodes.size() * Pitch + 2));
+        arrange(0.4);
+        if (onScrolled)
+            onScrolled();
+    }
     // RevealSelectedLayout: the selected photo brought into the tray
     void reveal(int index)
     {
@@ -709,8 +722,56 @@ private:
 
 // ---- PBApplicationControl, with what PBImagePickerController and the recording controllers do
 
+// IKSlideshow over the photos (IKSlideshowModeImages): black, the picture fitted; ← →, Escape
+class SlideView : public View {
+public:
+    Library *library = nullptr;
+    int index = 0;
+    std::function<void()> onEnd;
+    void draw(cairo_t *cr) override
+    {
+        fill(cr, bounds(), Color::gray(0));
+        if (index < 0 || index >= int(library->assets().size()))
+            return;
+        if (m_shown != index) {
+            m_image = library->fullImage(index);
+            m_shown = index;
+        }
+        if (m_image.isNull())
+            return;
+        const double k = std::min(bounds().w / m_image.width(), bounds().h / m_image.height());
+        const double w = m_image.width() * k, h = m_image.height() * k;
+        m_image.draw(cr, Rect{std::floor((bounds().w - w) / 2), std::floor((bounds().h - h) / 2), w, h});
+    }
+    void keyDown(Event &e) override
+    {
+        const int n = int(library->assets().size());
+        if (e.keysym == 0xff1b) {
+            if (onEnd)
+                onEnd();
+        } else if (e.keysym == 0xff53 || e.keysym == 0x20) {
+            index = std::min(n - 1, index + 1);
+            setNeedsDisplay();
+        } else if (e.keysym == 0xff51) {
+            index = std::max(0, index - 1);
+            setNeedsDisplay();
+        }
+    }
+    void mouseDown(Event &) override
+    {
+        index = std::min(int(library->assets().size()) - 1, index + 1);
+        setNeedsDisplay();
+    }
+    bool acceptsFirstResponder() const override { return true; }
+
+private:
+    Image m_image;
+    int m_shown = -1;
+};
+
 class PhotoBooth {
 public:
+    void quitting() { m_library.emptyIntermediateTrash(); }
     PhotoBooth() : m_settings("photobooth")
     {
         m_window = std::make_unique<Window>(Size{640, 660}, "Photo Booth");
@@ -833,7 +894,7 @@ private:
         auto *email = button("Email", "iconBtn_Mail", {16, 8, 38, 50});
         email->action = [this] { sendEmail(); };
         // iPhoto, the account's picture and iChat's are the Mac's own programs: not done
-        button("Account Picture", "iconBtn_account", {455, 8, 80, 50})->setEnabled(false);
+        button("Account Picture", "iconBtn_account", {455, 8, 80, 50})->action = [this] { useForLogin(); };
         button("Buddy Picture", "iconBtn_iChat", {553, 8, 75, 50})->setEnabled(false);
     }
 
@@ -1113,7 +1174,8 @@ private:
             return;
         const bool wasSelected = index == m_tray->selected;
         const int selected = m_tray->selected;
-        m_library.remove(index);
+        // -[PBTrayViewNode delete:]: its undo (PBAsset undoDelete, UndoDeleteViewLayout)
+        m_undo.push_back({m_library.remove(index), index});
         m_tray->removeNode(index);
         refreshPhotoCount();
         // -_updateSelectedForNewNodeIndex:: the next photo, or the last
@@ -1123,6 +1185,114 @@ private:
         else if (selected > index)
             m_tray->selected = selected - 1;
     }
+    // Edit ▸ Undo Delete: the photo back from IntermediateTrashDirectory, in its place
+    void undoDelete()
+    {
+        if (m_undo.empty() || m_developing)
+            return;
+        const auto [asset, index] = m_undo.back();
+        m_undo.pop_back();
+        m_library.restore(asset, index);
+        m_tray->insertNode(index);
+        refreshPhotoCount();
+        select(index);
+    }
+    // Edit ▸ Delete All Photos…: -deleteAll:'s critical alert sheet, OK deletes them all (no undo)
+    void deleteAll()
+    {
+        Alert::beginSheet(m_window.get(), Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/PhotoBooth.icns"), {64, 64}),
+                          tr("Are you sure you want to permanently delete all the photos?"),
+                          tr("You cannot recover the photos after they are deleted."), {tr("OK"), tr("Cancel")}, [this](int b) {
+                              if (b != 0)
+                                  return;
+                              m_library.removeAll();
+                              m_undo.clear();
+                              m_tray->reloadData();
+                              select(-1);
+                              refreshPhotoCount();
+                          });
+    }
+    // Edit ▸ Copy (one photo): its file and its picture on the pasteboard
+    void copySelected()
+    {
+        const int i = m_tray->selected;
+        if (i < 0 || m_library.assets()[i].movie)
+            return;
+        const std::string tmp = "/tmp/photobooth-copy.png";
+        m_library.fullImage(i).savePng(tmp);
+        const bool wayland = std::getenv("WAYLAND_DISPLAY");
+        spawn(wayland ? std::vector<std::string>{"sh", "-c", "wl-copy -t image/png < '" + tmp + "'"}
+                      : std::vector<std::string>{"xclip", "-selection", "clipboard", "-t", "image/png", "-i", tmp});
+    }
+    // File ▸ Export…: the save panel in PBLastExportPath (~/Pictures), the name with .gif; a GIF of the
+    // asset's pictures (a 4-up's four, a second each, looping: NSImageFrameCount, NSImageCurrentFrameDuration
+    // 1, NSImageLoopCount 0)
+    void exportSelected()
+    {
+        const int i = m_tray->selected;
+        if (i < 0 || m_library.assets()[i].movie)
+            return;
+        const std::string last = m_settings.string("PBLastExportPath", home() + "/Pictures");
+        const std::string name = baseName(m_library.assets()[i].files[0]);
+        SavePanel::run("Export", last + "/" + (m_library.assets()[i].files.size() == 4 ? name.substr(0, name.rfind(" #")) : name) + ".gif", {},
+                       [this, i](std::string path) {
+                           if (path.empty())
+                               return;
+                           m_settings.set("PBLastExportPath", dirName(path));
+                           std::vector<std::string> argv = {"ffmpeg", "-y", "-loglevel", "error"};
+                           const auto &files = m_library.assets()[size_t(i)].files;
+                           if (files.size() > 1) {
+                               argv.insert(argv.end(), {"-framerate", "1", "-i", m_library.root() + "/" + baseName(files[0]).substr(0, baseName(files[0]).rfind(" #")) + " #%d.jpg", "-loop", "0"});
+                           } else {
+                               argv.insert(argv.end(), {"-i", m_library.path(i)});
+                           }
+                           argv.push_back(path);
+                           spawn(argv);
+                       });
+    }
+    // File ▸ Print…: PBPrinting's WebKit templates and accessory not ported: the picture to lp
+    void printSelected()
+    {
+        const int i = m_tray->selected < 0 ? int(m_library.assets().size()) - 1 : m_tray->selected;
+        if (i < 0 || m_library.assets()[i].movie)
+            return;
+        const std::string tmp = "/tmp/photobooth-print.png";
+        m_library.fullImage(i).savePng(tmp);
+        spawn({"lp", "-t", "Photo Booth", tmp});
+    }
+    // View ▸ Start Slideshow: IKSlideshow (images) from the photo selected, full screen
+    void startSlideshow()
+    {
+        if (m_library.assets().empty() || m_slideshow)
+            return;
+        const Rect screen = App::shared().screenFrame();
+        m_slideshow = std::make_unique<Window>(Size{screen.w, screen.h}, "Slideshow", Window::FullScreen);
+        auto *v = m_slideshow->contentView()->add<SlideView>();
+        v->setFrame({0, 0, screen.w, screen.h});
+        v->library = &m_library;
+        v->index = std::max(0, m_tray->selected);
+        v->onEnd = [this] { App::shared().later([this] { m_slideshow.reset(); }); };
+        m_slideshow->makeFirstResponder(v);
+        m_slideshow->show();
+        m_slideshow->grabInput();
+    }
+    // Account Picture (-useForLogin:, PBUserPicture): the picture made square, the user's picture
+    // (here ~/.face, as the display managers read it), then the Accounts pane
+    void useForLogin()
+    {
+        const int i = m_tray->selected;
+        if (i < 0 || m_library.assets()[i].movie)
+            return;
+        const Image full = m_library.fullImage(i);
+        const int side = std::min(full.width(), full.height());
+        Image square(side, side);
+        cairo_t *cr = cairo_create(square.surface());
+        full.draw(cr, Rect{-(full.width() - side) / 2.0, -(full.height() - side) / 2.0, double(full.width()), double(full.height())});
+        cairo_destroy(cr);
+        square.savePng(home() + "/.face");
+        spawn({"xdg-open", "x-snowleopard-prefs:accounts"});
+    }
+
     void flipSelected()   // Edit ▸ Flip Photo
     {
         const int i = m_tray->selected;
@@ -1172,6 +1342,17 @@ private:
             }
             if (a == "showPicture:")
                 return !m_library.assets().empty();
+            if (a == "undo:") {
+                v.title = m_undo.empty() ? "Undo" : "Undo Delete";
+                return !m_undo.empty();
+            }
+            const bool image = selected && !m_library.assets()[m_tray->selected].movie;
+            if (a == "copy:" || a == "export:")
+                return image;
+            if (a == "printDocument:")
+                return image;
+            if (a == "deleteAll:" || a == "startSlideshow:")
+                return !m_library.assets().empty();
             if (a == "nextEffects:" || a == "previousEffects:")
                 return m_video->mode != VideoView::Still;
             return false;
@@ -1194,6 +1375,18 @@ private:
             } else if (a == "autoFlipPhotoOnOff:") {
                 m_autoFlip = !m_autoFlip;
                 m_settings.set("AutoFlipPhoto", m_autoFlip);
+            } else if (a == "undo:") {
+                undoDelete();
+            } else if (a == "deleteAll:") {
+                deleteAll();
+            } else if (a == "copy:") {
+                copySelected();
+            } else if (a == "export:") {
+                exportSelected();
+            } else if (a == "printDocument:") {
+                printSelected();
+            } else if (a == "startSlideshow:") {
+                startSlideshow();
             } else if (a == "showPicture:") {
                 if (m_tray->selected < 0 && count > 0)
                     select(count - 1);
@@ -1246,6 +1439,8 @@ private:
     Camera m_camera;
     Effects m_fx;
     Library m_library;
+    std::vector<std::pair<Asset, int>> m_undo;   // the photos deleted, for Undo
+    std::unique_ptr<Window> m_slideshow;
 
     VideoView *m_video = nullptr;
     ControlBar *m_bar = nullptr;
@@ -1285,5 +1480,8 @@ int main()
         return 1;
     }
     PhotoBooth booth;
-    return app.run();
+    const int code = app.run();
+    // -applicationWillTerminate:: the photos deleted go to the Trash
+    booth.quitting();
+    return code;
 }

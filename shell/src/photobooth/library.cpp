@@ -284,42 +284,72 @@ bool Library::addFourUp(const std::vector<Image> &photos)
     return true;
 }
 
-void Library::remove(int index)
+namespace {
+
+// FUN_10001b605 / FUN_10001b53e: ~/Library/Application Support/com.apple.PhotoBooth/IntermediateTrashDirectory,
+// here in the XDG data folder
+std::string intermediateTrash()
 {
-    if (index < 0 || index >= int(m_assets.size()))
-        return;
-    // the desktop's trash (the freedesktop Trash specification): files/ and info/<name>.trashinfo
+    const char *data = std::getenv("XDG_DATA_HOME");
+    const std::string dir = (data && *data ? std::string(data) : home() + "/.local/share") + "/snowleopard/com.apple.PhotoBooth/IntermediateTrashDirectory";
+    makePath(dir);
+    return dir;
+}
+
+// the desktop's trash (the freedesktop Trash specification): files/ and info/<name>.trashinfo
+void trashFile(const std::string &from, const std::string &originalPath)
+{
     const char *data = std::getenv("XDG_DATA_HOME");
     const std::string trash = (data && *data ? std::string(data) : home() + "/.local/share") + "/Trash";
     makePath(trash + "/files");
     makePath(trash + "/info");
-    for (const std::string &name : m_assets[index].files) {
-        const std::string from = m_root + "/" + name;
-        std::string to = name;
-        for (int n = 2; isFile(trash + "/files/" + to) || isFile(trash + "/info/" + to + ".trashinfo"); ++n)
-            to = baseName(name) + " " + std::to_string(n) + "." + extension(name);
-        char when[32];
-        const std::time_t t = std::time(nullptr);
-        std::tm tm {};
-        localtime_r(&t, &tm);
-        std::strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S", &tm);
-        std::string encoded;
-        for (unsigned char c : from) {
-            char hex[4];
-            if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~')
-                encoded += char(c);
-            else {
-                std::snprintf(hex, sizeof hex, "%%%02X", c);
-                encoded += hex;
-            }
+    const std::string name = from.substr(from.rfind('/') + 1);
+    std::string to = name;
+    for (int n = 2; isFile(trash + "/files/" + to) || isFile(trash + "/info/" + to + ".trashinfo"); ++n)
+        to = baseName(name) + " " + std::to_string(n) + "." + extension(name);
+    char when[32];
+    const std::time_t t = std::time(nullptr);
+    std::tm tm {};
+    localtime_r(&t, &tm);
+    std::strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S", &tm);
+    std::string encoded;
+    for (unsigned char c : originalPath) {
+        char hex[4];
+        if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~')
+            encoded += char(c);
+        else {
+            std::snprintf(hex, sizeof hex, "%%%02X", c);
+            encoded += hex;
         }
-        std::ofstream info(trash + "/info/" + to + ".trashinfo");
-        info << "[Trash Info]\nPath=" << encoded << "\nDeletionDate=" << when << "\n";
-        info.close();
-        if (std::rename(from.c_str(), (trash + "/files/" + to).c_str()) != 0)
-            std::remove((trash + "/info/" + to + ".trashinfo").c_str());   // another volume: the picture stays
     }
+    std::ofstream info(trash + "/info/" + to + ".trashinfo");
+    info << "[Trash Info]\nPath=" << encoded << "\nDeletionDate=" << when << "\n";
+    info.close();
+    if (std::rename(from.c_str(), (trash + "/files/" + to).c_str()) != 0)
+        std::remove((trash + "/info/" + to + ".trashinfo").c_str());   // another volume: the picture stays
+}
+
+} // namespace
+
+Asset Library::remove(int index)
+{
+    if (index < 0 || index >= int(m_assets.size()))
+        return {};
+    const std::string dir = intermediateTrash();
+    for (const std::string &name : m_assets[index].files)
+        std::rename((m_root + "/" + name).c_str(), (dir + "/" + name).c_str());
+    Asset a = m_assets[index];
     m_assets.erase(m_assets.begin() + index);
+    save();
+    return a;
+}
+
+void Library::restore(const Asset &asset, int index)
+{
+    const std::string dir = intermediateTrash();
+    for (const std::string &name : asset.files)
+        std::rename((dir + "/" + name).c_str(), (m_root + "/" + name).c_str());
+    m_assets.insert(m_assets.begin() + std::clamp(index, 0, int(m_assets.size())), asset);
     save();
 }
 
@@ -327,6 +357,13 @@ void Library::removeAll()
 {
     while (!m_assets.empty())
         remove(int(m_assets.size()) - 1);
+}
+
+void Library::emptyIntermediateTrash()
+{
+    const std::string dir = intermediateTrash();
+    for (const std::string &path : files(dir))   // whole paths
+        trashFile(path, m_root + "/" + fileName(path));
 }
 
 void Library::flip(int index)

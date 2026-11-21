@@ -27,10 +27,14 @@ public:
     // -[PBAssetCollection appendNewAsset:]: the files written, the asset last, Recents.plist rewritten
     bool addPhoto(const AK::Image &photo);
     bool addFourUp(const std::vector<AK::Image> &photos);
-    // -[PBAsset delete]: 10.6 moves the files to a folder of its own until it quits (its undo), then to
-    // the Trash; here straight to the desktop's trash
-    void remove(int index);
+    // -[PBAsset delete]: the files moved to IntermediateTrashDirectory (in Photo Booth's application
+    // support folder) until it quits, for Undo; -undoDelete moves them back
+    Asset remove(int index);
+    void restore(const Asset &asset, int index);
+    // -[PBAssetCollection deleteAllAssets]: every one deleted so
     void removeAll();
+    // -applicationWillTerminate:: what was deleted to the Trash
+    void emptyIntermediateTrash();
     // -[PBImageAsset flip]: the picture mirrored, in its file
     void flip(int index);
     AK::Image fullImage(int index) const;   // a 4-up's four in a square
