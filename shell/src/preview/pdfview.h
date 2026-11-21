@@ -45,6 +45,25 @@ public:
     std::string selectedText() const;
     void copy() const;   // the selected text to the clipboard (wl-copy or xclip)
 
+    // The annotation tools (PVPDFView setAddingAnnotationType: / setAddingMarkupType:): 0 none, else
+    // PVAnnotation's type; a shape drawn by dragging, a note by a click, a markup over the text
+    // selected with it
+    int addingType() const { return m_adding; }
+    void setAddingType(int type);
+    // -addAnnotationOverCurrentSelection: (Tools > Annotate with the text selected): the shape around
+    // it, a note at its middle (24 × 24), a markup over it; false without a selection
+    bool addOverSelection(int type);
+    int selectedAnnotation() const { return m_selectedAnnot; }
+    void deleteSelectedAnnotation();   // -deleteSelectedAnnotations (Delete)
+    // a text annotation of `text` centred at `at` (Helvetica 36, PVAnnotationFreeText's
+    // newFreeTextAnnotationSizeForString:)
+    void addFreeText(int page, AK::Point at, const std::string &text);
+    AK::Point pageToView(int page, AK::Point p) const;
+    void annotationsChanged(int page);  // the page drawn again
+    std::function<void(int index)> onAnnotationAdded;
+    std::function<void()> onAnnotationsChanged;
+    std::function<void(int page, AK::Point at)> onFreeText;   // where a text annotation goes
+
     std::function<void(int)> onPageChanged;
     std::function<void(double)> onScaleChanged;
 
@@ -86,7 +105,11 @@ private:
     double m_cacheScale = 0;
 
     // the mouse
-    enum Drag { None, Pan, Selecting, Marquee, VKnob, HKnob, Arrow } m_drag = None;
+    enum Drag { None, Pan, Selecting, Marquee, VKnob, HKnob, Arrow, Creating } m_drag = None;
+    int m_adding = 0, m_selectedAnnot = -1;
+    int m_createPage = -1;
+    AK::Point m_createFrom, m_createTo;   // in the page's points
+    int addAnnotation(int type, int page, AK::Rect rect, AK::Point from = {}, AK::Point to = {});
     AK::Point m_down, m_last;
     double m_dragStart = 0;
     int m_arrowDir = 0, m_repeat = 0;

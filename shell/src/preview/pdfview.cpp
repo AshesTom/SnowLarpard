@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "pdfview.h"
 
+#include <ctime>
+
 #include "coreui.h"
 #include "controls.h"
+#include "text.h"
 
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -15,6 +18,8 @@
 using namespace AK;
 
 namespace Preview {
+
+static AK::Color annotationColor(int type);
 
 namespace {
 
@@ -431,6 +436,46 @@ void PDFView::draw(cairo_t *cr)
         }
         if (m_selPage == i && !m_selection.empty())
             m_doc->drawSelection(cr, i, m_scale, m_selection);
+        // the annotation being drawn, in its colour and width
+        if (m_drag == Creating && m_createPage == i) {
+            const Color c = annotationColor(m_adding);
+            cairo_set_source_rgb(cr, c.r, c.g, c.b);
+            cairo_set_line_width(cr, 3 * m_scale);
+            const Point a{m_createFrom.x * m_scale, m_createFrom.y * m_scale}, b{m_createTo.x * m_scale, m_createTo.y * m_scale};
+            if (m_adding == 1) {
+                cairo_move_to(cr, a.x, a.y);
+                cairo_line_to(cr, b.x, b.y);
+            } else if (m_adding == 2) {
+                const double w = std::abs(b.x - a.x), h = std::abs(b.y - a.y);
+                if (w > 1 && h > 1) {
+                    cairo_save(cr);
+                    cairo_translate(cr, std::min(a.x, b.x) + w / 2, std::min(a.y, b.y) + h / 2);
+                    cairo_scale(cr, w / 2, h / 2);
+                    cairo_arc(cr, 0, 0, 1, 0, 2 * M_PI);
+                    cairo_restore(cr);
+                }
+            } else {
+                cairo_rectangle(cr, std::min(a.x, b.x), std::min(a.y, b.y), std::abs(b.x - a.x), std::abs(b.y - a.y));
+            }
+            cairo_stroke(cr);
+        }
+        // the selected annotation: framed, its corners' handles (-drawSelectionBorderInView:)
+        if (m_selectedAnnot >= 0 && size_t(m_selectedAnnot) < m_doc->annotations().size() &&
+            m_doc->annotations()[size_t(m_selectedAnnot)].page == i) {
+            const Rect a = m_doc->annotations()[size_t(m_selectedAnnot)].rect;
+            const Rect r2{std::floor(a.x * m_scale) + 0.5, std::floor(a.y * m_scale) + 0.5, std::floor(a.w * m_scale), std::floor(a.h * m_scale)};
+            cairo_set_line_width(cr, 1);
+            cairo_set_source_rgba(cr, 0.35, 0.35, 0.35, 0.8);
+            cairo_rectangle(cr, r2.x, r2.y, r2.w, r2.h);
+            cairo_stroke(cr);
+            for (const Point &h : {Point{r2.x, r2.y}, Point{r2.right(), r2.y}, Point{r2.x, r2.bottom()}, Point{r2.right(), r2.bottom()}}) {
+                cairo_rectangle(cr, h.x - 3, h.y - 3, 6, 6);
+                cairo_set_source_rgb(cr, 1, 1, 1);
+                cairo_fill_preserve(cr);
+                cairo_set_source_rgb(cr, 0.35, 0.35, 0.35);
+                cairo_stroke(cr);
+            }
+        }
         cairo_restore(cr);
     }
     if (!m_marquee.empty()) {
@@ -465,6 +510,137 @@ void PDFView::drawScrollers(cairo_t *cr, const Layout &l)
     }
     if (l.vertical && l.horizontal)
         fill(cr, Rect{l.content.w, l.content.h, SBW, SBW}, Color::gray(237));
+}
+
+// PVAnnotation's defaults (persistentColorForType:, persistentLineWidthForType:): the shapes, the text
+// and strike through PVAnnotationBanner's red (tag 101: 0.969, 0.290, 0.243), the note its yellow
+// (103: 0.941, 0.863, 0.169), the highlight the highlighting yellow (0.984, 0.929, 0.451), the
+// underline black; lines 3 wide
+static Color annotationColor(int type)
+{
+    switch (type) {
+    case 4: return {0.941, 0.863, 0.169, 1};
+    case 7: return {0.984, 0.929, 0.451, 1};
+    case 9: return {0, 0, 0, 1};
+    default: return {0.969, 0.290, 0.243, 1};
+    }
+}
+
+void PDFView::setAddingType(int type)
+{
+    m_adding = type;
+    m_selectedAnnot = -1;
+    setNeedsDisplay();
+}
+
+void PDFView::annotationsChanged(int page)
+{
+    m_cache.erase(page);
+    setNeedsDisplay();
+    if (onAnnotationsChanged)
+        onAnnotationsChanged();
+}
+
+int PDFView::addAnnotation(int type, int page, Rect rect, Point from, Point to)
+{
+    Document::Annotation a;
+    a.type = type;
+    a.page = page;
+    a.rect = rect;
+    a.start = from;
+    a.end = to;
+    a.color = annotationColor(type);
+    a.lineWidth = 3;
+    if (type == 4) {
+        // -defaultTextContents: the date, NSDateFormatterShortStyle with the time
+        char buf[64];
+        const time_t now = time(nullptr);
+        std::strftime(buf, sizeof buf, "%m/%d/%y %l:%M %p", std::localtime(&now));
+        a.contents = buf;
+    }
+    auto *doc = const_cast<Document *>(m_doc);
+    const int index = doc->addAnnotation(a);
+    if (index >= 0) {
+        m_selectedAnnot = index;
+        annotationsChanged(page);
+        if (onAnnotationAdded)
+            onAnnotationAdded(index);
+    }
+    return index;
+}
+
+bool PDFView::addOverSelection(int type)
+{
+    if (m_selPage < 0 || m_selection.empty())
+        return false;
+    const std::vector<Rect> lines = m_doc->selectionRects(m_selPage, m_selection);
+    if (lines.empty())
+        return false;
+    Rect b = lines[0];
+    for (const Rect &l : lines) {
+        const double r = std::max(b.right(), l.right()), bot = std::max(b.bottom(), l.bottom());
+        b.x = std::min(b.x, l.x), b.y = std::min(b.y, l.y);
+        b.w = r - b.x, b.h = bot - b.y;
+    }
+    const int page = m_selPage;
+    if (type >= 7) {
+        addAnnotation(type, page, m_selection);
+    } else if (type == 4) {
+        // a note of 24 × 24 at the selection's middle
+        addAnnotation(type, page, {std::round(b.x + b.w / 2) - 12, std::round(b.y + b.h / 2) - 12, 24, 24});
+    } else {
+        // the shapes around it, out by the line's width; the oval out to hold the rectangle
+        double grow = 3;
+        Rect r{b.x - grow, b.y - grow, b.w + 2 * grow, b.h + 2 * grow};
+        if (type == 2) {
+            const double w2 = r.h / 2, d = w2 + std::hypot(w2, r.w), e = std::sqrt(d * d - r.w * r.w);
+            const double dx = ((w2 < r.w ? d : e) - r.w) / 2, dy = ((w2 < r.w ? e : d) - r.h) / 2;
+            r = {r.x - dx, r.y - dy, r.w + 2 * dx, r.h + 2 * dy};
+        }
+        if (type == 1)
+            addAnnotation(type, page, r, {r.x, r.y + r.h / 2}, {r.right(), r.y + r.h / 2});
+        else
+            addAnnotation(type, page, r);
+    }
+    m_selection = {};
+    setNeedsDisplay();
+    return true;
+}
+
+void PDFView::addFreeText(int page, Point at, const std::string &text)
+{
+    if (text.empty())
+        return;
+    const double w = std::ceil(textWidth(text, Font{36, false, "Helvetica"})) + 12, h = 46;
+    Document::Annotation a;
+    a.type = 5;
+    a.page = page;
+    a.rect = {std::round(at.x - w / 2), std::round(at.y - h / 2), w, h};
+    a.color = annotationColor(5);
+    a.contents = text;
+    const int index = const_cast<Document *>(m_doc)->addAnnotation(a);
+    if (index >= 0) {
+        m_selectedAnnot = index;
+        annotationsChanged(page);
+        if (onAnnotationAdded)
+            onAnnotationAdded(index);
+    }
+}
+
+Point PDFView::pageToView(int page, Point p) const
+{
+    const Rect pr = pageRect(page);
+    return {pr.x + p.x * m_scale - m_x + m_originX, pr.y + p.y * m_scale - m_y + m_originY};
+}
+
+void PDFView::deleteSelectedAnnotation()
+{
+    if (m_selectedAnnot < 0 || size_t(m_selectedAnnot) >= m_doc->annotations().size())
+        return;
+    const int page = m_doc->annotations()[size_t(m_selectedAnnot)].page;
+    const_cast<Document *>(m_doc)->removeAnnotation(m_selectedAnnot);
+    m_selectedAnnot = -1;
+    annotationsChanged(page);
 }
 
 void PDFView::mouseDown(Event &e)
@@ -512,9 +688,30 @@ void PDFView::mouseDown(Event &e)
     if (!l.content.contains(e.location))
         return;
     const Point d = toDocument(e.location);
-    if (m_tool == Move) {
+    if (m_adding && m_doc->isPDF() && m_adding < 7) {
+        const int page = pageAt(d, false);
+        if (page < 0)
+            return;
+        const Rect pr = pageRect(page);
+        const Point p{(d.x - pr.x) / m_scale, (d.y - pr.y) / m_scale};
+        if (m_adding == 4) {
+            addAnnotation(4, page, {std::round(p.x) - 12, std::round(p.y) - 12, 24, 24});
+            return;
+        }
+        if (m_adding == 5) {
+            if (onFreeText)
+                onFreeText(page, p);
+            return;
+        }
+        m_drag = Creating;
+        m_createPage = page;
+        m_createFrom = m_createTo = p;
+        setNeedsDisplay();
+        return;
+    }
+    if (m_tool == Move && !m_adding) {
         m_drag = Pan;
-    } else if (m_tool == Text && m_doc->isPDF()) {
+    } else if ((m_tool == Text || m_adding >= 7) && m_doc->isPDF()) {
         m_drag = Selecting;
         m_selPage = pageAt(d, true);
         const Rect pr = pageRect(m_selPage);
@@ -563,6 +760,13 @@ void PDFView::mouseDragged(Event &e)
         setNeedsDisplay();
         break;
     }
+    case Creating: {
+        const Point d = toDocument(e.location);
+        const Rect pr = pageRect(m_createPage);
+        m_createTo = {(d.x - pr.x) / m_scale, (d.y - pr.y) / m_scale};
+        setNeedsDisplay();
+        break;
+    }
     case Marquee: {
         const Point d = toDocument(e.location);
         const Point a = toDocument(m_down);
@@ -584,17 +788,46 @@ void PDFView::mouseUp(Event &e)
     const Drag drag = m_drag;
     m_drag = None;
     setNeedsDisplay();
+    if (drag == Creating) {
+        // -trackAnnotationResize:…isNewAnnotation:: the rectangle dragged; nothing for a click
+        // (an empty annotation is taken back)
+        const Point a = m_createFrom, b = m_createTo;
+        if (m_moved) {
+            if (m_adding == 1) {
+                const Rect r{std::min(a.x, b.x) - 3, std::min(a.y, b.y) - 3, std::abs(b.x - a.x) + 6, std::abs(b.y - a.y) + 6};
+                addAnnotation(1, m_createPage, r, a, b);
+            } else if (m_adding == 2 || m_adding == 3) {
+                addAnnotation(m_adding, m_createPage, {std::min(a.x, b.x), std::min(a.y, b.y), std::abs(b.x - a.x), std::abs(b.y - a.y)});
+            }
+        }
+        m_createPage = -1;
+        return;
+    }
+    if (drag == Selecting && m_adding >= 7 && m_moved) {
+        // -toggleMarkupOfType:overSelection: on the mouse's going up
+        addOverSelection(m_adding);
+        return;
+    }
     if (drag == Selecting && !m_moved)
         m_selection = {};
     if (m_moved || !(drag == Pan || drag == Selecting || drag == Marquee))
         return;
-    // a click: a link under it is followed
+    // a click: an annotation under it selected, else a link under it followed
     const Point d = toDocument(e.location);
     const int page = pageAt(d, false);
     if (page < 0)
         return;
     const Rect pr = pageRect(page);
     const Point inPage{(d.x - pr.x) / m_scale, (d.y - pr.y) / m_scale};
+    m_selectedAnnot = -1;
+    const auto &annots = m_doc->annotations();
+    for (size_t i = annots.size(); i-- > 0;) {
+        if (annots[i].page == page && annots[i].rect.contains(inPage)) {
+            m_selectedAnnot = int(i);
+            setNeedsDisplay();
+            return;
+        }
+    }
     for (const Document::Link &link : m_doc->links(page)) {
         if (!link.rect.contains(inPage))
             continue;
@@ -656,6 +889,10 @@ void PDFView::keyDown(Event &e)
     case XKB_KEY_Page_Down: scrollTo(m_x, m_y + (l.content.h - 19)); break;
     case XKB_KEY_Home: scrollTo(m_x, 0); break;
     case XKB_KEY_End: scrollTo(m_x, l.height); break;
+    case XKB_KEY_BackSpace:
+    case XKB_KEY_Delete:
+        deleteSelectedAnnotation();
+        break;
     default: View::keyDown(e); break;
     }
 }

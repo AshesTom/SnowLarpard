@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <memory>
 #include <sys/stat.h>
 
@@ -614,6 +615,9 @@ public:
             updateToolbar();
         };
         m_pdf->onScaleChanged = [this](double) { updateToolbar(); };
+        m_pdf->onAnnotationsChanged = [this] { edited(); };
+        m_pdf->onAnnotationAdded = [this](int index) { m_added.push_back(index); };
+        m_pdf->onFreeText = [this](int page, Point at) { freeText(page, at); };
         m_sidebar->onPage = [this](int page) { m_pdf->goToPage(page); };
         m_sidebar->onMatch = [this](int i) { m_pdf->showMatch(i); };
         m_sidebar->onModeChanged = [this](Sidebar::Mode m) {
@@ -728,6 +732,23 @@ public:
             return pdf && m_matchCount > 0;
         if (a == "doUseSelectionForFind:")
             return !sheet && pdf && !m_pdf->selectedText().empty();
+        static const std::map<std::string, int> annotations = {
+            {"addAnnotationArrow:", 1}, {"addAnnotationOval:", 2}, {"addAnnotationRectangle:", 3}, {"addAnnotationNote:", 4},
+            {"addAnnotationText:", 5}, {"addAnnotationHighlight:", 7}, {"addAnnotationStrikethrough:", 8}, {"addAnnotationUnderline:", 9}};
+        if (auto it = annotations.find(a); it != annotations.end()) {
+            v.checked = m_pdf->addingType() == it->second;
+            return !sheet && pdf;
+        }
+        if (a == "addAnnotationLink:")
+            return false;   // links: not ported
+        if (a == "delete:")
+            return m_pdf->selectedAnnotation() >= 0;
+        if (a == "undo:") {
+            v.title = m_added.empty() ? "Undo" : "Undo Add Annotation";
+            return !m_added.empty();
+        }
+        if (a == "saveDocument:")
+            return m_doc->isEdited();
         if (a == "goToPageNumberPanel:")
             return !sheet && pages > 1;
         if (a == "toggleInspector:") {
@@ -774,6 +795,26 @@ public:
         } else if (a == "doFindNext:" || a == "doFindPrevious:") {
             m_match = (m_match + (a == "doFindNext:" ? 1 : m_matchCount - 1)) % m_matchCount;
             m_pdf->showMatch(m_match);
+        } else if (a.rfind("addAnnotation", 0) == 0) {
+            static const std::map<std::string, int> types = {
+                {"addAnnotationArrow:", 1}, {"addAnnotationOval:", 2}, {"addAnnotationRectangle:", 3}, {"addAnnotationNote:", 4},
+                {"addAnnotationText:", 5}, {"addAnnotationHighlight:", 7}, {"addAnnotationStrikethrough:", 8}, {"addAnnotationUnderline:", 9}};
+            if (auto it = types.find(a); it != types.end())
+                annotate(it->second);
+        } else if (a == "delete:") {
+            removeFromUndo(m_pdf->selectedAnnotation());
+            m_pdf->deleteSelectedAnnotation();
+        } else if (a == "undo:") {
+            // the last annotation added taken back
+            if (!m_added.empty()) {
+                const int index = m_added.back();
+                m_added.pop_back();
+                const int page = m_doc->annotations()[size_t(index)].page;
+                const_cast<Document *>(m_doc.get())->removeAnnotation(index);
+                m_pdf->annotationsChanged(page);
+            }
+        } else if (a == "saveDocument:") {
+            save();
         } else if (a == "goToPageNumberPanel:") {
             goToPagePanel();
         } else if (a == "toggleInspector:") {
@@ -800,6 +841,17 @@ public:
     }
 
 private:
+    // the annotations' indexes after one is removed
+    void removeFromUndo(int index)
+    {
+        if (index < 0)
+            return;
+        m_added.erase(std::remove(m_added.begin(), m_added.end(), index), m_added.end());
+        for (int &i : m_added)
+            if (i > index)
+                --i;
+    }
+
     // Go to Page… (⌥⌘G, -goToPageNumberPanel:): PVPDFPageNumberPanel.nib as a sheet (172 × 92), the
     // field "Page:" given the page's label (-currentPageNumberString); OK goes to the page with that
     // label, else that number (-gotoMediaElementWithLabel:), a beep when there is none
@@ -1077,10 +1129,72 @@ private:
     {
         if (!m_banner) {
             m_banner = m_window->contentView()->add<AnnotationBanner>();
+            m_banner->onTool = [this](int type) { m_pdf->setAddingType(type); };
         } else {
             m_banner->setHidden(!m_banner->isHidden());
+            if (m_banner->isHidden()) {
+                // its tool put away with it
+                m_banner->selectType(0);
+                m_pdf->setAddingType(0);
+            }
         }
         layout();
+    }
+
+    // -[PVWindowController setAnnotationToolType:] (Tools > Annotate): with text selected the
+    // annotation goes over it; else the annotations' bar shown with that tool chosen, chosen again
+    // put away
+    void annotate(int type)
+    {
+        if (!m_doc->isPDF())
+            return;
+        if (m_pdf->addOverSelection(type))
+            return;
+        if (!m_banner || m_banner->isHidden())
+            toggleBanner();
+        const int t = m_banner->selectedType() == type ? 0 : type;
+        m_banner->selectType(t);
+        m_pdf->setAddingType(t);
+    }
+
+    // a text annotation: typed in a field where the click was, made on Return
+    void freeText(int page, Point at)
+    {
+        if (m_freeText)
+            m_window->contentView()->removeSubview(m_freeText);
+        m_freeText = m_window->contentView()->add<TextField>();
+        const Point v = m_pdf->pageToView(page, at);
+        m_freeText->setFrame({m_pdf->frame().x + v.x - 80, m_pdf->frame().y + v.y - 11, 160, 22});
+        m_freeText->onEnter = [this, page, at] {
+            const std::string text = m_freeText->text;
+            App::shared().later([this, page, at, text] {
+                if (m_freeText) {
+                    m_window->contentView()->removeSubview(m_freeText);
+                    m_freeText = nullptr;
+                }
+                m_pdf->addFreeText(page, at, text);
+                m_window->makeFirstResponder(m_pdf);
+            });
+        };
+        m_window->makeFirstResponder(m_freeText);
+    }
+
+    void edited()
+    {
+        m_window->setDocumentEdited(m_doc->isEdited());
+    }
+
+    // Save (⌘S): the PDF with its annotations, in place
+    bool save()
+    {
+        std::string error;
+        if (!m_doc->saveTo(m_doc->path(), &error)) {
+            Alert::beginSheet(m_window.get(), Image::load(res("preview.icns"), {64, 64}), tr("Couldn_t save document."), error, {"OK"}, nullptr);
+            return false;
+        }
+        const_cast<Document *>(m_doc.get())->setEdited(false);
+        edited();
+        return true;
     }
 
     void searchSoon(const std::string &text)
@@ -1175,15 +1289,32 @@ private:
                     m_selectedBackground.draw(cr, r);
                 m_divider.draw(cr, Rect{r.right(), 0, 1, BottomBarHeight});
                 const Image &img = m_tools[i];
-                img.draw(cr, Point{std::floor(r.x + (r.w - img.width()) / 2), std::floor((BottomBarHeight - img.height()) / 2)});
+                img.draw(cr, Rect{std::floor(r.x + (r.w - img.width()) / 2), std::floor((BottomBarHeight - img.height()) / 2), double(img.width()), double(img.height())},
+                         Types[i] == 6 ? 0.35 : 1);
             }
+        }
+        // the tools' tags (PVAnnotationBanner annotationTypeForToolTag:): rectangle 21 → 3, oval
+        // 20 → 2, line 22 → 1, text 25 → 5, note 24 → 4, link 23 → 6, highlight 10 → 7, strike
+        // through 11 → 8, underline 12 → 9
+        static constexpr int Types[] = {3, 2, 1, 5, 4, 6, 7, 8, 9};
+        std::function<void(int type)> onTool;
+        int selectedType() const { return m_selected < 0 ? 0 : Types[m_selected]; }
+        void selectType(int type)
+        {
+            m_selected = -1;
+            for (int i = 0; i < 9; ++i)
+                if (Types[i] == type)
+                    m_selected = i;
+            setNeedsDisplay();
         }
         void mouseDown(Event &e) override
         {
             for (size_t i = 0; i < m_tools.size(); ++i)
-                if (cell(int(i)).contains(e.location))
+                if (cell(int(i)).contains(e.location) && Types[i] != 6)   // links: not ported
                     m_selected = m_selected == int(i) ? -1 : int(i);
             setNeedsDisplay();
+            if (onTool)
+                onTool(selectedType());
         }
 
     private:
@@ -1196,6 +1327,8 @@ private:
     std::unique_ptr<Document> m_doc;
     std::unique_ptr<Window> m_window;
     std::unique_ptr<Window> m_slideshow;
+    std::vector<int> m_added;          // the annotations added, for Undo
+    TextField *m_freeText = nullptr;
     Rect m_visible;
     Toolbar *m_toolbar = nullptr;
     PDFView *m_pdf = nullptr;

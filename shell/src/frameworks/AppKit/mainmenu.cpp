@@ -364,7 +364,8 @@ const MainMenuItem *MainMenu::forKey(const std::vector<MainMenuItem> &items, con
             continue;
         if (bool(it.modifiers & Command) != command || bool(it.modifiers & Option) != bool(e.modifiers & Option))
             continue;
-        if ((it.modifiers & Control) && !control)
+        // Control with Command asks for an item that has both (Preview's ⌃⌘H Highlight Text, not ⌘H)
+        if (bool(it.modifiers & Control) != control)
             continue;
         if (isLetter(it.key)) {
             if (std::tolower(static_cast<unsigned char>(it.key[0])) != std::tolower(static_cast<unsigned char>(key[0])) || key.size() != 1)

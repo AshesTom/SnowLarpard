@@ -331,8 +331,14 @@ bool Document::saveTo(const std::string &path, std::string *error) const
 {
     if (m_pdf) {
         GError *err = nullptr;
-        if (poppler_document_save_a_copy(m_pdf, uriOf(path).c_str(), &err))
+        // with its annotations (poppler_document_save writes the changes), through a file beside
+        // it moved into place: the document open is read from its own
+        const std::string tmp = path + ".preview-save";
+        const bool ok = m_annotations.empty() && !m_edited ? poppler_document_save_a_copy(m_pdf, uriOf(tmp).c_str(), &err)
+                                                           : poppler_document_save(m_pdf, uriOf(tmp).c_str(), &err);
+        if (ok && std::rename(tmp.c_str(), path.c_str()) == 0)
             return true;
+        std::remove(tmp.c_str());
         if (error)
             *error = err ? err->message : "";
         if (err)
@@ -357,6 +363,119 @@ bool Document::saveTo(const std::string &path, std::string *error) const
     const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
     std::fclose(f);
     return ok;
+}
+
+std::vector<Rect> Document::selectionRects(int page, const Rect &r) const
+{
+    std::vector<Rect> out;
+    if (!m_pdf)
+        return out;
+    Page p(m_pdf, page);
+    if (!p)
+        return out;
+    PopplerRectangle sel{r.x, r.y, r.right(), r.bottom()};
+    cairo_region_t *region = poppler_page_get_selected_region(p.p, 1, POPPLER_SELECTION_GLYPH, &sel);
+    if (!region)
+        return out;
+    for (int i = 0, n = cairo_region_num_rectangles(region); i < n; ++i) {
+        cairo_rectangle_int_t c;
+        cairo_region_get_rectangle(region, i, &c);
+        out.push_back({double(c.x), double(c.y), double(c.width), double(c.height)});
+    }
+    cairo_region_destroy(region);
+    // one rectangle a line: the region's pieces on the same line joined
+    std::sort(out.begin(), out.end(), [](const Rect &a, const Rect &b) { return a.y < b.y || (a.y == b.y && a.x < b.x); });
+    std::vector<Rect> lines;
+    for (const Rect &q : out) {
+        if (!lines.empty() && std::abs(lines.back().y - q.y) < 1 && std::abs(lines.back().h - q.h) < 1) {
+            Rect &l = lines.back();
+            const double right = std::max(l.right(), q.right());
+            l.x = std::min(l.x, q.x);
+            l.w = right - l.x;
+        } else {
+            lines.push_back(q);
+        }
+    }
+    return lines;
+}
+
+int Document::addAnnotation(Annotation a)
+{
+    if (!m_pdf)
+        return -1;
+    Page p(m_pdf, a.page);
+    if (!p)
+        return -1;
+    const double h = m_sizes[size_t(a.page)].h;
+    PopplerRectangle r{a.rect.x, h - a.rect.bottom(), a.rect.right(), h - a.rect.y};
+    PopplerColor color{guint16(a.color.r * 65535), guint16(a.color.g * 65535), guint16(a.color.b * 65535)};
+    PopplerAnnot *annot = nullptr;
+    if (a.type == 2 || a.type == 3) {
+        annot = a.type == 2 ? poppler_annot_circle_new(m_pdf, &r) : poppler_annot_square_new(m_pdf, &r);
+        poppler_annot_set_border_width(annot, a.lineWidth);
+    } else if (a.type == 1) {
+        PopplerPoint s{a.start.x, h - a.start.y}, e{a.end.x, h - a.end.y};
+        annot = poppler_annot_line_new(m_pdf, &r, &s, &e);
+        poppler_annot_set_border_width(annot, a.lineWidth);
+    } else if (a.type == 4) {
+        annot = poppler_annot_text_new(m_pdf, &r);
+        poppler_annot_text_set_icon(POPPLER_ANNOT_TEXT(annot), POPPLER_ANNOT_TEXT_ICON_COMMENT);
+    } else if (a.type == 5) {
+        annot = poppler_annot_free_text_new(m_pdf, &r);
+        PopplerFontDescription *font = poppler_font_description_new("Helvetica");
+        font->size_pt = 36;
+        poppler_annot_free_text_set_font_desc(POPPLER_ANNOT_FREE_TEXT(annot), font);
+        poppler_font_description_free(font);
+        poppler_annot_free_text_set_font_color(POPPLER_ANNOT_FREE_TEXT(annot), &color);
+        poppler_annot_set_border_width(annot, 0);
+    } else if (a.type >= 7 && a.type <= 9) {
+        const std::vector<Rect> lines = selectionRects(a.page, a.rect);
+        if (lines.empty())
+            return -1;
+        GArray *quads = g_array_new(FALSE, FALSE, sizeof(PopplerQuadrilateral));
+        double x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+        for (const Rect &l : lines) {
+            PopplerQuadrilateral q;
+            q.p1 = {l.x, h - l.y};
+            q.p2 = {l.right(), h - l.y};
+            q.p3 = {l.x, h - l.bottom()};
+            q.p4 = {l.right(), h - l.bottom()};
+            g_array_append_val(quads, q);
+            x1 = std::min(x1, l.x), x2 = std::max(x2, l.right());
+            y1 = std::min(y1, h - l.bottom()), y2 = std::max(y2, h - l.y);
+        }
+        PopplerRectangle bounds{x1, y1, x2, y2};
+        annot = a.type == 7 ? poppler_annot_text_markup_new_highlight(m_pdf, &bounds, quads)
+              : a.type == 8 ? poppler_annot_text_markup_new_strikeout(m_pdf, &bounds, quads)
+                            : poppler_annot_text_markup_new_underline(m_pdf, &bounds, quads);
+        g_array_free(quads, TRUE);
+        a.rect = {x1, h - y2, x2 - x1, y2 - y1};
+    }
+    if (!annot)
+        return -1;
+    if (a.type != 5)
+        poppler_annot_set_color(annot, &color);
+    if (!a.contents.empty())
+        poppler_annot_set_contents(annot, a.contents.c_str());
+    poppler_page_add_annot(p.p, annot);
+    a.annot = annot;
+    m_annotations.push_back(a);
+    m_edited = true;
+    return int(m_annotations.size()) - 1;
+}
+
+void Document::removeAnnotation(int index)
+{
+    if (index < 0 || size_t(index) >= m_annotations.size())
+        return;
+    Annotation &a = m_annotations[size_t(index)];
+    Page p(m_pdf, a.page);
+    if (p && a.annot)
+        poppler_page_remove_annot(p.p, POPPLER_ANNOT(a.annot));
+    if (a.annot)
+        g_object_unref(a.annot);
+    m_annotations.erase(m_annotations.begin() + index);
+    m_edited = true;
 }
 
 } // namespace Preview

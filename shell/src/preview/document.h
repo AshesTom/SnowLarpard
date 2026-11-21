@@ -67,6 +67,27 @@ public:
     Info info() const;
     // a picture's size in pixels (the page's points are its pixels)
     AK::Size pixelSize() const;
+    // Annotations added (PVAnnotation's types: 1 line, 2 oval, 3 rectangle, 4 note, 5 free text,
+    // 7 highlight, 8 strike through, 9 underline), made poppler annotations of the page: drawn with
+    // it, written by Save
+    struct Annotation {
+        int type = 0;
+        int page = 0;
+        AK::Rect rect;                 // in the page's points, top left origin
+        AK::Point start, end;          // a line's
+        AK::Color color;
+        double lineWidth = 3;
+        std::string contents;
+        void *annot = nullptr;         // its PopplerAnnot
+    };
+    // the selected text's lines, for the markups (page points)
+    std::vector<AK::Rect> selectionRects(int page, const AK::Rect &r) const;
+    int addAnnotation(Annotation a);   // its index
+    void removeAnnotation(int index);
+    const std::vector<Annotation> &annotations() const { return m_annotations; }
+    bool isEdited() const { return m_edited; }
+    void setEdited(bool e) { m_edited = e; }
+
     // Save As: the document written again (a PDF through poppler; a picture copied)
     bool saveTo(const std::string &path, std::string *error = nullptr) const;
 
@@ -76,6 +97,8 @@ private:
     PopplerDocument *m_pdf = nullptr;
     AK::Image m_image;
     std::vector<AK::Size> m_sizes;
+    std::vector<Annotation> m_annotations;
+    bool m_edited = false;
 };
 
 } // namespace Preview
