@@ -141,7 +141,8 @@ private:
     // the paragraph from `start`'s marker's end (no marker: start)
     size_t listMarkerEnd(size_t start) const;
     void reformList(size_t at);
-    void unnestList(size_t start);   // -_unnestListAtIndex:markerRange: at the outermost level
+    void unnestList(size_t start);   // -_unnestListAtIndex:markerRange:: one level out
+    void nestList(size_t start);     // -_nestListAtIndex:: one level in
     struct Paragraph {
         size_t start = 0, end = 0;   // bytes of text, end before its '\n'
         PangoLayout *layout = nullptr;

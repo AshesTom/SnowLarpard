@@ -992,24 +992,50 @@ std::optional<TextList> TextView::selectedList() const
 
 void TextView::reformList(size_t at)
 {
-    // the run of paragraphs in the same list around `at`, numbered from its start
+    // -_reformListAtIndex:: the run of list paragraphs around `at`, each item numbered within its
+    // list (an item further out ends the lists inside it), its marker the enclosing item's first
+    // when the list prepends it
     const std::string &s = m_text.text;
     if (s.empty())
         return;
-    size_t p = paraStartOf(s, std::min(at, s.size()));
-    const Style here = p < s.size() ? m_text.styleAt(p) : m_typing;
-    if (here.para.textLists.empty())
-        return;
-    const TextList list = here.para.textLists.front();
-    auto inList = [&](size_t start) {
+    auto listsAt = [&](size_t start) -> std::vector<TextList> {
         const Style st = start < m_text.size() ? m_text.styleAt(start) : (start > 0 ? m_text.styleAt(start - 1) : m_typing);
-        return !st.para.textLists.empty() && st.para.textLists.front() == list;
+        return st.para.textLists;
     };
-    while (p > 0 && inList(paraStartOf(s, p - 1)))
+    size_t p = paraStartOf(s, std::min(at, s.size()));
+    if (listsAt(p).empty())
+        return;
+    while (p > 0 && !listsAt(paraStartOf(s, p - 1)).empty())
         p = paraStartOf(s, p - 1);
-    long item = list.start;
+    struct Level {
+        TextList list;
+        long item;
+        std::string marker;   // the item's marker as shown (for the lists inside that prepend it)
+    };
+    std::vector<Level> levels;
     for (;;) {
-        const std::string marker = "\t" + list.marker(item) + "\t";
+        const std::vector<TextList> lists = listsAt(p);
+        if (lists.empty())
+            break;
+        const size_t d = lists.size();
+        // the levels open still: the same lists, outermost first
+        size_t keep = 0;
+        while (keep < levels.size() && keep < d && levels[keep].list == lists[keep])
+            ++keep;
+        if (keep < d - 1 || keep > d)
+            keep = std::min(keep, d - 1);
+        levels.resize(keep);
+        if (levels.size() == d) {
+            ++levels.back().item;
+        } else {
+            while (levels.size() < d)
+                levels.push_back({lists[levels.size()], lists[levels.size()].start, {}});
+        }
+        Level &here = levels.back();
+        here.marker = here.list.marker(here.item);
+        if ((here.list.options & 1) && d >= 2)
+            here.marker = levels[d - 2].marker + here.marker;
+        const std::string marker = "\t" + here.marker + "\t";
         const size_t old = listMarkerEnd(p);
         if (m_text.text.compare(p, old - p, marker) != 0 || old == p) {
             const Style st = markerStyle(p < m_text.size() ? m_text.styleAt(p) : m_typing);
@@ -1025,18 +1051,94 @@ void TextView::reformList(size_t at)
             shift(m_caret);
             shift(m_anchor);
         }
-        ++item;
         const size_t end = paraEndOf(m_text.text, p);
-        if (end >= m_text.size() || !inList(end + 1))
+        if (end >= m_text.size())
             break;
         p = end + 1;
     }
 }
 
+namespace {
+
+// the indents and tab stops of an item `depth` lists in: the head indent (depth × 36), a tab 25
+// points before it and one at it, the paragraph's stops further out kept
+void indentForList(ParagraphStyle &ps, size_t depth)
+{
+    const double indent = 36.0 * double(depth);
+    ps.firstLineHeadIndent = 0;
+    ps.headIndent = indent;
+    std::vector<TabStop> kept;
+    if (ps.hasTabs)
+        for (const TabStop &t : ps.tabStops)
+            if (t.location > indent + 36 || (t.location > indent && t.location != indent + 11 && t.location != indent + 36))
+                kept.push_back(t);
+    if (depth > 0)
+        kept.insert(kept.begin(), {{indent - 25, TabStop::Left}, {indent, TabStop::Left}});
+    ps.tabStops = kept;
+    ps.hasTabs = true;
+}
+
+} // namespace
+
+void TextView::nestList(size_t start)
+{
+    // -_nestListAtIndex: (0x5a502d): one list further in; the list of an item next to it at that
+    // depth in the same enclosing item (looked for before it, then after), else a new {hyphen} one
+    const std::string &s = m_text.text;
+    const std::vector<TextList> lists = start < m_text.size() ? m_text.styleAt(start).para.textLists : m_typing.para.textLists;
+    if (lists.empty())
+        return;
+    const size_t d = lists.size();
+    auto listsAt = [&](size_t p) { return p < m_text.size() ? m_text.styleAt(p).para.textLists : std::vector<TextList>(); };
+    auto sameOuter = [&](const std::vector<TextList> &l) { return l.size() >= d && std::equal(lists.begin(), lists.end(), l.begin()); };
+    std::optional<std::vector<TextList>> found;
+    for (size_t p = start; p > 0 && !found;) {
+        p = paraStartOf(s, p - 1);
+        const auto l = listsAt(p);
+        if (!sameOuter(l))
+            break;
+        if (l.size() == d + 1)
+            found = l;
+    }
+    for (size_t p = paraEndOf(s, start) + 1; p < s.size() && !found; p = paraEndOf(s, p) + 1) {
+        const auto l = listsAt(p);
+        if (!sameOuter(l))
+            break;
+        if (l.size() == d + 1)
+            found = l;
+    }
+    std::vector<TextList> nested = found ? *found : lists;
+    if (!found)
+        nested.push_back(TextList{"{hyphen}", 0, 1});
+    const size_t end = std::min(m_text.size(), paraEndOf(s, start) + 1);
+    auto apply = [&nested](Style &st) {
+        st.para.textLists = nested;
+        indentForList(st.para, nested.size());
+    };
+    if (start < end)
+        m_text.setStyle(start, end, apply);
+    apply(m_typing);
+    reformList(start);
+}
+
 void TextView::unnestList(size_t start)
 {
-    // out of the list: the marker gone, the paragraph's indents back at the margin; the items after
-    // it numbered again
+    // -_unnestListAtIndex:markerRange:: one list further out; out of the outermost the marker goes
+    // and the paragraph is back at the margin; the items after it numbered again
+    const std::vector<TextList> lists = start < m_text.size() ? m_text.styleAt(start).para.textLists : m_typing.para.textLists;
+    if (lists.size() > 1) {
+        std::vector<TextList> outer(lists.begin(), lists.end() - 1);
+        const size_t end = std::min(m_text.size(), paraEndOf(m_text.text, start) + 1);
+        auto apply = [&outer](Style &st) {
+            st.para.textLists = outer;
+            indentForList(st.para, outer.size());
+        };
+        if (start < end)
+            m_text.setStyle(start, end, apply);
+        apply(m_typing);
+        reformList(start);
+        return;
+    }
     const size_t end = listMarkerEnd(start);
     const size_t para = paraEndOf(m_text.text, start);
     const long removed = long(end - start);
@@ -1086,8 +1188,12 @@ void TextView::setListMarkerFormat(const std::string &format, unsigned options, 
                 s.para.textLists.clear();
                 return;
             }
-            s.para.textLists = {list};
-            const double indent = 36;   // (level + 1) × 36
+            // the paragraph's own list (its innermost) replaced, the ones around it kept
+            if (s.para.textLists.empty())
+                s.para.textLists = {list};
+            else
+                s.para.textLists.back() = list;
+            const double indent = 36.0 * double(s.para.textLists.size());   // (level + 1) × 36
             s.para.firstLineHeadIndent = 0;
             s.para.headIndent = indent;
             std::vector<TabStop> kept;
@@ -1400,8 +1506,25 @@ void TextView::keyDown(Event &e)
         return;
     }
     case XKB_KEY_Tab:
-        insertText("\t");
+    case XKB_KEY_ISO_Left_Tab: {
+        // -insertTab: just after an item's marker nests it, -insertBacktab: (Shift-Tab) takes it out
+        const size_t ps = paraStartOf(s, m_caret);
+        const size_t mEnd = editable && !hasSelection() ? listMarkerEnd(ps) : ps;
+        const bool back = shift || e.keysym == XKB_KEY_ISO_Left_Tab;
+        if (mEnd > ps && m_caret == mEnd) {
+            snapshot(false);
+            if (back)
+                unnestList(ps);
+            else
+                nestList(ps);
+            m_typing = styleAtSelection();
+            changed();
+            return;
+        }
+        if (!back)
+            insertText("\t");
         return;
+    }
     case XKB_KEY_Escape:
         return;
     default:

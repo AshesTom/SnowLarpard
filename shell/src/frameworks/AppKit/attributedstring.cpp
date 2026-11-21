@@ -464,9 +464,9 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
     // \levelprepend) by its \listid; \listoverride's \ls numbers to those
     struct RtfList {
         long id = 0;
-        TextList list;
-        int levels = 0;
+        std::vector<TextList> levels;   // a list per \listlevel, outermost first
     };
+    long paragraphList = 0;   // the paragraph's \ls, for its \ilvl
     std::vector<RtfList> rtfLists;
     std::map<long, long> listOverrides;
     bool inListOverride = false;
@@ -484,8 +484,8 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
             return;
         }
         if (s.dest == LevelMarker) {
-            if (!rtfLists.empty() && rtfLists.back().levels == 1)
-                appendUtf8(rtfLists.back().list.markerFormat, c);
+            if (!rtfLists.empty() && !rtfLists.back().levels.empty())
+                appendUtf8(rtfLists.back().levels.back().markerFormat, c);
             return;
         }
         if (s.dest == ListTable)
@@ -622,11 +622,11 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                         rtfLists.push_back({});
                         inListOverride = false;
                     } else if (word == "listlevel" && !rtfLists.empty())
-                        ++rtfLists.back().levels;
-                    else if (word == "levelstartat" && hasParam && !rtfLists.empty() && rtfLists.back().levels == 1)
-                        rtfLists.back().list.start = param;
-                    else if (word == "levelprepend" && !rtfLists.empty() && rtfLists.back().levels == 1)
-                        rtfLists.back().list.options |= 1;
+                        rtfLists.back().levels.push_back({});
+                    else if (word == "levelstartat" && hasParam && !rtfLists.empty() && !rtfLists.back().levels.empty())
+                        rtfLists.back().levels.back().start = param;
+                    else if (word == "levelprepend" && !rtfLists.empty() && !rtfLists.back().levels.empty())
+                        rtfLists.back().levels.back().options |= 1;
                     else if (word == "levelmarker")
                         s.dest = LevelMarker;
                     else if (word == "leveltext" || word == "levelnumbers" || word == "listname")
@@ -640,13 +640,17 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                             rtfLists.back().id = param;
                     } else if (word == "ls" && hasParam && inListOverride)
                         listOverrides[param] = overrideListId;
-                } else if (word == "ls" && hasParam && s.dest == Text) {
-                    // the paragraph's list (its first level: nested levels not kept)
-                    const auto o = listOverrides.find(param);
-                    const long id = o == listOverrides.end() ? param : o->second;
+                } else if ((word == "ls" || word == "ilvl") && hasParam && s.dest == Text) {
+                    // the paragraph's list and its level: the list's levels down to it
+                    if (word == "ls")
+                        paragraphList = param;
+                    const long level = word == "ilvl" ? std::max(0L, param) : 0;
+                    const auto o = listOverrides.find(paragraphList);
+                    const long id = o == listOverrides.end() ? paragraphList : o->second;
                     for (const RtfList &l : rtfLists)
-                        if (l.id == id)
-                            s.style.para.textLists = {l.list};
+                        if (l.id == id && !l.levels.empty())
+                            s.style.para.textLists.assign(l.levels.begin(),
+                                                          l.levels.begin() + long(std::min(l.levels.size(), size_t(level) + 1)));
                 } else if (word == "stylesheet" ||
                          word == "expandedcolortbl" || word == "header" || word == "footer" || word == "pict" || word == "object" ||
                          word == "themedata" || word == "colorschememapping" || word == "latentstyles")
@@ -877,18 +881,22 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
     if (fonts.empty())
         fontIndex(t.styles.empty() ? Style() : t.styles[0]);
     // the lists, in the order their paragraphs come (-[NSRTFWriter writeListTable] 0x2449f0)
-    std::vector<TextList> lists;
-    auto listIndex = [&](const TextList &l) {
+    // a \list per outermost list, with a level for each list inside it the text has
+    std::vector<std::vector<TextList>> lists;
+    auto listIndex = [&](const std::vector<TextList> &l) {
         for (size_t i = 0; i < lists.size(); ++i)
-            if (lists[i] == l)
+            if (lists[i].front() == l.front()) {
+                if (l.size() > lists[i].size() && std::equal(lists[i].begin(), lists[i].end(), l.begin()))
+                    lists[i] = l;
                 return i + 1;
+            }
         lists.push_back(l);
         return lists.size();
     };
     for (size_t i = 0; i <= t.text.size() && !t.text.empty();) {
         const Style &st = t.styleAt(std::min(i, t.text.size() - 1));
         if (!st.para.textLists.empty())
-            listIndex(st.para.textLists.front());
+            listIndex(st.para.textLists);
         const size_t nl = t.text.find('\n', i);
         if (nl == std::string::npos)
             break;
@@ -978,7 +986,7 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
         w += s.align == Alignment::Center ? "\\qc" : s.align == Alignment::Right ? "\\qr" : s.align == Alignment::Justified ? "\\qj" : "\\ql\\qnatural";
         w += "\\pardirnatural";
         if (!p.textLists.empty())
-            w += "\n\\ls" + std::to_string(listIndex(p.textLists.front())) + "\\ilvl0";
+            w += "\n\\ls" + std::to_string(listIndex(p.textLists)) + "\\ilvl" + std::to_string(p.textLists.size() - 1);
         return w;
     };
     bool first = true;
@@ -1114,33 +1122,39 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
         // own character
         out += "{\\*\\listtable";
         for (size_t k = 0; k < lists.size(); ++k) {
-            const TextList &l = lists[k];
-            const std::string f = l.markerFormat;
-            const unsigned nfc = f.find("{decimal}") != std::string::npos ? 0
-                                 : f.find("{upper-roman}") != std::string::npos ? 1
-                                 : f.find("{lower-roman}") != std::string::npos ? 2
-                                 : f.find("{upper-alpha}") != std::string::npos || f.find("{upper-latin}") != std::string::npos ? 3
-                                 : f.find("{lower-alpha}") != std::string::npos || f.find("{lower-latin}") != std::string::npos ? 4
-                                                                                                                    : 23;
             const std::string id = std::to_string(k + 1);
             out += "{\\list\\listtemplateid" + id + "\\listhybrid";
-            out += "{\\listlevel\\levelnfc" + std::to_string(nfc) + "\\levelnfcn" + std::to_string(nfc) +
-                   "\\leveljc0\\leveljcn0\\levelfollow0\\levelstartat" + std::to_string(l.start) + "\\levelspace360\\levelindent0";
-            out += "{\\*\\levelmarker " + rtfText(f) + "}";
-            if (l.options & 1)
-                out += "\\levelprepend";
-            out += "{\\leveltext\\leveltemplateid" + id;
-            char hex[8];
-            if (l.isOrdered()) {
-                const std::string pre = l.prefix(), suf = l.suffix();
-                std::snprintf(hex, sizeof hex, "\\'%02x", unsigned(pre.size() + suf.size() + 1) & 0xff);
-                out += hex + rtfText(pre) + "\\'00" + rtfText(suf);
-                std::snprintf(hex, sizeof hex, "\\'%02x", unsigned(pre.size() + 1) & 0xff);
-                out += ";}{\\levelnumbers" + std::string(hex) + ";}";
-            } else {
-                out += "\\'01" + rtfText(l.marker(1)) + ";}{\\levelnumbers;}";
+            for (size_t level = 0; level < lists[k].size(); ++level) {
+                const TextList &l = lists[k][level];
+                const std::string f = l.markerFormat;
+                const unsigned nfc = f.find("{decimal}") != std::string::npos ? 0
+                                     : f.find("{upper-roman}") != std::string::npos ? 1
+                                     : f.find("{lower-roman}") != std::string::npos ? 2
+                                     : f.find("{upper-alpha}") != std::string::npos || f.find("{upper-latin}") != std::string::npos ? 3
+                                     : f.find("{lower-alpha}") != std::string::npos || f.find("{lower-latin}") != std::string::npos ? 4
+                                                                                                                        : 23;
+                out += "{\\listlevel\\levelnfc" + std::to_string(nfc) + "\\levelnfcn" + std::to_string(nfc) +
+                       "\\leveljc0\\leveljcn0\\levelfollow0\\levelstartat" + std::to_string(l.start) + "\\levelspace360\\levelindent0";
+                out += "{\\*\\levelmarker " + rtfText(f) + "}";
+                if (l.options & 1)
+                    out += "\\levelprepend";
+                out += "{\\leveltext\\leveltemplateid" + std::to_string((level * 100) + k + 1);
+                char hex[8];
+                if (l.isOrdered()) {
+                    const std::string pre = l.prefix(), suf = l.suffix();
+                    std::snprintf(hex, sizeof hex, "\\'%02x", unsigned(pre.size() + suf.size() + 1) & 0xff);
+                    out += hex + rtfText(pre);
+                    std::snprintf(hex, sizeof hex, "\\'%02x", unsigned(level) & 0xff);   // the level's number
+                    out += hex + rtfText(suf);
+                    std::snprintf(hex, sizeof hex, "\\'%02x", unsigned(pre.size() + 1) & 0xff);
+                    out += ";}{\\levelnumbers" + std::string(hex) + ";}";
+                } else {
+                    out += "\\'01" + rtfText(l.marker(1)) + ";}{\\levelnumbers;}";
+                }
+                const std::string li = std::to_string(720 * (level + 1));
+                out += "\\fi-360\\li" + li + "\\lin" + li + " }";
             }
-            out += "\\fi-360\\li720\\lin720 }{\\listname ;}\\listid" + id + "}";
+            out += "{\\listname ;}\\listid" + id + "}";
         }
         out += "}\n{\\*\\listoverridetable";
         for (size_t k = 0; k < lists.size(); ++k)
