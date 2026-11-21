@@ -116,6 +116,15 @@ Image attachmentImage(Attachment &a)
         f.write(a.data.data(), std::streamsize(a.data.size()));
     }
     a.image = Image::load(file);
+    // NSTextAttachmentCell's for a file that is no picture: its icon (NSWorkspace's, 32 × 32), the
+    // generic document's
+    if (a.image.isNull()) {
+        a.image = Image::load(Assets::path("/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericDocumentIcon.icns"),
+                              {32, 32});
+        if (!a.image.isNull() && (a.image.width() != 32 || a.image.height() != 32))
+            a.image = a.image.scaled(32, 32);
+        a.width = a.height = 32;
+    }
     if (!a.image.isNull() && (a.width <= 0 || a.height <= 0)) {
         a.width = a.image.width();
         a.height = a.image.height();

@@ -367,6 +367,7 @@ public:
     void save(bool as, std::function<void(bool)> done = {});
     void print();
     void saveAsPDF();
+    void chooseAndAttachFiles();
 
 private:
     void build();
@@ -976,8 +977,10 @@ bool Document::validate(const MainMenuItem &it, MenuValidation &v)
         a == "unscript:" || a == "raiseBaseline:" || a == "lowerBaseline:" || a == "copyFont:" || a == "alignLeft:" ||
         a == "alignCenter:" || a == "alignRight:" || a == "alignJustified:")
         return rich || (a == "copyFont:" && isRichText());
+    if (a == "chooseAndAttachFiles:")
+        return rich;
     // spelling, substitutions, speech, the font, colour, link, list, table and spacing panels, the
-    // ruler, Page Setup, Attach Files, the properties: not here
+    // ruler, Page Setup: not here
     return false;
 }
 
@@ -993,6 +996,8 @@ void Document::perform(const MainMenuItem &it)
         save(true);
     else if (a == "saveDocumentAsPDFTo:")
         saveAsPDF();
+    else if (a == "chooseAndAttachFiles:")
+        chooseAndAttachFiles();
     else if (a == "printDocument:")
         print();
     else if (a == "revertDocumentToSaved:") {
@@ -1227,6 +1232,56 @@ void Document::save(bool as, std::function<void(bool)> done)
                 path += ".txt";
         }
         write(path);
+    });
+}
+
+void Document::chooseAndAttachFiles()
+{
+    // -[DocumentWindowController chooseAndAttachFiles:] (0x10000e513): an open panel (several files,
+    // folders too) as a sheet; its block (0x10000ece1) makes an NSTextAttachment of each file's
+    // NSFileWrapper and puts them in place of the selection (shouldChangeTextInRange:, then
+    // replaceCharactersInRange:withAttributedString:, didChangeText); the ones that fail are counted
+    std::string dir = m_path.empty() ? home() + "/Documents" : dirName(m_path);
+    if (!isDir(dir))
+        dir = home();
+    OpenPanel::run(docString("Open", "Open"), dir, {{"All files", {"*"}}}, true, [this](std::vector<std::string> files) {
+        if (files.empty())
+            return;
+        TextView *tv = textView();
+        RichText with;
+        with.styles.push_back(tv->typingStyle());
+        std::vector<std::string> names;
+        for (const Attachment &at : tv->text().attachments)
+            names.push_back(at.name);
+        size_t failed = 0;
+        for (std::string f : files) {
+            while (f.size() > 1 && f.back() == '/')
+                f.pop_back();
+            // a folder's wrapper is not written into the RTFD here: counted with the failures
+            std::string bytes = isDir(f) ? std::string() : readFile(f);
+            if (bytes.empty() && (isDir(f) || !isFile(f))) {
+                ++failed;
+                continue;
+            }
+            // NSFileWrapper's preferred name, made unique in the RTFD
+            std::string name = fileName(f);
+            for (int n = 2; std::find(names.begin(), names.end(), name) != names.end(); ++n)
+                name = std::to_string(n) + " " + fileName(f);
+            names.push_back(name);
+            Attachment at;
+            at.name = name;
+            at.data = std::move(bytes);
+            with.insert(with.text.size(), AttachmentCharacter, tv->typingStyle());
+            with.attachments.push_back(std::move(at));
+        }
+        if (!with.attachments.empty())
+            tv->replaceSelection(with);
+        if (failed)
+            // NSError com.apple.TextEdit 300, presented as a sheet
+            Alert::beginSheet(m_window.get(), m_c.appIcon(),
+                              tr(failed == files.size() ? "None of the items could be attached." : "Some of the items could not be attached."),
+                              tr("The files may be unreadable, or the volume they are on may be inaccessible. Please check in Finder."),
+                              {tr("OK")}, nullptr);
     });
 }
 
@@ -1791,15 +1846,16 @@ Document *Controller::newDocument(bool transient)
     m_untitledUsed.push_back(n);
     m_documents.push_back(std::make_unique<Document>(*this, n));
     Document *d = m_documents.back().get();
+    d->setTransient(transient);
+    m_order.insert(m_order.begin(), d);
+    d->show(nextCascadePoint());
+    // (once its window and text are built)
     // -setDocumentPropertiesToDefaults: the preferences' author, organization and copyright
     for (const char *k : {"author", "company", "copyright"}) {
         std::string *p = d->textView()->text().document.property(k);
         if (p)
             *p = pref(k);
     }
-    d->setTransient(transient);
-    m_order.insert(m_order.begin(), d);
-    d->show(nextCascadePoint());
     App::shared().setFrontWithoutWindows(false);
     updateWindowsMenu();
     return d;
