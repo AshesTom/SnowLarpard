@@ -100,6 +100,32 @@ void TextRulerView::buildAccessory()
             return -1;
         };
         const int single = index("Single"), twice = index("Double"), other = index("Other");
+        if (index("None") >= 0 && other >= 0) {
+            // -[NSLayoutManager _rulerAccViewSetUpLists] (0x414a22): None, then eleven marker formats
+            // titled by -_markerTitle (bullets: the marker, else the first three items' markers two
+            // spaces apart), then Other… (NSTextRulerOptions' list sheet); _rulerAccViewListsAction:
+            static const char *const Formats[] = {"{hyphen}", "{disc}", "{square}", "{check}", "{decimal}.", "{decimal})",
+                                                  "{upper-alpha}.", "{lower-alpha}.", "{lower-alpha})", "{upper-roman}.", "{lower-roman}."};
+            const MenuItem title = p->items.front(), none = p->items[size_t(index("None"))], more = p->items[size_t(other)];
+            p->items = {title, none};
+            for (const char *f : Formats) {
+                const TextList l{f, 0, 1};
+                p->items.push_back(MenuItem(l.isOrdered() ? l.marker(1) + "  " + l.marker(2) + "  " + l.marker(3) : l.marker(1)));
+            }
+            p->items.push_back(more);
+            const int moreIndex = int(p->items.size()) - 1;
+            p->onSelect = [this, moreIndex](int i) {
+                if (i == moreIndex)
+                    TextRulerOptions::setList(m_text->window(), m_text, [this] { update(); });
+                else if (i == 1)
+                    m_text->setListMarkerFormat("");
+                else if (i >= 2 && i - 2 < int(std::size(Formats)))
+                    m_text->setListMarkerFormat(Formats[i - 2]);
+                update();
+                setNeedsDisplay();
+            };
+            continue;
+        }
         if (single >= 0 && twice >= 0) {
             // _rulerAccViewSpacingAction:: Single, Double; Other…: NSTextRulerOptions' spacing sheet
             p->onSelect = [this, single, twice, other](int i) {

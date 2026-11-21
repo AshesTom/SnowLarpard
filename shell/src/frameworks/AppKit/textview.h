@@ -112,6 +112,12 @@ public:
     void changeParagraphStyle(const std::function<void(Style &)> &change, bool undoable = true);
     void beginParagraphStyleChange();
     void transform(int kind);         // 0 upper case, 1 lower case, 2 capitalized
+    // Lists (NSTextList): -[NSLayoutManager _doUserSetListMarkerFormat:options:startingItemNumber:
+    // inRange:level:] (0x417b32): the selected paragraphs in a list of that marker format (empty:
+    // taken out of theirs), each with its marker between tabs, indented 36 points, a tab 25 points
+    // before that and one at it; -_reformListAtIndex: numbers the items again
+    void setListMarkerFormat(const std::string &format, unsigned options = 0, long start = 1);
+    std::optional<TextList> selectedList() const;
 
     double contentHeight() const;
     // For printing: the text alone (no background, selection nor caret) between two heights of the
@@ -132,6 +138,10 @@ public:
     static constexpr double Padding = 5;   // NSTextContainer's lineFragmentPadding
 
 private:
+    // the paragraph from `start`'s marker's end (no marker: start)
+    size_t listMarkerEnd(size_t start) const;
+    void reformList(size_t at);
+    void unnestList(size_t start);   // -_unnestListAtIndex:markerRange: at the outermost level
     struct Paragraph {
         size_t start = 0, end = 0;   // bytes of text, end before its '\n'
         PangoLayout *layout = nullptr;

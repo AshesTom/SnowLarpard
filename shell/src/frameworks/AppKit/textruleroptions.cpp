@@ -282,6 +282,169 @@ void TextRulerOptions::setLink(Window *window, TextView *text)
         window->makeFirstResponder(s->field);
 }
 
+namespace {
+
+const char *const ListKinds[] = {"{disc}",          "{circle}",          "{square}",        "{box}",          "{hyphen}",
+                                 "{check}",         "{diamond}",         "{decimal}",       "{decimal-leading-zero}",
+                                 "{upper-alpha}",   "{lower-alpha}",     "{upper-roman}",   "{lower-roman}",  "{upper-greek}",
+                                 "{lower-greek}",   "{upper-russian}",   "{lower-russian}", "{cjk-ideographic}",
+                                 "{hiragana}",      "{hiragana-iroha}",  "{katakana}",      "{katakana-iroha}",
+                                 "{cjk-earthly-branch}", "{cjk-heavenly-stem}", "{arabic-indic}", "{hebrew}"};
+
+struct ListSheet {
+    std::unique_ptr<Nib> nib;
+    Window *window = nullptr;
+    TextView *text = nullptr;
+    std::function<void()> changed;
+    PopUpButton *kinds = nullptr;
+    TextField *before = nullptr, *after = nullptr, *startField = nullptr;
+    Label *startText = nullptr;   // the nib's startField: a field that only shows the number
+    Stepper *startStepper = nullptr;
+    Label *startLabel = nullptr;
+    CheckBox *prepend = nullptr;
+
+    // the popup's item 0 is None, then ListKinds
+    int kind() const { return kinds ? kinds->selected() - 1 : -1; }
+    void showStart()
+    {
+        // -setStartFieldAndStepper: the starting number as the kind's marker; none for bullets
+        const int k = kind();
+        const TextList l{k >= 0 ? ListKinds[k] : "", 0, 1};
+        const bool ordered = k >= 0 && l.isOrdered();
+        const std::string shown = ordered ? l.unaffixedMarker(startStepper ? long(startStepper->value) : 1) : std::string();
+        if (startText) {
+            startText->setText(shown);
+            startText->style.color = Color::gray(0);
+            startText->setNeedsDisplay();
+        }
+        if (startField) {
+            startField->setText(shown);
+            startField->setEnabled(ordered);
+            startField->setNeedsDisplay();
+        }
+        if (startStepper) {
+            startStepper->setEnabled(ordered);
+            startStepper->setNeedsDisplay();
+        }
+        if (startLabel) {
+            startLabel->style.color = ordered ? Color::gray(0) : Color::gray(170);   // lightGrayColor
+            startLabel->setNeedsDisplay();
+        }
+    }
+};
+
+std::unique_ptr<ListSheet> s_list;
+
+void endList(bool ok)
+{
+    if (!s_list)
+        return;
+    ListSheet *gone = s_list.release();
+    Sheet::end(gone->window);
+    App::shared().later([gone] { delete gone; });
+    if (!ok)
+        return;
+    const int k = gone->kind();
+    if (k < 0) {
+        gone->text->setListMarkerFormat("");
+    } else {
+        const std::string format = (gone->before ? gone->before->text : "") + ListKinds[k] + (gone->after ? gone->after->text : "");
+        gone->text->setListMarkerFormat(format, gone->prepend && gone->prepend->checked() ? 1 : 0,
+                                        gone->startStepper ? std::max(1L, long(gone->startStepper->value)) : 1);
+    }
+    if (gone->changed)
+        gone->changed();
+}
+
+} // namespace
+
+void TextRulerOptions::setList(Window *window, TextView *text, std::function<void()> changed)
+{
+    if (!window || !text || Sheet::isOpen(window))
+        return;
+    auto st = std::make_unique<ListSheet>();
+    st->nib = std::make_unique<Nib>();
+    const std::string dir = RulerOptionsNib;
+    if (!st->nib->load(Assets::path(dir + "/keyedobjects.nib"), Assets::path(dir)))
+        return;
+    const int object = st->nib->outletObject("listPanel");
+    if (object < 0)
+        return;
+    Size size;
+    View *content = st->nib->instantiateWindow(object, &size);
+    if (!content)
+        return;
+    Nib &nib = *st->nib;
+    st->window = window;
+    st->text = text;
+    st->changed = std::move(changed);
+    st->kinds = nib.outlet<PopUpButton>("numberingPopUp");
+    st->before = nib.outlet<TextField>("beforeField");
+    st->after = nib.outlet<TextField>("afterField");
+    st->startField = nib.outlet<TextField>("startField");
+    st->startText = dynamic_cast<Label *>(nib.outlet("startField"));
+    st->startStepper = nib.outlet<Stepper>("startStepper");
+    st->startLabel = dynamic_cast<Label *>(nib.outlet("startLabel"));
+    st->prepend = nib.outlet<CheckBox>("prependButton");
+    ListSheet *s = st.get();
+
+    const std::optional<TextList> current = text->selectedList();
+    int selected = 0;
+    if (s->kinds) {
+        MenuItem none = s->kinds->items.empty() ? MenuItem("None") : s->kinds->items.front();
+        s->kinds->items = {none};
+        for (size_t k = 0; k < std::size(ListKinds); ++k) {
+            const TextList l{ListKinds[k], 0, 1};
+            s->kinds->items.push_back(MenuItem(l.isOrdered() ? l.unaffixedMarker(1) + " " + l.unaffixedMarker(2) + " " + l.unaffixedMarker(3)
+                                                             : l.unaffixedMarker(1)));
+            if (current && "{" + current->specifier() + "}" == ListKinds[k])
+                selected = int(k) + 1;
+        }
+        s->kinds->setSelected(selected);
+        s->kinds->onSelect = [s](int) {
+            if (s_list.get() == s)
+                s->showStart();
+        };
+    }
+    if (s->before)
+        s->before->setText(current ? current->prefix() : "");
+    if (s->after)
+        s->after->setText(current ? current->suffix() : "");
+    if (s->startStepper) {
+        s->startStepper->value = current ? double(current->start) : 1;
+        s->startStepper->onChange = [s](double) {
+            if (s_list.get() == s)
+                s->showStart();
+        };
+    }
+    if (s->prepend)
+        s->prepend->setChecked(current && (current->options & 1));
+    s->showStart();
+
+    for (View *v : nib.withAction("confirmSheet:"))
+        if (auto *b = dynamic_cast<Button *>(v)) {
+            b->isDefault = true;
+            b->action = [s] {
+                if (s_list.get() == s)
+                    endList(true);
+            };
+        }
+    for (View *v : nib.withAction("cancelSheet:"))
+        if (auto *b = dynamic_cast<Button *>(v))
+            b->action = [s] {
+                if (s_list.get() == s)
+                    endList(false);
+            };
+
+    s_list = std::move(st);
+    Sheet::begin(window, content, size, 0, [] {
+        if (s_list) {
+            ListSheet *gone = s_list.release();
+            App::shared().later([gone] { delete gone; });
+        }
+    });
+}
+
 void TextRulerOptions::setSpacing(Window *window, TextView *text, std::function<void()> changed)
 {
     if (!window || !text || Sheet::isOpen(window))

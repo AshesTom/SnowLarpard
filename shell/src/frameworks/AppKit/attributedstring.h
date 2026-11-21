@@ -34,6 +34,25 @@ struct TabStop {
     bool operator==(const TabStop &o) const { return location == o.location && kind == o.kind; }
 };
 
+// NSTextList (AppKit-1038): a marker format, "{disc}", "{decimal}.", "({lower-alpha})": text around
+// one specifier in braces; NSTextListPrependEnclosingMarker; the first item's number. A list's
+// paragraphs start with their marker between tabs ("\t•\t"), in the text as Cocoa keeps them
+struct TextList {
+    std::string markerFormat;
+    unsigned options = 0;   // 1: the enclosing list's marker before this one's
+    long start = 1;
+    bool operator==(const TextList &o) const { return markerFormat == o.markerFormat && options == o.options && start == o.start; }
+    bool operator!=(const TextList &o) const { return !(*this == o); }
+    std::string specifier() const;      // "decimal" ({decimal}), else empty
+    std::string prefix() const;         // the text before the braces, and after them
+    std::string suffix() const;
+    bool isOrdered() const;             // -_isOrdered: numbers, letters, numerals (not bullets)
+    // -markerForItemNumber: (0x55eebb): the prefix, the item's marker, the suffix
+    std::string marker(long item) const;
+    // -_unaffixedMarkerForItemNumber: the marker alone
+    std::string unaffixedMarker(long item) const;
+};
+
 // NSParagraphStyle besides the alignment, in points (the RTF's twips over 20):
 //   firstLineHeadIndent, headIndent   from the container's start (\li the head, \fi first less head)
 //   tailIndent                        > 0 from the start, <= 0 from the end (\ri its opposite)
@@ -49,6 +68,7 @@ struct ParagraphStyle {
     double defaultTabInterval = 0;
     double lineHeightMultiple = 0, lineSpacing = 0;
     double minimumLineHeight = 0, maximumLineHeight = 0;   // points, 0: none
+    std::vector<TextList> textLists;   // the lists the paragraph is in, outermost first (\ls, \ilvl)
     double paragraphSpacingBefore = 0, paragraphSpacing = 0;
     bool operator==(const ParagraphStyle &o) const;
     bool operator!=(const ParagraphStyle &o) const { return !(*this == o); }

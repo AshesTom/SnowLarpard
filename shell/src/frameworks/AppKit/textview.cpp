@@ -943,6 +943,195 @@ void TextView::changeStyle(const std::function<void(Style &)> &change)
     changed();
 }
 
+// ---- lists
+
+namespace {
+
+size_t paraStartOf(const std::string &s, size_t at)
+{
+    const size_t nl = at == 0 ? std::string::npos : s.rfind('\n', at - 1);
+    return nl == std::string::npos ? 0 : nl + 1;
+}
+
+size_t paraEndOf(const std::string &s, size_t at)
+{
+    const size_t nl = s.find('\n', at);
+    return nl == std::string::npos ? s.size() : nl;
+}
+
+// _standardMarkerAttributesForAttributes:: the item's font and colour, its paragraph; no link,
+// underline, strike nor shift
+Style markerStyle(Style s)
+{
+    s.link.clear();
+    s.underline = s.strike = false;
+    s.script = 0;
+    s.baseline = 0;
+    return s;
+}
+
+} // namespace
+
+size_t TextView::listMarkerEnd(size_t start) const
+{
+    const std::string &s = m_text.text;
+    if (start >= s.size() || s[start] != '\t' || m_text.styleAt(start).para.textLists.empty())
+        return start;
+    const size_t end = s.find('\t', start + 1), nl = s.find('\n', start);
+    return end == std::string::npos || (nl != std::string::npos && end > nl) ? start : end + 1;
+}
+
+std::optional<TextList> TextView::selectedList() const
+{
+    const size_t at = paraStartOf(m_text.text, selectionStart());
+    const Style st = at < m_text.size() ? m_text.styleAt(at) : m_typing;
+    if (st.para.textLists.empty())
+        return std::nullopt;
+    return st.para.textLists.front();
+}
+
+void TextView::reformList(size_t at)
+{
+    // the run of paragraphs in the same list around `at`, numbered from its start
+    const std::string &s = m_text.text;
+    if (s.empty())
+        return;
+    size_t p = paraStartOf(s, std::min(at, s.size()));
+    const Style here = p < s.size() ? m_text.styleAt(p) : m_typing;
+    if (here.para.textLists.empty())
+        return;
+    const TextList list = here.para.textLists.front();
+    auto inList = [&](size_t start) {
+        const Style st = start < m_text.size() ? m_text.styleAt(start) : (start > 0 ? m_text.styleAt(start - 1) : m_typing);
+        return !st.para.textLists.empty() && st.para.textLists.front() == list;
+    };
+    while (p > 0 && inList(paraStartOf(s, p - 1)))
+        p = paraStartOf(s, p - 1);
+    long item = list.start;
+    for (;;) {
+        const std::string marker = "\t" + list.marker(item) + "\t";
+        const size_t old = listMarkerEnd(p);
+        if (m_text.text.compare(p, old - p, marker) != 0 || old == p) {
+            const Style st = markerStyle(p < m_text.size() ? m_text.styleAt(p) : m_typing);
+            const long delta = long(marker.size()) - long(old - p);
+            m_text.erase(p, old);
+            m_text.insert(p, marker, st);
+            auto shift = [&](size_t &x) {
+                if (x >= old)
+                    x = size_t(long(x) + delta);
+                else if (x > p)
+                    x = p + marker.size();
+            };
+            shift(m_caret);
+            shift(m_anchor);
+        }
+        ++item;
+        const size_t end = paraEndOf(m_text.text, p);
+        if (end >= m_text.size() || !inList(end + 1))
+            break;
+        p = end + 1;
+    }
+}
+
+void TextView::unnestList(size_t start)
+{
+    // out of the list: the marker gone, the paragraph's indents back at the margin; the items after
+    // it numbered again
+    const size_t end = listMarkerEnd(start);
+    const size_t para = paraEndOf(m_text.text, start);
+    const long removed = long(end - start);
+    m_text.erase(start, end);
+    auto shift = [&](size_t &x) {
+        if (x >= end)
+            x = size_t(long(x) - removed);
+        else if (x > start)
+            x = start;
+    };
+    shift(m_caret);
+    shift(m_anchor);
+    const size_t to = std::min(m_text.size(), size_t(long(para) - removed) + 1);
+    auto clear = [](Style &s) {
+        s.para.textLists.clear();
+        s.para.firstLineHeadIndent = s.para.headIndent = 0;
+    };
+    if (start < to)
+        m_text.setStyle(start, to, clear);
+    clear(m_typing);
+    const size_t next = paraEndOf(m_text.text, start) + 1;
+    if (next < m_text.size())
+        reformList(next);
+}
+
+void TextView::setListMarkerFormat(const std::string &format, unsigned options, long start)
+{
+    if (!editable)
+        return;
+    snapshot(false);
+    const bool caretOnly = !hasSelection();
+    size_t p = paraStartOf(m_text.text, selectionStart());
+    const size_t lastStart = paraStartOf(m_text.text, selectionEnd() > selectionStart() && selectionEnd() > 0 &&
+                                                          m_text.text[selectionEnd() - 1] == '\n' ? selectionEnd() - 1 : selectionEnd());
+    // where the caret is in its item's text, kept there
+    const size_t caretOffset = caretOnly ? m_caret - listMarkerEnd(p) : 0;
+    const size_t first = p;
+    TextList list{format, options, start};
+    size_t count = 0;
+    for (size_t guard = 0; guard < 100000; ++guard) {
+        const bool last = p >= lastStart;
+        ++count;
+        const size_t mEnd = listMarkerEnd(p);
+        const Style base = mEnd < m_text.size() && m_text.text[mEnd] != '\n' ? m_text.styleAt(mEnd) : (p < m_text.size() ? m_text.styleAt(p) : m_typing);
+        auto setPara = [&](Style &s) {
+            if (format.empty()) {
+                s.para.textLists.clear();
+                return;
+            }
+            s.para.textLists = {list};
+            const double indent = 36;   // (level + 1) × 36
+            s.para.firstLineHeadIndent = 0;
+            s.para.headIndent = indent;
+            std::vector<TabStop> kept;
+            if (s.para.hasTabs)
+                for (const TabStop &t : s.para.tabStops)
+                    if (t.location > indent)
+                        kept.push_back(t);
+            kept.insert(kept.begin(), {{indent - 25, TabStop::Left}, {indent, TabStop::Left}});
+            s.para.tabStops = kept;
+            s.para.hasTabs = true;
+        };
+        m_text.erase(p, mEnd);
+        if (!format.empty())
+            m_text.insert(p, "\t\t", markerStyle(base));   // the marker's place, numbered below
+        const size_t end = paraEndOf(m_text.text, p);
+        m_text.setStyle(p, std::min(m_text.size(), end + 1), setPara);
+        if (p >= m_text.size() || m_text.text.empty())
+            setPara(m_typing);
+        if (last || end >= m_text.size())
+            break;
+        p = end + 1;
+    }
+    if (!format.empty())
+        reformList(first);
+    Style typing = m_typing;
+    if (format.empty())
+        typing.para.textLists.clear();
+    if (caretOnly) {
+        m_caret = m_anchor = std::min(m_text.size(), listMarkerEnd(first) + caretOffset);
+    } else {
+        // the paragraphs changed, selected
+        size_t e = first;
+        for (size_t k = 0; k < count; ++k) {
+            e = paraEndOf(m_text.text, e);
+            if (k + 1 < count && e < m_text.size())
+                ++e;
+        }
+        m_anchor = first;
+        m_caret = std::min(m_text.size(), e);
+    }
+    m_typing = m_text.text.empty() ? typing : styleAtSelection();
+    changed();
+}
+
 void TextView::setAlignment(Alignment al)
 {
     changeParagraphStyle([al](Style &s) { s.align = al; });
@@ -1154,6 +1343,12 @@ void TextView::keyDown(Event &e)
             return;
         if (hasSelection()) {
             deleteSelection();
+        } else if (const size_t ps = paraStartOf(s, m_caret); m_caret > ps && m_caret == listMarkerEnd(ps)) {
+            // -deleteBackward: just after an item's marker: out of the list
+            snapshot(false);
+            unnestList(ps);
+            m_typing = styleAtSelection();
+            changed();
         } else if (m_caret > 0) {
             snapshot(true);
             const size_t p = option ? wordStart(m_caret) : prevChar(s, m_caret);
@@ -1177,9 +1372,33 @@ void TextView::keyDown(Event &e)
         }
         return;
     case XKB_KEY_Return:
-    case XKB_KEY_KP_Enter:
+    case XKB_KEY_KP_Enter: {
+        // -insertNewline: in a list (_checkInList:…): an empty item leaves the list, else the new
+        // paragraph is the next item (-_reformListAtIndex:)
+        const size_t ps = paraStartOf(s, m_caret);
+        const size_t mEnd = editable && !hasSelection() ? listMarkerEnd(ps) : ps;
+        if (mEnd > ps && m_caret >= mEnd) {
+            if (paraEndOf(s, ps) == mEnd) {
+                snapshot(false);
+                unnestList(ps);
+                changed();
+                return;
+            }
+            insertText("\n");
+            const size_t np = m_caret;
+            Style st = m_text.styleAt(np > 0 ? np - 1 : 0);
+            m_text.insert(np, "\t\t", markerStyle(st));
+            if (np < m_text.size())
+                m_text.setStyle(np, std::min(m_text.size(), paraEndOf(m_text.text, np) + 1), [&st](Style &x) { x.para = st.para; });
+            m_caret = m_anchor = np + 2;
+            reformList(np);
+            m_typing = styleAtSelection();
+            changed();
+            return;
+        }
         insertText("\n");
         return;
+    }
     case XKB_KEY_Tab:
         insertText("\t");
         return;

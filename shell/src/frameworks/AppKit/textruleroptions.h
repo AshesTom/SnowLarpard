@@ -29,6 +29,13 @@ void setSpacing(Window *window, TextView *text, std::function<void()> changed = 
 // scheme that starts www., web., ftp. or ends .com, .net, .org, .gov, .edu, .mil; an empty field
 // or Remove Link (-removeLink: 0x3ba216) takes the link away
 void setLink(Window *window, TextView *text);
+// The list sheet (Format ▸ List…, the ruler's Lists ▸ Other…): -setMarkerFormatInWindow:textList:
+// delegate: (0x3bc18e) shows the selection's list: its marker kind among None and the 26 of
+// -loadUI (titled by -_unaffixedMarkerTitle: the bullet, else "1 2 3"), the text before and after
+// it, the starting number (shown as its marker, -setStartFieldAndStepper 0x3ba375, disabled for
+// bullets) and Prepend enclosing list marker; OK sets the selected paragraphs' list
+// (-_doUserSetListMarkerFormat:options:startingItemNumber:), None takes them out of it
+void setList(Window *window, TextView *text, std::function<void()> changed = {});
 // +[NSTextView _URLForString:]
 std::string urlForString(const std::string &s);
 }
