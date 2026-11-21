@@ -349,6 +349,21 @@ public:
     void perform(const MainMenuItem &it);
     // Close: the changes asked about first (the sheet); done(true) once closed
     void performClose(std::function<void(bool)> done = {});
+    // -[Document setValue:forDocumentProperty:]: a property of the text (its attributes, written in
+    // the RTF's \info), the document edited
+    std::string property(const std::string &key) const
+    {
+        std::string *p = const_cast<TextView *>(textView())->text().document.property(key == "comment" ? "doccomm" : key);
+        return p ? *p : std::string();
+    }
+    void setProperty(const std::string &key, const std::string &value)
+    {
+        std::string *p = textView()->text().document.property(key == "comment" ? "doccomm" : key);
+        if (!p || *p == value)
+            return;
+        *p = value;
+        setEdited(true);
+    }
     void save(bool as, std::function<void(bool)> done = {});
     void print();
     void saveAsPDF();
@@ -424,6 +439,9 @@ public:
     std::optional<Point> nextCascadePoint();
     void quit();
     void showPreferences();
+    void showLinePanel();
+    void toggleProperties();
+    void refreshProperties();   // -activeDocumentChanged
 
 private:
     bool validate(const MainMenuItem &it, MenuValidation &v);
@@ -441,7 +459,9 @@ private:
     std::vector<int> m_untitledUsed;
     size_t m_staticWindowItems = 0;
     Image m_icon;
-    std::unique_ptr<Window> m_about, m_prefs;
+    std::unique_ptr<Window> m_about, m_prefs, m_linePanel, m_properties;
+    TextField *m_lineField = nullptr;
+    std::map<std::string, TextField *> m_propertyFields;
     Nib m_prefsNib;
     std::optional<Point> m_lastCascade;
     std::optional<Style> m_copiedStyle;
@@ -1326,6 +1346,200 @@ void Document::print()
 
 // ---- the find panel
 
+
+// ---- Select Line… (⌘L, SelectLinePanel.nib, LinePanelController): "Line number" — n, n-m, or +n / -n
+// lines from the selection's; the lines selected and shown, the panel gone; else an alert
+
+namespace {
+
+// -parseLineDescription:fromLineSpec:toLineSpec:relative:
+bool parseLines(const std::string &spec, long &from, long &to, int &relative)
+{
+    size_t i = 0;
+    auto skip = [&] {
+        while (i < spec.size() && spec[i] == ' ')
+            ++i;
+    };
+    skip();
+    relative = 0;
+    if (i < spec.size() && (spec[i] == '+' || spec[i] == '-')) {
+        relative = spec[i] == '+' ? 1 : -1;
+        ++i;
+    }
+    auto number = [&](long &out) {
+        skip();
+        const size_t start = i;
+        while (i < spec.size() && std::isdigit(static_cast<unsigned char>(spec[i])))
+            ++i;
+        if (i == start)
+            return false;
+        out = std::atol(spec.substr(start, i - start).c_str());
+        return true;
+    };
+    if (!number(from))
+        return false;
+    skip();
+    if (i < spec.size() && spec[i] == '-') {
+        ++i;
+        if (!number(to) || to < from)
+            return false;
+    } else {
+        to = from;
+    }
+    skip();
+    return i == spec.size();
+}
+
+// -getRange:inTextView:fromLineSpec:toLineSpec:relative:, on the text's bytes (lines end at '\n')
+bool lineRange(const std::string &text, size_t selection, long from, long to, int relative, size_t &start, size_t &end)
+{
+    auto lineStart = [&](size_t at) {
+        const size_t nl = at == 0 ? std::string::npos : text.rfind('\n', at - 1);
+        return nl == std::string::npos ? size_t(0) : nl + 1;
+    };
+    auto nextLine = [&](size_t at) {
+        const size_t nl = text.find('\n', at);
+        return nl == std::string::npos ? text.size() : nl + 1;
+    };
+    if (relative == 0 && from == 0)
+        return false;
+    size_t s = relative ? lineStart(selection) : 0;
+    if (relative < 0) {
+        // backwards: from lines before the selection's, through to lines before
+        size_t first = s;
+        for (long k = 0; k < to; ++k) {
+            if (first == 0)
+                return false;
+            first = lineStart(first - 1);
+        }
+        size_t last = s;
+        for (long k = 1; k < from; ++k) {
+            if (last == 0)
+                return false;
+            last = lineStart(last - 1);
+        }
+        start = first;
+        end = last;
+        return true;
+    }
+    for (long k = relative ? 0 : 1; k < from; ++k) {
+        if (s == text.size())
+            return false;
+        s = nextLine(s);
+    }
+    size_t e = s;
+    for (long k = from; k <= to; ++k) {
+        if (e == text.size())
+            return false;
+        e = nextLine(e);
+    }
+    start = s;
+    end = e;
+    return true;
+}
+
+} // namespace
+
+void Controller::showLinePanel()
+{
+    if (!m_linePanel) {
+        constexpr double W = 249, H = 62;
+        m_linePanel = std::make_unique<Window>(Size{W, H}, "Select Line");
+        m_linePanel->setFloatingPanel(true);
+        View *root = m_linePanel->contentView();
+        m_lineField = root->add<TextField>();
+        m_lineField->placeholder = "Line number";
+        m_lineField->setFrame({20, H - 20 - 22, 116, 22});
+        auto *select = root->add<Button>("Select", Button::Push);
+        select->isDefault = true;
+        select->setFrame({145, H - 12 - 32, 90, 32});
+        auto go = [this](bool closeOnSuccess) {
+            // -selectClicked: / -lineFieldChanged:
+            Document *d = mainDocument();
+            const std::string spec = m_lineField->text;
+            if (!d || spec.empty())
+                return;
+            long from = 0, to = 0;
+            int relative = 0;
+            size_t start = 0, end = 0;
+            TextView *tv = d->textView();
+            if (parseLines(spec, from, to, relative) && lineRange(tv->text().text, tv->selectionStart(), from, to, relative, start, end)) {
+                tv->select(start, end);
+                tv->scrollToSelection();
+                if (closeOnSuccess)
+                    m_linePanel->close();
+                return;
+            }
+            const std::string shown = spec.size() > 100 ? spec.substr(0, 100) + "…" : spec;
+            Alert::run(m_icon, "Invalid line specification “" + shown + "”.",
+                       "Please enter the line number or numbers (separated by dash) of the line(s) to select.", {"OK"}, nullptr);
+        };
+        select->action = [go] { go(false); };
+        m_lineField->onEnter = [go] { go(true); };
+        m_linePanel->onUnhandledKey = panelKeys(m_linePanel.get(), m_menu);
+    }
+    m_linePanel->show();
+    m_linePanel->makeFirstResponder(m_lineField);
+    m_lineField->selectAll();
+}
+
+// ---- Show Properties (⌥⌘P, DocumentProperties.nib, DocumentPropertiesPanelController): a utility
+// panel (333 × 264) on the main document's Author, Organization, Copyright, Title, Subject,
+// Keywords, Comment; editable for rich text that isn't read only; each change the document's
+
+void Controller::toggleProperties()
+{
+    if (m_properties && m_properties->isVisible()) {
+        m_properties->close();
+        return;
+    }
+    if (!m_properties) {
+        constexpr double W = 333, H = 264;
+        m_properties = std::make_unique<Window>(Size{W, H}, "Document Properties");
+        m_properties->setFloatingPanel(true);
+        View *root = m_properties->contentView();
+        struct Row {
+            const char *key, *label;
+            double y, labelY, h;
+        };
+        const Row rows[] = {{"author", "Author:", 235, 237, 19},      {"company", "Organization:", 208, 207, 19},
+                            {"copyright", "Copyright:", 181, 183, 19}, {"title", "Title:", 154, 156, 19},
+                            {"subject", "Subject:", 127, 129, 19},     {"keywords", "Keywords:", 100, 102, 19},
+                            {"comment", "Comment:", 14, 75, 78}};
+        for (const Row &r : rows) {
+            auto *l = root->add<Label>(r.label, Font::system(11));
+            l->style.align = Align::Right;
+            l->setFrame({5, H - r.labelY - 14, 77, 14});
+            auto *f = root->add<TextField>();
+            f->setFrame({87, H - r.y - r.h, 233, r.h});
+            const std::string key = r.key;
+            // -objectDidEndEditing:: the value the document's
+            f->onChange = [this, key, f](const std::string &) {
+                if (Document *d = mainDocument())
+                    d->setProperty(key, f->text);
+            };
+            m_propertyFields[key] = f;
+        }
+        m_properties->onUnhandledKey = panelKeys(m_properties.get(), m_menu);
+    }
+    refreshProperties();
+    m_properties->show();
+}
+
+void Controller::refreshProperties()
+{
+    if (!m_properties)
+        return;
+    Document *d = mainDocument();
+    const bool editable = d && d->isRichText() && !d->isReadOnly();
+    for (auto &[key, field] : m_propertyFields) {
+        field->setText(d ? d->property(key) : std::string());
+        field->editable = editable;
+        field->setEnabled(d != nullptr);
+        field->setNeedsDisplay();
+    }
+}
+
 void FindPanel::build()
 {
     if (m_window)
@@ -1552,6 +1766,12 @@ Document *Controller::newDocument(bool transient)
     m_untitledUsed.push_back(n);
     m_documents.push_back(std::make_unique<Document>(*this, n));
     Document *d = m_documents.back().get();
+    // -setDocumentPropertiesToDefaults: the preferences' author, organization and copyright
+    for (const char *k : {"author", "company", "copyright"}) {
+        std::string *p = d->textView()->text().document.property(k);
+        if (p)
+            *p = pref(k);
+    }
     d->setTransient(transient);
     m_order.insert(m_order.begin(), d);
     d->show(nextCascadePoint());
@@ -1617,6 +1837,7 @@ Document *Controller::mainDocument() const
 
 void Controller::documentBecameMain(Document *d)
 {
+    App::shared().later([this] { refreshProperties(); });
     auto it = std::find(m_order.begin(), m_order.end(), d);
     if (it != m_order.end()) {
         m_order.erase(it);
@@ -1905,7 +2126,12 @@ bool Controller::validate(const MainMenuItem &it, MenuValidation &v)
         a == "orderFrontStandardAboutPanel:" || a == "newDocument:" || a == "openDocument:" || a == "arrangeInFront:")
         return true;
     if (a == "showWindow:")
-        return it.title.find("Preferences") != std::string::npos;   // Select Line…: not yet
+        return it.title.find("Preferences") != std::string::npos || (it.title.find("Line") != std::string::npos && mainDocument());
+    if (a == "toggleWindow:") {
+        // -[DocumentPropertiesPanelController validateMenuItem:]
+        v.title = m_properties && m_properties->isVisible() ? "Hide Properties" : "Show Properties";
+        return true;
+    }
     if (a == "showHelp:")
         return Assets::exists(std::string(Bundle) + "/Contents/Resources/TextEdit.help/Contents/Resources/English.lproj/index.html");
     if (a == "openRecentDocument:" || a == "clearRecentDocuments:")
@@ -1942,7 +2168,9 @@ void Controller::perform(const MainMenuItem &it)
     if (a == "openDocument:")
         return openPanel();
     if (a == "showWindow:")
-        return showPreferences();
+        return it.title.find("Line") != std::string::npos ? showLinePanel() : showPreferences();
+    if (a == "toggleWindow:")
+        return toggleProperties();
     if (a == "showHelp:")
         return Workspace::openFile(Assets::path(std::string(Bundle) + "/Contents/Resources/TextEdit.help/Contents/Resources/English.lproj/index.html"));
     if (a == "openRecentDocument:") {

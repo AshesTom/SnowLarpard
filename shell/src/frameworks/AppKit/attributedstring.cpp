@@ -306,10 +306,11 @@ void RichText::compact()
 RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string> &files)
 {
     RichText out;
-    enum Dest { Text, FontTable, ColorTable, Ignore, Graphic };
+    enum Dest { Text, FontTable, ColorTable, Ignore, Graphic, Info };
     struct State {
         Style style;
         Dest dest = Text;
+        std::string *info = nullptr;   // the \info property its text goes to
         int uc = 1;
         int skip = 0;   // characters to skip (a \u's fallback, an attachment's placeholder)
     };
@@ -352,6 +353,11 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
         if (s.dest == Graphic) {
             if (c != ' ' || !graphicName.empty())
                 appendUtf8(graphicName, c);
+            return;
+        }
+        if (s.dest == Info) {
+            if (s.info)
+                appendUtf8(*s.info, c);
             return;
         }
         if (s.dest != Text)
@@ -448,7 +454,11 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                     s.dest = FontTable;
                 else if (word == "colortbl")
                     s.dest = ColorTable, colourAuto = true;
-                else if (word == "stylesheet" || word == "info" || word == "listtable" || word == "listoverridetable" ||
+                else if (word == "info")
+                    s.dest = Info, s.info = nullptr;
+                else if (s.dest == Info && doc.property(word))
+                    s.info = doc.property(word);
+                else if (word == "stylesheet" || word == "listtable" || word == "listoverridetable" ||
                          word == "expandedcolortbl" || word == "header" || word == "footer" || word == "pict" || word == "object" ||
                          word == "fldinst" || word == "themedata" || word == "colorschememapping" || word == "latentstyles")
                     s.dest = Ignore;
@@ -795,6 +805,40 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
         attrs += "\\viewkind" + std::to_string(d.viewKind);
     if (!attrs.empty())
         out += attrs + "\n";
+    // the properties, as NSRTFWriter puts them: {\info {\title …}{\subject …}{\author …}{\*\company …}
+    // {\*\copyright …}{\keywords …}{\doccomm …}}
+    auto escaped = [](const std::string &v) {
+        std::string e;
+        for (size_t k = 0; k < v.size();) {
+            const unsigned char ch = (unsigned char)v[k];
+            if (ch == '\\' || ch == '{' || ch == '}') {
+                e += '\\';
+                e += char(ch);
+                ++k;
+            } else if (ch < 0x80) {
+                e += char(ch);
+                ++k;
+            } else {
+                // a UTF-8 character as \uN (no fallback: \uc0)
+                const int len = ch >= 0xF0 ? 4 : ch >= 0xE0 ? 3 : 2;
+                uint32_t cp = ch & (len == 4 ? 0x07 : len == 3 ? 0x0F : 0x1F);
+                for (int m = 1; m < len && k + size_t(m) < v.size(); ++m)
+                    cp = cp << 6 | ((unsigned char)v[k + size_t(m)] & 0x3F);
+                k += size_t(len);
+                e += "\\uc0\\u" + std::to_string(cp > 0x7FFF ? long(cp) - 0x10000 : long(cp)) + " ";
+            }
+        }
+        return e;
+    };
+    std::string info;
+    const std::pair<const char *, const std::string *> props[] = {
+        {"title", &d.title}, {"subject", &d.subject}, {"author", &d.author}, {"*\\company", &d.company},
+        {"*\\copyright", &d.copyright}, {"keywords", &d.keywords}, {"doccomm", &d.comment}};
+    for (const auto &[word, value] : props)
+        if (!value->empty())
+            info += std::string("\n{\\") + word + " " + escaped(*value) + "}";
+    if (!info.empty())
+        out += "{\\info" + info + "}\n";
     if (t.text.empty())
         out += paragraphWords(t.styles.empty() ? Style() : t.styles[0]) + "\n\\f0\\fs" +
                std::to_string(int(std::lround((t.styles.empty() ? 12.0 : t.styles[0].size) * 2))) + " \\cf0 ";
@@ -940,6 +984,12 @@ RichText fromPlainText(const std::string &bytes, const Style &style)
     if (r.styles.empty())
         r.styles.push_back(style);
     return r;
+}
+
+std::string *DocumentAttributes::property(const std::string &w)
+{
+    return w == "title" ? &title : w == "subject" ? &subject : w == "author" ? &author : w == "company" ? &company
+         : w == "copyright" ? &copyright : w == "keywords" ? &keywords : w == "doccomm" ? &comment : nullptr;
 }
 
 } // namespace AK
