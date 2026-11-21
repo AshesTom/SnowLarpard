@@ -56,6 +56,8 @@ void Camera::open()
     struct stat st {};
     if (!source.empty() && stat(source.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
         m_still = fill(Image::load(source));
+        m_stillPath = source;
+        m_stillTime = st.st_mtime;
         m_status = m_still.isNull() ? NoCamera : On;
         return;
     }
@@ -161,6 +163,15 @@ bool Camera::read(Image &frame)
         if (now() - m_lastStill < 1.0 / 15)
             return false;
         m_lastStill = now();
+        // the picture changed on disk: the camera sees the new one (a person stepping in, for testing)
+        struct stat st {};
+        if (stat(m_stillPath.c_str(), &st) == 0 && st.st_mtime != m_stillTime) {
+            const Image again = Image::load(m_stillPath);
+            if (!again.isNull()) {
+                m_still = fill(again);
+                m_stillTime = st.st_mtime;
+            }
+        }
         frame = m_still;
         return true;
     }

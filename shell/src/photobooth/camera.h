@@ -38,6 +38,8 @@ private:
     };
     std::vector<Buffer> m_buffers;
     AK::Image m_still;   // a picture as the camera
+    std::string m_stillPath;
+    long m_stillTime = 0;
     double m_lastStill = 0;
 };
 

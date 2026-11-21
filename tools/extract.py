@@ -122,6 +122,17 @@ WANTED = {
         "./System/Library/Compositions/ThermalCamera.qtz",
         "./System/Library/Compositions/XRay.qtz",
         "./System/Library/Compositions/ColorPencil.qtz",
+        # the backdrops (pages 3 and 4): each composition's picture (its Image Loader), the movies
+        # five of them play, and the user backdrops' "Drag Backdrop Here" (Backdrops.plugin's)
+        "./System/Library/Compositions/Clouds.qtz",
+        "./System/Library/Compositions/Color Dots.qtz",
+        "./System/Library/Compositions/Earthrise.qtz",
+        "./System/Library/Compositions/Eiffel Tower.*",
+        "./System/Library/Compositions/Fish.*",
+        "./System/Library/Compositions/Rollercoaster.*",
+        "./System/Library/Compositions/Sunset.*",
+        "./System/Library/Compositions/Yosemite.*",
+        "./System/Library/Graphics/Quartz Composer Patches/Backdrops.plugin/Contents/Resources/UserBackdrops.qtz",
         # Preview's thumbnails: IKImageBrowserView's shadow (IKShadowTool's pbShadow* pictures)
         "./System/Library/Frameworks/Quartz.framework/Versions/A/Frameworks/ImageKit.framework/Versions/A/Resources/pbShadow*.tiff",
         # About This Mac: loginwindow's window (its nib, strings and the Mac OS X picture)
@@ -525,8 +536,14 @@ def composition_images(assets):
                 ext = "png" if data[:4] == b"\x89PNG" else "tiff" if data[:2] in (b"MM", b"II") else "jpg"
                 Path(f"{out}.{node['key']}.{ext}").write_bytes(data)
             walk(node, out)
-    for name in ("ThermalCamera", "XRay", "ColorPencil"):
-        path = assets / "System/Library/Compositions" / f"{name}.qtz"
+    compositions = assets / "System/Library/Compositions"
+    plugin = assets / "System/Library/Graphics/Quartz Composer Patches/Backdrops.plugin/Contents/Resources"
+    paths = [compositions / f"{name}.qtz" for name in ("ThermalCamera", "XRay", "ColorPencil", "Clouds", "Color Dots", "Earthrise",
+                                                         "Eiffel Tower", "Fish", "Rollercoaster", "Sunset", "Yosemite")]
+    paths.append(plugin / "UserBackdrops.qtz")
+    for path in paths:
+        if not path.exists():
+            continue
         try:
             with open(path, "rb") as f:
                 walk(plistlib.load(f)["rootPatch"], str(path))
@@ -549,7 +566,8 @@ def prune(assets):
     for path in list(assets.rglob("*")):
         if path.is_file() and not path.is_symlink() and is_macho(path):
             path.unlink()
-    for qtz in (assets / "System/Library/Compositions").glob("*.qtz"):
+    for qtz in [*(assets / "System/Library/Compositions").glob("*.qtz"),
+                *(assets / "System/Library/Graphics/Quartz Composer Patches").rglob("*.qtz")]:
         qtz.unlink()      # composition_images took what Photo Booth reads out of them
     for d in sorted((p for p in assets.rglob("*") if p.is_dir()), key=lambda p: -len(p.parts)):
         if not any(d.iterdir()):

@@ -10,6 +10,7 @@
 #include "controls.h"
 #include "effects.h"
 #include "foundation.h"
+#include "backdrops.h"
 #include "library.h"
 #include "mainmenu.h"
 #include "panels.h"
@@ -320,6 +321,128 @@ public:
 // effects' pages (PageLayer: nine FXLayers, +rectForEffectAtIndex:withSize:), the still picture, the
 // four pictures of a 4-up (FourUpLayer), the camera's status (CameraLayer)
 
+// ---- The backdrops: EffectsOrdering.plist's pages 3 and 4, after the sixteen effects
+
+constexpr int BackdropFirst = EffectCount, BackdropCount = 16;
+struct BackdropInfo {
+    const char *name;    // the composition's LocalizedName
+    bool movie;          // its BackdropsQCQuickTimePlayer plays /System/Library/Compositions/<name>.mov
+};
+const BackdropInfo &backdropInfo(int effect)
+{
+    static const BackdropInfo table[8] = {{"Clouds", false}, {"Color Dots", false}, {"Earthrise", false}, {"Eiffel Tower", true},
+                                          {"Fish", true},    {"Rollercoaster", true}, {"Sunset", true},   {"Yosemite", true}};
+    static const BackdropInfo user{"", false};
+    const int i = effect - BackdropFirst;
+    return i >= 0 && i < 8 ? table[i] : user;
+}
+bool isBackdrop(int effect) { return effect >= BackdropFirst && effect < BackdropFirst + BackdropCount; }
+bool isUserBackdrop(int effect) { return effect >= BackdropFirst + 8 && effect < BackdropFirst + BackdropCount; }
+
+// A backdrop's picture: its composition's Image Loader (the still ones' backdrop, the movies' poster)
+Image backdropPicture(int effect)
+{
+    static std::map<int, Image> cache;
+    auto it = cache.find(effect);
+    if (it != cache.end())
+        return it->second;
+    Image img;
+    if (isUserBackdrop(effect)) {
+        // UserBackdrops.qtz's empty well (ImageLoader_1), "Drag Backdrop Here" over it
+        img = Image::load(Assets::path("/System/Library/Graphics/Quartz Composer Patches/Backdrops.plugin/Contents/Resources/UserBackdrops.qtz.ImageLoader_1.png"));
+        if (!img.isNull()) {
+            img = img.scaled(VideoWidth, VideoHeight);
+            cairo_t *cr = cairo_create(img.surface());
+            TextStyle t;
+            t.font = Font::boldSystem(48);
+            t.align = Align::Center;
+            t.color = Color::gray(255, 0.8);
+            drawText(cr, tr("Drag Backdrop Here"), Rect{0, VideoHeight / 2.0 - 30, double(VideoWidth), 60}, t);
+            cairo_destroy(cr);
+        }
+    } else {
+        const std::string base = std::string("/System/Library/Compositions/") + backdropInfo(effect).name + ".qtz.";
+        for (const char *ext : {"ImageLoader_1.jpg", "ImageLoader_2.tiff", "ImageLoader_1.tiff", "ImageLoader_1.png"})
+            if (img.isNull() && Assets::exists(base + ext))
+                img = Image::load(Assets::path(base + ext));
+        if (!img.isNull() && (img.width() != VideoWidth || img.height() != VideoHeight))
+            img = img.scaled(VideoWidth, VideoHeight);
+    }
+    cache[effect] = img;
+    return img;
+}
+
+// BackdropsQCQuickTimePlayer: a backdrop's movie, looping, at its pace, stretched to the video
+// (resizeMode "stretch"), without its sound; here decoded by ffmpeg
+class BackdropMovie {
+public:
+    Image frame;
+    void play(const std::string &path)
+    {
+        stop();
+        int out[2];
+        if (pipe(out) != 0)
+            return;
+        std::vector<std::string> argv = {"ffmpeg", "-loglevel", "quiet", "-stream_loop", "-1", "-re", "-i", path, "-an", "-f", "rawvideo",
+                                         "-pix_fmt", "bgra", "-s", std::to_string(VideoWidth) + "x" + std::to_string(VideoHeight), "-"};
+        std::vector<char *> args;
+        for (std::string &a : argv)
+            args.push_back(a.data());
+        args.push_back(nullptr);
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+        posix_spawn_file_actions_addclose(&fa, out[0]);
+        posix_spawnp(&m_pid, "ffmpeg", &fa, nullptr, args.data(), environ);
+        posix_spawn_file_actions_destroy(&fa);
+        close(out[1]);
+        m_fd = out[0];
+        fcntl(m_fd, F_SETFL, O_NONBLOCK);
+        App::shared().watch(m_fd, [this] { read(); });
+    }
+    void stop()
+    {
+        if (m_fd >= 0) {
+            App::shared().unwatch(m_fd);
+            close(m_fd);
+            m_fd = -1;
+        }
+        if (m_pid > 0) {
+            kill(m_pid, SIGTERM);
+            waitpid(m_pid, nullptr, 0);
+            m_pid = 0;
+        }
+        m_buffer.clear();
+        frame = Image();
+    }
+    ~BackdropMovie() { stop(); }
+
+private:
+    void read()
+    {
+        const size_t bytes = size_t(VideoWidth) * VideoHeight * 4;
+        char buf[65536];
+        ssize_t n;
+        while ((n = ::read(m_fd, buf, sizeof buf)) > 0)
+            m_buffer.append(buf, size_t(n));
+        while (m_buffer.size() >= bytes) {
+            Image f(VideoWidth, VideoHeight);
+            cairo_surface_t *s = f.surface();
+            cairo_surface_flush(s);
+            unsigned char *data = cairo_image_surface_get_data(s);
+            const int stride = cairo_image_surface_get_stride(s);
+            for (int y = 0; y < VideoHeight; ++y)
+                std::memcpy(data + y * stride, m_buffer.data() + size_t(y) * VideoWidth * 4, size_t(VideoWidth) * 4);
+            cairo_surface_mark_dirty(s);
+            m_buffer.erase(0, bytes);
+            frame = f;
+        }
+    }
+    std::string m_buffer;
+    int m_fd = -1;
+    pid_t m_pid = 0;
+};
+
 class VideoView : public View {
 public:
     enum Mode { Live, Mosaic, Still, FourUp };
@@ -331,6 +454,9 @@ public:
     Image still;
     std::vector<Image> fourUp;     // a 4-up's pictures so far
     bool positioned = false;       // the effect takes X and Y: a click moves its centre
+    // -[PBView setBackdropsPrompt:]: system 22 in white with a shadow (0.75, radius 5), on black at
+    // 0.5 with corners of 4, at least 360 wide, 26 over the bottom, centred
+    std::string prompt;
     std::function<void(int)> onPickEffect;
     std::function<void(Point)> onPosition;
 
@@ -367,6 +493,28 @@ public:
         if (mode == Live) {
             if (!display.isNull())
                 display.draw(cr, b);
+            if (!prompt.empty()) {
+                const Font font = Font::system(22);
+                const double w = std::max(360.0, textWidth(prompt, font) + 40), h = 40;
+                const Rect bg{std::floor((b.w - w) / 2), b.h - 26 - h, w, h};
+                cairo_new_path(cr);
+                const double r = 4;
+                cairo_arc(cr, bg.right() - r, bg.y + r, r, -M_PI / 2, 0);
+                cairo_arc(cr, bg.right() - r, bg.bottom() - r, r, 0, M_PI / 2);
+                cairo_arc(cr, bg.x + r, bg.bottom() - r, r, M_PI / 2, M_PI);
+                cairo_arc(cr, bg.x + r, bg.y + r, r, M_PI, 1.5 * M_PI);
+                cairo_close_path(cr);
+                cairo_set_source_rgba(cr, 0, 0, 0, 0.5);
+                cairo_fill(cr);
+                TextStyle t;
+                t.font = font;
+                t.align = Align::Center;
+                t.color = Color::gray(0, 0.3);
+                for (const Point &o : {Point{-1, 1}, Point{1, 1}, Point{0, 2}, Point{0, 0}})
+                    drawText(cr, prompt, Rect{bg.x + o.x, bg.y + 8 + o.y, bg.w, 26}, t);
+                t.color = Color::gray(255);
+                drawText(cr, prompt, Rect{bg.x, bg.y + 8, bg.w, 26}, t);
+            }
         } else if (mode == FourUp) {
             for (int i = 0; i < 4; ++i) {
                 const Rect q{(i % 2) * b.w / 2, (i / 2) * b.h / 2, b.w / 2, b.h / 2};
@@ -391,7 +539,8 @@ public:
                 style.font = Font::boldSystem(14);
                 style.align = Align::Center;
                 const Rect label{r.x + 4, r.y + r.h - 10 - 18, r.w - 8, 18};
-                const std::string name = previewEffects[i] == NormalEffect ? tr("Normal") : effectInfo(previewEffects[i]).name;
+                const int fx = previewEffects[i];
+                const std::string name = fx == NormalEffect ? tr("Normal") : isBackdrop(fx) ? std::string(backdropInfo(fx).name) : effectInfo(fx).name;
                 style.color = Color::gray(0, 0.55);
                 for (const Point &o : {Point{-1, 0}, Point{1, 0}, Point{0, -1}, Point{0, 1}})
                     drawText(cr, name, label.translated(o.x, o.y), style);
@@ -1327,10 +1476,14 @@ private:
             for (int i = 0; i < 9; ++i) {
                 const int effect = i == 4 ? NormalEffect : m_page * 8 + (i < 4 ? i : i - 1);
                 m_video->previewEffects[i] = effect;
-                m_video->previews[i] = m_fx.apply(effect, small);
+                // a backdrop's cell: its picture (its composition in preview mode)
+                m_video->previews[i] = isBackdrop(effect) ? backdropPicture(effect).scaled(int(cell.w), int(cell.h)) : m_fx.apply(effect, small);
             }
         } else if (m_video->mode == VideoView::Live || m_video->mode == VideoView::FourUp) {
-            m_video->display = m_fx.apply(m_effect, frame, m_xy);
+            if (isBackdrop(m_effect))
+                m_video->display = backdropFrame(frame);
+            else
+                m_video->display = m_fx.apply(m_effect, frame, m_xy);
             if (m_recorder.recording())
                 m_recorder.frame(m_video->display);
         }
@@ -1339,7 +1492,7 @@ private:
 
     // ---- View ▸ Show Effects, Show Last Effect, Next / Previous Page of Effects
 
-    static constexpr int PageCount = EffectCount / 8;
+    static constexpr int PageCount = (EffectCount + BackdropCount) / 8;
     void showEffects()
     {
         if (m_camera.status() != Camera::On || m_recording)
@@ -1368,15 +1521,72 @@ private:
         leaveStill();
         if (effect != m_effect)
             m_xy = {0.5, 0.5};
+        if (effect != m_effect || !isBackdrop(effect))
+            setupBackdrop(effect);
         if (effect != NormalEffect)
             m_lastEffect = effect;
         m_effect = effect;
         m_mosaic = false;
         m_video->mode = VideoView::Live;
-        m_video->positioned = effectInfo(effect).positioned;
+        m_video->positioned = !isBackdrop(effect) && effectInfo(effect).positioned;
         if (!m_frame.isNull())
             newFrame(m_frame);
         refreshControls();
+    }
+
+    // ---- the backdrops (-[PBView startBackdropsCapture], RendererController)
+
+    void setupBackdrop(int effect)
+    {
+        ++m_backdropSerial;
+        m_backdropMovie.stop();
+        m_backdropStill = Image();
+        m_showMotion = false;
+        m_video->prompt.clear();
+        if (!isBackdrop(effect)) {
+            m_backdrops.stop();
+            return;
+        }
+        if (isUserBackdrop(effect)) {
+            // no picture or movie dragged onto it
+            m_backdrops.stop();
+            m_video->prompt = tr("Drag an image or movie onto the Background.");
+            return;
+        }
+        const BackdropInfo &info = backdropInfo(effect);
+        if (info.movie)
+            m_backdropMovie.play(Assets::path(std::string("/System/Library/Compositions/") + info.name + ".mov"));
+        m_backdropStill = backdropPicture(effect);
+        m_backdrops.start();
+        m_video->prompt = tr("Please step out of the frame.");
+        // ten seconds without a still background: the motion shown in red
+        const int serial = m_backdropSerial;
+        App::shared().addTimer(10, false, [this, serial] {
+            if (serial != m_backdropSerial || m_backdrops.state() != Backdrops::Capturing)
+                return;
+            m_video->prompt = tr("Too much motion in background.");
+            m_showMotion = true;
+        });
+    }
+    Image backdropFrame(const Image &frame)
+    {
+        const Image &shown = frame;   // newFrame's: already mirrored as Effect.qtz shows it
+        if (m_backdrops.state() == Backdrops::Capturing) {
+            if (m_backdrops.learn(shown, now())) {
+                // -_backdropsCaptureCompleted: "Background detected." for a second
+                m_showMotion = false;
+                m_video->prompt = tr("Background detected.");
+                const int serial = m_backdropSerial;
+                App::shared().addTimer(1, false, [this, serial] {
+                    if (serial == m_backdropSerial)
+                        m_video->prompt.clear();
+                });
+            }
+            return m_showMotion ? m_backdrops.motionOverlay(shown) : shown;
+        }
+        if (m_backdrops.state() == Backdrops::Ready)
+            return m_backdrops.composite(shown, m_backdropMovie.frame.isNull() ? m_backdropStill : m_backdropMovie.frame);
+        return shown;
     }
 
     // ---- taking pictures
@@ -1805,6 +2015,8 @@ private:
                 showPage(m_page + (a == "nextEffects:" ? 1 : -1));
             } else if (a == "resetEffect:") {
                 m_xy = {0.5, 0.5};
+                if (isBackdrop(m_effect))   // -resetBackground:: the background learnt again
+                    setupBackdrop(m_effect);
             }
         };
         m_menu.publish();
@@ -1845,6 +2057,11 @@ private:
     std::unique_ptr<Window> m_window;
     Camera m_camera;
     Effects m_fx;
+    Backdrops m_backdrops;
+    BackdropMovie m_backdropMovie;
+    Image m_backdropStill;
+    bool m_showMotion = false;
+    int m_backdropSerial = 0;
     Library m_library;
     std::vector<std::pair<Asset, int>> m_undo;   // the photos deleted, for Undo
     std::unique_ptr<Window> m_slideshow;
