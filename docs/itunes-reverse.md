@@ -460,3 +460,12 @@ the selection flags at +0x2C (`FUN_002f79be`) its `selFlags`.
 | The sort (`FUN_0028a1d2` with `FUN_00166e76`): two rows compared at the first level their parents differ (+0x654 / +0x658, the paths from the top), there by `FUN_00166d96`: the group, then the name (`FUN_0028efca` with 0x1B), then the playlist's number (+0x24) | `FUN_00166e76`, `FUN_00166d96` | Done (the library's order for the last) |
 | The names' compare (`FUN_0028ec76`): flag 2 leading spaces and controls skipped, 1 the case ignored; letters past 0x7A, or digits with 0x10, go to `UCCompareTextDefault` (`FUN_002957e4`): 1 → 0xE (case, width, composition), 8 → 0x10 (diacritics), 0x10 → 0x38000 (digits as numbers) | `FUN_0028ec76`, `FUN_002957e4` | Done (accents: Latin-1's letters folded; other scripts compared by code point) |
 
+## 25. iTunes 8.2.1: deleting a playlist
+
+| Item | Source | Status |
+|---|---|---|
+| Delete in the sources (`FUN_001677bc` → `FUN_00165bec`, then AXSelectedRowsChanged), Edit ▸ Delete with the sources' keyboard | `FUN_001677bc` | Done |
+| The question: STR# 135.002 "Are you sure you want to delete the playlist “^1”?"; with ⌥ (the modifiers' bit 11, `FUN_003ae4b0`; not for a folder) 135.003 "… and all contents from your iTunes library?"; a folder 135.004 with 135.005 "All folders and playlists inside this folder will also be deleted."; Delete / Cancel (23987.015 / .004), "Do not ask me again" (23987.019) kept at +0x9DC (a playlist), +0xC09 (with ⌥), +0x300B (a folder) | `FUN_00165bec` | Done (the box not shown) |
+| Not asked: with ⌘ (bit 8, `FUN_0025376e`); a playlist with no songs that is not smart (+0x128 & 3 ≠ 1, and `FUN_00453c96`); a folder with nothing in it (+0x1C) | `FUN_00165bec` | Done |
+| The deletion: with ⌥ the playlist's songs out of the library first (`FUN_00454edc`, `FUN_000ea56a`); the playlist, a folder with all it holds (`FUN_000dfeb0`, recursive), out of its folder (`FUN_002e6620`) | `FUN_000dfeb0` | Done (the row chosen after it by eye: the one that took its place, else the one above; the ⌥ deletion not tested) |
+

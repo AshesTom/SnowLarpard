@@ -1252,6 +1252,7 @@ public:
         }
     }
     std::function<void(int)> onToggle;   // a folder's triangle clicked: its row
+    std::function<void(unsigned)> onDelete;   // Delete with the sources' keyboard: the modifiers
     // A playlist dragged (FUN_00169d0a tracks it, FUN_00166758 says what a drop there does, +0x2D9):
     // dropState(from row, over row; -1 under the rows) 4 into that folder, 3 out to the top, 0 nothing;
     // onDrop(from, over) then
@@ -1310,6 +1311,11 @@ public:
     }
     void keyDown(Event &e) override
     {
+        // Delete (FUN_001677bc → FUN_00165bec): the playlist chosen, the modifiers with it
+        if ((e.keysym == XKB_KEY_BackSpace || e.keysym == XKB_KEY_Delete) && onDelete) {
+            onDelete(e.modifiers);
+            return;
+        }
         if (e.keysym != XKB_KEY_Down && e.keysym != XKB_KEY_Up) {
             View::keyDown(e);
             return;
@@ -1494,6 +1500,7 @@ private:
             loadSource();
             layout();
         };
+        m_sources->onDelete = [this](unsigned mods) { deletePlaylist(mods); };
         m_sources->onToggle = [this](int row) {
             const int tag = m_sources->rows[size_t(row)].tag;
             const std::string id = m_library.playlists()[size_t(tag)].persistentId;
@@ -2551,6 +2558,79 @@ private:
         }
         return x.size() - i == y.size() - j ? 0 : (x.size() - i < y.size() - j ? -1 : 1);
     }
+    // Delete a playlist (FUN_00165bec): asked first, STR# 135.002 "Are you sure you want to delete the
+    // playlist “^1”?", with ⌥ (the modifiers' bit 11, FUN_003ae4b0; not for a folder) 135.003 "… and all
+    // contents from your iTunes library?", a folder 135.004 with 135.005 under it; Delete / Cancel
+    // (23987.015 / .004) and "Do not ask me again" (23987.019; kept at +0x9DC, +0xC09, +0x300B: not
+    // shown here). Not asked with ⌘ (bit 8), nor for a playlist with no songs (not a smart one) or a
+    // folder with nothing in it. ⌥ deletes the songs from the library too (FUN_00454edc, FUN_000ea56a);
+    // a folder goes with all it holds (FUN_000dfeb0)
+    void deletePlaylist(unsigned mods)
+    {
+        const int tag = selectedPlaylist();
+        if (tag < 0 || size_t(tag) >= m_library.playlists().size())
+            return;
+        const Playlist &p = m_library.playlists()[size_t(tag)];
+        const bool withSongs = !p.folder && (mods & Option);
+        const std::string id = p.persistentId;
+        bool empty;
+        if (p.folder)
+            empty = std::none_of(m_library.playlists().begin(), m_library.playlists().end(), [&](const Playlist &q) { return q.parentId == id; });
+        else
+            empty = !p.smart && p.items.empty();
+        auto doDelete = [this, id, withSongs] {
+            auto &lists = m_library.playlists();
+            auto at = std::find_if(lists.begin(), lists.end(), [&](const Playlist &q) { return q.persistentId == id; });
+            if (at == lists.end())
+                return;
+            if (withSongs) {
+                const std::vector<int> songs = at->smart ? m_library.evaluate(at->info) : at->items;
+                for (int song : songs) {
+                    if (song == m_current) {
+                        m_player.stop();
+                        m_current = -1;
+                    }
+                    m_library.remove(song);
+                }
+            }
+            // the playlist and, for a folder, all in it
+            std::set<std::string> gone{id};
+            for (bool more = true; more;) {
+                more = false;
+                for (const Playlist &q : lists)
+                    if (!q.parentId.empty() && gone.count(q.parentId) && gone.insert(q.persistentId).second)
+                        more = true;
+            }
+            const int row = m_sources->selected();
+            lists.erase(std::remove_if(lists.begin(), lists.end(), [&](const Playlist &q) { return !q.master && gone.count(q.persistentId); }),
+                        lists.end());
+            m_library.save();
+            rebuildSources();
+            // the row that took its place, else the one above (by eye)
+            int next = std::min(row, int(m_sources->rows.size()) - 1);
+            while (next > 0 && !m_sources->rows[size_t(next)].selectable)
+                --next;
+            m_sources->select(next >= 0 ? next : 1, true);
+            layout();
+        };
+        if ((mods & Command) || empty) {
+            doDelete();
+            return;
+        }
+        auto withName = [&](std::string t) {
+            const size_t at = t.find("^1");
+            if (at != std::string::npos)
+                t.replace(at, 2, p.name);
+            return t;
+        };
+        const std::string message = withName(tr(p.folder ? "135.004" : withSongs ? "135.003" : "135.002"));
+        const std::string informative = p.folder ? tr("135.005") : std::string();
+        Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), message, informative,
+                   {tr("23987.015"), tr("23987.004")}, [doDelete](int b) {
+                       if (b == 0)
+                           doDelete();
+                   });
+    }
     // A folder is `id` or in it (FUN_000db944): its parents up from it
     bool inside(const Playlist &folder, const std::string &id)
     {
@@ -3058,6 +3138,8 @@ private:
             v.title = tr(m_showBrowser ? "kMenuItemHideBrowser" : "kMenuItemShowBrowser");
             return !eleven() && !m_mini && m_viewMode == 0;
         }
+        if (a == "clea" && m_window->firstResponder() == m_sources)   // the playlist chosen
+            return selectedPlaylist() >= 0;
         if (a == "npls" || a == "revl" || a == "clea" || a == "plps")
             return hasSel;
         if (a == "SCur")
@@ -3121,6 +3203,8 @@ private:
             newPlaylist();
         else if (a == "npls")
             newPlaylistFromSelection();
+        else if (a == "clea" && m_window->firstResponder() == m_sources)
+            deletePlaylist(0);
         else if (a == "clea")
             deleteSelection();
         else if (a == "revl")
