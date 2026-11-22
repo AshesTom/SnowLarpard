@@ -441,5 +441,14 @@ the selection flags at +0x2C (`FUN_002f79be`) its `selFlags`.
 | The sources' rows (`FUN_0002d3b2`, the small icons): an item of level n its triangle at 14n + 5 (when it has one: the row's flag 0x2000000), its icon at 14n + 19, its name at 14n + 39 (the large icons: 16n + 3, 16n + 17, 16n + 39); the triangle PBUT 314 "TrackDisclosure" (PNG 314, 10 × 10 cells, three columns, rows 0 closed, 1 turning, 2 open, 3–5 the same white for a chosen row) | `FUN_0002d3b2`, `templated` PBUT 314 | Done (the column by state by eye: 1 normal, 2 pressed; the turning row not animated) |
 | A folder's songs: those of the playlists in it and in its folders, each once | | Done (by iTunes' use: the code that gathers them not read) |
 | The library's XML: Playlist Persistent ID, Parent Persistent ID, Folder | | Done (the folders open kept in the port's settings, `OpenFolders`) |
-| Moving playlists into folders: a drag in the sources | | Not done (no drag in the port's sources) |
+| Moving playlists into folders: a drag in the sources | | Done: section 23 |
+
+## 23. iTunes 8.2.1: dragging playlists into folders
+
+| Item | Source | Status |
+|---|---|---|
+| The sources' drag (`FUN_00169d0a`, its state at +0x2D9 from `FUN_00166758`): over a folder, 4, when the playlist dragged is of the same library, not a kind kept out (+0xEC bit 0x20, `FUN_000dbeda`, kinds 0x13, 0x16, 0x1A), not the folder itself nor one of its parents (`FUN_000db944`), and not already in it; under the rows, 3, when the playlist dragged is in a folder; over a playlist, songs dropped on it (`FUN_000e8f26`) | `FUN_00166758` | Done for 4 and 3 (a playlist dropped on a playlist, which adds its songs, not done) |
+| The drop (`FUN_000bc4ea` → `FUN_000dd8c8`, the position {parent, after}): refused across libraries and into itself; out of its old folder (`FUN_002e6620`) and into the new one (`FUN_002e670a`: the folder's rule "Playlist is" its Persistent ID, field 0x28, added by `FUN_0037ce5e`, and the folder's flag 4 up its parents) | `FUN_000dd8c8`, `FUN_002e670a` | Done (the new folder opened to show it) |
+| The drop's mark: the folder ringed, or the whole list | | By eye (2 points in colour 10) |
+| The order of the playlists in a folder | | Not read: the library's order kept |
 

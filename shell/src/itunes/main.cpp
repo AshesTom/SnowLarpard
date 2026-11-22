@@ -1238,12 +1238,47 @@ public:
                 drawText(cr, r.title, Rect{tx, row.y, row.w - tx - 4, RowHeight}, t);
             }
         }
+        // the drop's place: the folder ringed (4), or the whole list (3), in the selection's blue (by eye)
+        if (m_dragging && m_drop) {
+            const Rect ring = m_drop == 4 && m_dropOver >= 0 ? Rect{1, m_dropOver * RowHeight + 1, frame().w - 2, RowHeight - 2}
+                                                            : Rect{1, 1, frame().w - 2, std::max(contentHeight(), frame().h) - 2};
+            cairo_save(cr);
+            const Color c = colour(10);
+            cairo_set_source_rgba(cr, c.r, c.g, c.b, 1);
+            cairo_set_line_width(cr, 2);
+            cairo_rectangle(cr, ring.x + 0.5, ring.y + 0.5, ring.w - 1, ring.h - 1);
+            cairo_stroke(cr);
+            cairo_restore(cr);
+        }
     }
     std::function<void(int)> onToggle;   // a folder's triangle clicked: its row
+    // A playlist dragged (FUN_00169d0a tracks it, FUN_00166758 says what a drop there does, +0x2D9):
+    // dropState(from row, over row; -1 under the rows) 4 into that folder, 3 out to the top, 0 nothing;
+    // onDrop(from, over) then
+    std::function<int(int, int)> dropState;
+    std::function<void(int, int)> onDrop;
+    void mouseDragged(Event &e) override
+    {
+        if (m_dragFrom < 0 || m_pressed >= 0)
+            return;
+        if (!m_dragging && std::hypot(e.location.x - m_downAt.x, e.location.y - m_downAt.y) < 4)
+            return;
+        m_dragging = true;
+        int over = int(e.location.y / RowHeight);
+        if (e.location.y < 0 || over >= int(rows.size()))
+            over = -1;
+        m_dropOver = over;
+        m_drop = dropState ? dropState(m_dragFrom, over) : 0;
+        setNeedsDisplay();
+    }
     void mouseDown(Event &e) override
     {
         window()->makeFirstResponder(this);
         const int i = int(e.location.y / RowHeight);
+        m_downAt = e.location;
+        m_dragging = false;
+        m_drop = 0;
+        m_dragFrom = i >= 0 && size_t(i) < rows.size() && rows[size_t(i)].tag >= 0 && !rows[size_t(i)].header ? i : -1;
         if (i >= 0 && size_t(i) < rows.size() && rows[size_t(i)].folder) {
             const double tx = 14 * rows[size_t(i)].level + 5;
             if (e.location.x >= tx - 3 && e.location.x < tx + 13) {
@@ -1256,6 +1291,17 @@ public:
     }
     void mouseUp(Event &e) override
     {
+        if (m_dragging) {
+            const int from = m_dragFrom, over = m_dropOver, state = m_drop;
+            m_dragging = false;
+            m_dragFrom = -1;
+            m_drop = 0;
+            setNeedsDisplay();
+            if (state && onDrop)
+                onDrop(from, over);
+            return;
+        }
+        m_dragFrom = -1;
         const int i = m_pressed;
         m_pressed = -1;
         setNeedsDisplay();
@@ -1279,6 +1325,9 @@ public:
 private:
     int m_selected = -1;
     int m_pressed = -1;   // a triangle held
+    int m_dragFrom = -1, m_dropOver = -1, m_drop = 0;
+    bool m_dragging = false;
+    Point m_downAt;
 };
 
 // ---- the application
@@ -1408,6 +1457,43 @@ private:
         for (const std::string &id : Settings("itunes").list("OpenFolders"))
             m_openFolders.insert(id);
         m_sources->onSelect = [this](int) { loadSource(); };
+        // FUN_00166758: a folder takes a playlist or folder of the library that is not already in it, not
+        // itself and not one of its own folders (FUN_000db944); under the rows, one in a folder goes
+        // out to the top (3)
+        m_sources->dropState = [this](int from, int over) {
+            const int ft = m_sources->rows[size_t(from)].tag;
+            if (ft < 0)
+                return 0;
+            const Playlist &p = m_library.playlists()[size_t(ft)];
+            if (over < 0)
+                return p.parentId.empty() ? 0 : 3;
+            const int ot = m_sources->rows[size_t(over)].tag;
+            if (ot < 0 || ot == ft || !m_library.playlists()[size_t(ot)].folder)
+                return 0;
+            const Playlist &folder = m_library.playlists()[size_t(ot)];
+            if (p.parentId == folder.persistentId || inside(folder, p.persistentId))
+                return 0;
+            return 4;
+        };
+        m_sources->onDrop = [this](int from, int over) {
+            Playlist &p = m_library.playlists()[size_t(m_sources->rows[size_t(from)].tag)];
+            // FUN_000dd8c8: out of its folder, into the new one (opened to show it)
+            p.parentId = over < 0 ? std::string() : m_library.playlists()[size_t(m_sources->rows[size_t(over)].tag)].persistentId;
+            const int moved = m_sources->rows[size_t(from)].tag;
+            if (!p.parentId.empty()) {
+                m_openFolders.insert(p.parentId);
+                Settings("itunes").set("OpenFolders", std::vector<std::string>(m_openFolders.begin(), m_openFolders.end()));
+            }
+            m_library.save();
+            const int chosen = selectedPlaylist();
+            rebuildSources();
+            for (size_t i = 0; i < m_sources->rows.size(); ++i)
+                if (m_sources->rows[i].tag == chosen)
+                    m_sources->select(int(i));
+            (void)moved;
+            loadSource();
+            layout();
+        };
         m_sources->onToggle = [this](int row) {
             const int tag = m_sources->rows[size_t(row)].tag;
             const std::string id = m_library.playlists()[size_t(tag)].persistentId;
@@ -2393,6 +2479,21 @@ private:
 
     // ---- editing
 
+    // A folder is `id` or in it (FUN_000db944): its parents up from it
+    bool inside(const Playlist &folder, const std::string &id)
+    {
+        std::string at = folder.persistentId;
+        for (int depth = 0; !at.empty() && depth < 32; ++depth) {
+            if (at == id)
+                return true;
+            std::string up;
+            for (const Playlist &q : m_library.playlists())
+                if (q.persistentId == at)
+                    up = q.parentId;
+            at = up;
+        }
+        return false;
+    }
     // Where a new playlist or folder goes (FUN_0013c60c, FUN_0014ec46's nfld): in the folder chosen,
     // beside the playlist chosen (in its folder), else at the top
     std::string newParent()
