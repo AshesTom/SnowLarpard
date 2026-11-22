@@ -20,12 +20,14 @@
 #include "controls.h"
 #include "foundation.h"
 #include "library.h"
+#include "panels.h"
 #include "resources.h"
 
 #include <taglib/fileref.h>
 #include <taglib/tpropertymap.h>
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <cstdlib>
 
@@ -457,6 +459,255 @@ void InfoWindow::step(int by)
         return;
     m_index = i;
     load();
+}
+
+// ---- Multiple Item Information (DITL 136, its Info pane DITL 280)
+
+namespace {
+
+// The rating's user item (46, 102 × 20): PBUT 528's stars, a click on them the rating
+class StarsView : public View {
+public:
+    int rating = 0;
+    std::function<void()> onChange;
+    void draw(cairo_t *cr) override { drawCell(cr, 528, 0, (rating + 5) / 10, Rect{0, std::floor((frame().h - 11) / 2), 68, 11}); }
+    void mouseDown(Event &e) override
+    {
+        rating = std::clamp(int(std::ceil(e.location.x / (68.0 / 5))), 0, 5) * 20;
+        setNeedsDisplay();
+        if (onChange)
+            onChange();
+    }
+};
+
+} // namespace
+
+struct MultipleInfoWindow::Pane {
+    // the Info pane's fields by their DITL 280 numbers: the box before each, and its field
+    std::map<int, TextField *> fields;
+    std::map<int, CheckBox *> boxes;
+    ComboBox *genre = nullptr;
+    StarsView *stars = nullptr;
+    std::map<int, View *> video, sorting, options;
+};
+
+MultipleInfoWindow::MultipleInfoWindow(Library &library) : m_library(library) {}
+MultipleInfoWindow::~MultipleInfoWindow() = default;
+
+void MultipleInfoWindow::show(const std::vector<int> &ids)
+{
+    // FUN_000e9042: asked first (its "Do not ask me again", 23987.019, kept at +0x2AF: not shown here)
+    Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), tr("9008.001"), {},
+               {tr("23987.001"), tr("23987.004")}, [this, ids](int b) {
+                   if (b != 0)
+                       return;
+                   m_ids = ids;
+                   m_window.reset();
+                   build();
+               });
+}
+
+namespace {
+// DITL 280's fields: the box's item, the field's item; a text or a number
+struct MultiField {
+    int box, edit;
+    bool number;
+};
+const MultiField MultiFields[] = {
+    {2, 3, false},   {5, 6, true},    {8, 9, false},   {11, 12, true},  {14, 15, true}, {17, 18, false},
+    {20, 21, true},  {23, 24, true},  {26, 27, false}, {29, 30, true},  {32, 33, false}, {38, 39, false},
+};
+// a song's value of a field by its edit item
+std::string multiValue(const Track &t, int edit)
+{
+    auto n = [](int v) { return v ? std::to_string(v) : std::string(); };
+    switch (edit) {
+    case 3: return t.artist;
+    case 6: return n(t.year);
+    case 9: return t.albumArtist;
+    case 12: return n(t.trackNumber);
+    case 15: return n(t.trackCount);
+    case 18: return t.album;
+    case 21: return n(t.discNumber);
+    case 24: return n(t.discCount);
+    case 27: return t.grouping;
+    case 30: return n(t.bpm);
+    case 33: return t.composer;
+    case 39: return t.comments;
+    case 42: return t.genre;
+    default: return {};
+    }
+}
+void setMultiValue(Track &t, int edit, const std::string &v)
+{
+    const int n = std::atoi(v.c_str());
+    switch (edit) {
+    case 3: t.artist = v; break;
+    case 6: t.year = n; break;
+    case 9: t.albumArtist = v; break;
+    case 12: if (!v.empty()) t.trackNumber = n; break;   // empty: each song's own (FUN_000e9042)
+    case 15: if (!v.empty()) t.trackCount = n; break;
+    case 18: t.album = v; break;
+    case 21: if (!v.empty()) t.discNumber = n; break;
+    case 24: if (!v.empty()) t.discCount = n; break;
+    case 27: t.grouping = v; break;
+    case 30: t.bpm = n; break;
+    case 33: t.composer = v; break;
+    case 39: t.comments = v; break;
+    case 42: t.genre = v; break;
+    }
+}
+} // namespace
+
+void MultipleInfoWindow::build()
+{
+    const Size size = dialogSize(136);
+    m_window = std::make_unique<Window>(Size{size.w > 0 ? size.w : 598, size.h > 0 ? size.h : 471}, "Multiple Item Information");
+    m_window->onClose = [this] { App::shared().later([this] { m_window.reset(); m_pane.reset(); }); };
+    m_pane = std::make_unique<Pane>();
+    Pane &p = *m_pane;
+    View *c = m_window->contentView();
+    TabView *tabs = c->add<TabView>();
+    tabs->keepPageFrames = true;
+    tabs->setFrame({TabX, TabY, 558, 400});
+    View *info = new View, *video = new View, *sorting = new View, *options = new View;
+    for (View *v : {info, video, sorting, options})
+        v->setFrame({0, 0, 558, 400});
+
+    // the songs' common values (FUN_000fac26)
+    std::vector<const Track *> tracks;
+    for (int id : m_ids)
+        if (const Track *t = m_library.track(id))
+            tracks.push_back(t);
+    auto common = [&](int edit) {
+        if (tracks.empty())
+            return std::string();
+        const std::string v = multiValue(*tracks.front(), edit);
+        for (const Track *t : tracks)
+            if (multiValue(*t, edit) != v)
+                return std::string();
+        return v;
+    };
+
+    int n = 0;
+    for (const DialogItem &it : dialogItems(280)) {
+        ++n;
+        const Rect r = it.rect.translated(-TabX, -TabY);
+        if (it.type == DialogItem::Text) {
+            info->add<Label>(it.text, Font::system(11))->setFrame(r);
+        } else if (it.type == DialogItem::CheckBox) {
+            CheckBox *b = info->add<CheckBox>("");
+            b->small = true;
+            b->setFrame(r);
+            p.boxes[n] = b;
+        } else if (it.type == DialogItem::Edit && n != 42) {
+            TextField *f = info->add<TextField>();
+            f->font = Font::system(11);
+            f->setFrame(Rect{r.x - 3, r.y - 3, r.w + 6, r.h + 6});
+            f->setText(common(n));
+            p.fields[n] = f;
+            // typing in a field boxes it
+            f->onChange = [&p, n](const std::string &) {
+                if (p.boxes.count(n - 1))
+                    p.boxes[n - 1]->setChecked(true);
+            };
+        } else if (n == 42) {
+            // the genre: the field and its popup (CNTL 1369) as one combo box
+            p.genre = info->add<ComboBox>();
+            p.genre->font = Font::system(11);
+            p.genre->setFrame(Rect{r.x - 3, r.y - 3, r.w + 6 + 34, r.h + 6});
+            std::vector<std::string> genres;
+            for (const auto &[id, t] : m_library.tracks())
+                if (!t.genre.empty() && std::find(genres.begin(), genres.end(), t.genre) == genres.end())
+                    genres.push_back(t.genre);
+            std::sort(genres.begin(), genres.end());
+            p.genre->items = genres;
+            p.genre->setText(common(42));
+            p.genre->onChange = [&p](const std::string &) { p.boxes[41]->setChecked(true); };
+        } else if (n == 46) {
+            p.stars = info->add<StarsView>();
+            p.stars->setFrame(r);
+            int rating = tracks.empty() ? 0 : tracks.front()->rating;
+            for (const Track *t : tracks)
+                if (t->rating != rating)
+                    rating = 0;
+            p.stars->rating = rating;
+            p.stars->onChange = [&p] { p.boxes[45]->setChecked(true); };
+        } else if (n == 36) {
+            info->add<ImageView>()->setFrame(r);   // the artwork's well: not written here
+        }
+    }
+    if (p.boxes.count(35))
+        p.boxes[35]->setEnabled(false);
+
+    p.video = ditlPage(video, 281);
+    p.sorting = ditlPage(sorting, 282);
+    p.options = ditlPage(options, 283);
+    for (auto *page : {&p.video, &p.sorting, &p.options})
+        for (auto &[k, v] : *page)
+            v->setEnabled(dynamic_cast<Label *>(v) != nullptr);
+
+    tabs->addTab("Info", info);
+    tabs->addTab("Video", video);
+    tabs->addTab("Sorting", sorting);
+    tabs->addTab("Options", options);
+    tabs->select(0);
+
+    // OK (1) and Cancel (2) at their DITL places
+    n = 0;
+    for (const DialogItem &it : dialogItems(136)) {
+        ++n;
+        if (n > 2)
+            break;
+        Button *b = c->add<Button>(it.text);
+        b->setFrame(Rect{it.rect.x, it.rect.y - 6, it.rect.w, 32});
+        if (n == 1) {
+            b->isDefault = true;
+            b->action = [this] {
+                save();
+                m_window->close();
+            };
+        } else {
+            b->action = [this] { m_window->close(); };
+        }
+    }
+    m_window->show();
+}
+
+void MultipleInfoWindow::save()
+{
+    if (!m_pane)
+        return;
+    Pane &p = *m_pane;
+    bool any = false;
+    for (int id : m_ids) {
+        const Track *old = m_library.track(id);
+        if (!old)
+            continue;
+        Track t = *old;
+        for (const MultiField &f : MultiFields)
+            if (p.boxes.count(f.box) && p.boxes[f.box]->checked() && p.fields.count(f.edit))
+                setMultiValue(t, f.edit, p.fields[f.edit]->text);
+        if (p.genre && p.boxes.count(41) && p.boxes[41]->checked())
+            setMultiValue(t, 42, p.genre->text);
+        const bool rated = p.stars && p.boxes.count(45) && p.boxes[45]->checked();
+        if (rated && m_library.track(id))
+            m_library.track(id)->rating = p.stars->rating;
+        const bool changed = t.artist != old->artist || t.year != old->year || t.albumArtist != old->albumArtist ||
+                             t.trackNumber != old->trackNumber || t.trackCount != old->trackCount || t.album != old->album ||
+                             t.discNumber != old->discNumber || t.discCount != old->discCount || t.grouping != old->grouping ||
+                             t.bpm != old->bpm || t.composer != old->composer || t.comments != old->comments || t.genre != old->genre;
+        if (changed) {
+            t.rating = m_library.track(id)->rating;
+            m_library.writeTags(t);
+        }
+        any = any || changed || rated;
+    }
+    if (any) {
+        m_library.save();
+        if (onChanged)
+            onChanged();
+    }
 }
 
 } // namespace iTunes

@@ -2918,6 +2918,10 @@ private:
         }
         else if (a == "esmp")
             editSmartPlaylist();
+        else if (a == "geti" && m_list->sel.size() > 1) {   // several songs: FUN_000e9042
+            m_multiInfo.onChanged = [this] { loadSource(); refreshLCD(); };
+            m_multiInfo.show(selectedIds());
+        }
         else if (a == "geti" && m_list->selected >= 0) {
             m_info.onChanged = [this](int) { loadSource(); refreshLCD(); };
             m_info.show(m_list->ids, m_list->selected);
@@ -2933,6 +2937,7 @@ private:
     Player m_player;
     Equalizer m_equalizer{m_player};
     InfoWindow m_info{m_library};
+    MultipleInfoWindow m_multiInfo{m_library};
     std::unique_ptr<SmartPlaylistWindow> m_smartWindow;
     std::unique_ptr<ViewOptionsWindow> m_viewOptions;
     PreferencesWindow m_prefs;
