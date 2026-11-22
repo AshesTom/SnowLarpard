@@ -26,6 +26,8 @@ namespace AK {
 namespace FontPanel {
 // The text the panel acts on: the key window's (asked each time)
 void setTarget(std::function<TextView *()> target);
+// The effects bar's document colour: the document's background, asked and set
+void setDocumentColor(std::function<Color()> get, std::function<void(const Color &)> set);
 // -orderFrontFontPanel:
 void show();
 bool isVisible();

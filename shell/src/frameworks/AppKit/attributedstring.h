@@ -122,6 +122,9 @@ struct DocumentAttributes {
     double left = -1, right = -1, top = -1, bottom = -1;
     double viewWidth = 0, viewHeight = 0;
     int viewKind = -1;
+    // NSBackgroundColorDocumentAttribute ({\\*\\background {\\shp … {\\sn fillColor}{\\sv BGR}…}})
+    bool hasBackground = false;
+    AK::Color background{1, 1, 1, 1};
     // the properties (NSTitleDocumentAttribute, NSSubjectDocumentAttribute, NSAuthorDocumentAttribute,
     // NSCompanyDocumentAttribute, NSCopyrightDocumentAttribute, NSKeywordsDocumentAttribute,
     // NSCommentDocumentAttribute): the \info group's \title, \subject, \author, \*\company,

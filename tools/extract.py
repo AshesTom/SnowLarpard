@@ -89,6 +89,8 @@ WANTED = {
         "./System/Library/PreferencePanes/ParentalControls.prefPane/Contents/Resources/English.lproj/*",
     ],
     "Essentials.pkg": [
+        # NSColorPanel's colour wheel (shell/src/frameworks/AppKit/colorpanel.cpp): its picture
+        "./System/Library/ColorPickers/NSColorPickerWheel.colorPicker/Resources/NSColorWheelImage.tiff",
         # NSPageLayout (shell/src/frameworks/AppKit/pagelayout.cpp): PrintingPrivate's page setup
         # sheet, its Page Attributes panel, their pictures and strings
         "./System/Library/PrivateFrameworks/PrintingPrivate.framework/Versions/A/Plugins/PrintCocoaUI.bundle/Contents/Resources/English.lproj/CocoaPageSetupWindow.nib/*",
@@ -474,7 +476,7 @@ def png_bytes(w, h, rows):
             chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def appkit_images(pkg, assets, tmp, prefix=b"NSFontPanel"):
+def appkit_images(pkg, assets, tmp, prefixes=(b"NSFontPanel", b"NSColorPicker", b"NSColorSwatch", b"NSSmallMagnifyingGlass", b"NSMagnifyingGlass")):
     """AppKit's own pictures (+[NSImage imageNamed:]'s built-in ones): a table of 24-byte entries (the
     name's address, its place in an atlas as y << 16 | x from the atlas's bottom left, its width and
     height, the atlas's kind) and the atlases in their sections (kind 7: __fullcolor_alph, a 16-byte
@@ -534,7 +536,7 @@ def appkit_images(pkg, assets, tmp, prefix=b"NSFontPanel"):
             break
         place, w, h, kind = struct.unpack_from("<IHHH", data, entry + 8)
         entry += 24
-        if not name.startswith(prefix) or kind != 7:
+        if not name.startswith(prefixes) or kind != 7:
             continue
         x, y = place & 0xFFFF, place >> 16
         top = ah - y - h

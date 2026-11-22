@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "fontpanel.h"
 
+#include "colorpanel.h"
 #include "controls.h"
 #include "foundation.h"
 
@@ -259,6 +260,8 @@ struct Panel {
     AngleDial *angle = nullptr;
     Label *angleLabel = nullptr;
     PopUpButton *actions = nullptr;
+    std::function<Color()> getDocumentColor;
+    std::function<void(const Color &)> setDocumentColor;
 
     TextView *text() const { return target ? target() : nullptr; }
 
@@ -642,7 +645,28 @@ struct Panel {
         strike = pictureButton("NSFontPanelStrikeEffect", {99, 2, 40, 22});
         auto *textColour = pictureButton("NSFontPanelTextColour", {145, 2, 40, 22});
         auto *paperColour = pictureButton("NSFontPanelPaperColour", {191, 2, 40, 22});
-        textColour->enabled = paperColour->enabled = false;
+        // _changeTextColor:, _changeDocumentColor: (0x3aad3c, 0x3aacad): the colour panel opened on the
+        // selection's colour (or the document's), its colours sent here (-changeColor:)
+        textColour->onPress = [p] {
+            TextView *t = p->text();
+            const Style st = t ? t->styleAtSelection() : Style();
+            ColorPanel::setColor(st.coloured ? st.colour : Color::gray(0));
+            ColorPanel::setTarget([p](const Color &c) {
+                if (TextView *tv = p->text())
+                    tv->changeStyle([&c](Style &s) {
+                        s.coloured = !(c.r == 0 && c.g == 0 && c.b == 0);
+                        s.colour = c;
+                    });
+            });
+            ColorPanel::show();
+        };
+        paperColour->onPress = [p] {
+            if (!p->getDocumentColor || !p->setDocumentColor)
+                return;
+            ColorPanel::setColor(p->getDocumentColor());
+            ColorPanel::setTarget([p](const Color &c) { p->setDocumentColor(c); });
+            ColorPanel::show();
+        };
         icon("NSFontPanelEffectsDivider", {235, 1, 1, 23});
         shadowToggle = pictureButton("NSFontPanelDropEffect", {240, 2, 40, 22});
         icon("NSFontPanelOpacityEffect", {302, 3, 13, 9});
@@ -705,6 +729,12 @@ Panel &panel()
 } // namespace
 
 void FontPanel::setTarget(std::function<TextView *()> target) { panel().target = std::move(target); }
+
+void FontPanel::setDocumentColor(std::function<Color()> get, std::function<void(const Color &)> set)
+{
+    panel().getDocumentColor = std::move(get);
+    panel().setDocumentColor = std::move(set);
+}
 
 bool FontPanel::isVisible() { return panel().window && panel().window->isVisible(); }
 

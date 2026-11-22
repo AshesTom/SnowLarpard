@@ -441,7 +441,7 @@ void RichText::compact()
 RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string> &files)
 {
     RichText out;
-    enum Dest { Text, FontTable, ColorTable, Ignore, Graphic, Info, FieldInstruction, ListTable, LevelMarker };
+    enum Dest { Text, FontTable, ColorTable, Ignore, Graphic, Info, FieldInstruction, ListTable, LevelMarker, Background };
     struct State {
         Style style;
         Dest dest = Text;
@@ -468,6 +468,7 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
         std::vector<TextList> levels;   // a list per \listlevel, outermost first
     };
     long paragraphList = 0;   // the paragraph's \ls, for its \ilvl
+    std::string backgroundText;   // \*\background's shape: its properties' names and values
     std::vector<RtfList> rtfLists;
     std::map<long, long> listOverrides;
     bool inListOverride = false;
@@ -491,6 +492,10 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
         }
         if (s.dest == ListTable)
             return;
+        if (s.dest == Background) {
+            appendUtf8(backgroundText, c);
+            return;
+        }
         if (s.dest == FontTable) {
             if (c == ';') {
                 fonts[fontNumber] = fontName;
@@ -563,6 +568,15 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                 graphicName.clear();
                 graphicWidth = graphicHeight = 0;
             } else if (stack.size() > 1) {
+                if (stack.back().dest == Background && stack[stack.size() - 2].dest != Background) {
+                    // the shape's fillColor: Word's 0x00BBGGRR
+                    const size_t at = backgroundText.find("fillColor");
+                    if (at != std::string::npos) {
+                        const long v = std::strtol(backgroundText.c_str() + at + 9, nullptr, 10);
+                        out.document.hasBackground = true;
+                        out.document.background = AK::Color::rgb(int(v & 0xFF), int((v >> 8) & 0xFF), int((v >> 16) & 0xFF));
+                    }
+                }
                 if (stack.back().dest == FontTable && !fontName.empty()) {
                     fonts[fontNumber] = fontName;
                     fontName.clear();
@@ -616,6 +630,8 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                     s.dest = Info, s.info = nullptr;
                 else if (s.dest == Info && doc.property(word))
                     s.info = doc.property(word);
+                else if (word == "background")
+                    s.dest = Background, backgroundText.clear();
                 else if (word == "listtable" || word == "listoverridetable")
                     s.dest = ListTable;
                 else if (s.dest == ListTable || s.dest == LevelMarker) {
@@ -1194,6 +1210,15 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
         for (size_t k = 0; k < lists.size(); ++k)
             out += "{\\listoverride\\listid" + std::to_string(k + 1) + "\\listoverridecount0\\ls" + std::to_string(k + 1) + "}";
         out += "}\n";
+    }
+    if (t.document.hasBackground) {
+        // -[NSRTFWriter writeHeader]'s background shape, fillColor 0x00BBGGRR
+        const AK::Color &b = t.document.background;
+        const long v = std::lround(b.r * 255) | (std::lround(b.g * 255) << 8) | (std::lround(b.b * 255) << 16);
+        out += "{\\*\\background {\\shp{\\*\\shpinst\\shpleft0\\shptop0\\shpright0\\shpbottom0\\shpfhdr0\\shpbxmargin\\shpbymargin\\shpwr0\\shpwrk0"
+               "\\shpfblwtxt1\\shpz0\\shplid1025{\\sp{\\sn shapeType}{\\sv 1}}{\\sp{\\sn fFlipH}{\\sv 0}}{\\sp{\\sn fFlipV}{\\sv 0}}"
+               "{\\sp{\\sn fillColor}{\\sv " + std::to_string(v) + "}}{\\sp{\\sn fFilled}{\\sv 1}}{\\sp{\\sn lineWidth}{\\sv 0}}{\\sp{\\sn fLine}{\\sv 0}}"
+               "{\\sp{\\sn bWMode}{\\sv 9}}{\\sp{\\sn fBackground}{\\sv 1}}}}}\n";
     }
     // the document's attributes (NSRTFWriter: \paperw11900\paperh16840\margl1440\margr1440\vieww9000\viewh8400\viewkind0)
     const DocumentAttributes &d = t.document;

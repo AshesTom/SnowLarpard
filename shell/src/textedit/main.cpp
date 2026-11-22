@@ -8,6 +8,7 @@
 #include "appkit.h"
 #include "attributedstring.h"
 #include "controls.h"
+#include "colorpanel.h"
 #include "fontpanel.h"
 #include "foundation.h"
 #include "mainmenu.h"
@@ -372,6 +373,12 @@ public:
     void print();
     void saveAsPDF();
     void chooseAndAttachFiles();
+    void setBackground(const Color &c)
+    {
+        textView()->background = c;
+        textView()->setNeedsDisplay();
+        setEdited(true);
+    }
     // NSDocument's autosaving (AppKit 10.6): the file the unsaved changes were last written to
     const std::string &autosavedPath() const { return m_autosavedPath; }
     // -[NSDocument _deleteAutosavedContents]: that file removed (saved, reverted, closed, discarded)
@@ -652,6 +659,8 @@ bool Document::read(const std::string &path, std::string *error)
     m_path = path;
     build();
     textView()->setText(text);
+    // NSBackgroundColorDocumentAttribute: the view's background (-[Document setBackgroundColor:])
+    textView()->background = text.document.hasBackground ? text.document.background : Color::gray(255);
     if (m_type == Type::Plain)
         applyDefaultAttributesToText();
     applyTextDefaults();
@@ -1311,6 +1320,10 @@ bool Document::writeTo(const std::string &path, Type type, std::string *error)
     d.bottom = m_paper.bottom;
     d.paperWidth = m_paper.paperWidth;
     d.paperHeight = m_paper.paperHeight;
+    // the background colour when it is not white (-[Document backgroundColor])
+    const Color bg = textView()->background;
+    d.hasBackground = !(bg.r == 1 && bg.g == 1 && bg.b == 1);
+    d.background = bg;
     if (m_scroll) {
         // the view's size as resizeWindowForViewSize: takes it back: the scroll view less its
         // scrollers (without pages, less the line fragment padding too)
@@ -2322,6 +2335,21 @@ void Controller::start(const std::vector<std::string> &files)
             return d->isRichText() && !d->isReadOnly() ? d->textView() : nullptr;
         return nullptr;
     });
+    // the effects bar's document colour: the front document's background (-[Document
+    // setBackgroundColor:], the document edited)
+    FontPanel::setDocumentColor(
+        [this]() {
+            for (Document *d : m_order)
+                return d->textView()->background;
+            return Color::gray(255);
+        },
+        [this](const Color &c) {
+            for (Document *d : m_order) {
+                if (d->isRichText() && !d->isReadOnly())
+                    d->setBackground(c);
+                break;
+            }
+        });
     const bool reopened = autoreopenDocuments();
     if (!files.empty()) {
         openFiles(files);
@@ -2498,8 +2526,8 @@ bool Controller::validate(const MainMenuItem &it, MenuValidation &v)
         v.title = m_properties && m_properties->isVisible() ? "Hide Properties" : "Show Properties";
         return true;
     }
-    if (a == "orderFrontFontPanel:")
-        return true;   // NSFontManager's, always there
+    if (a == "orderFrontFontPanel:" || a == "orderFrontColorPanel:")
+        return true;   // NSFontManager's and NSApplication's, always there
     if (a == "showHelp:")
         return Assets::exists(std::string(Bundle) + "/Contents/Resources/TextEdit.help/Contents/Resources/English.lproj/index.html");
     if (a == "openRecentDocument:" || a == "clearRecentDocuments:")
@@ -2541,6 +2569,26 @@ void Controller::perform(const MainMenuItem &it)
         return toggleProperties();
     if (a == "orderFrontFontPanel:")
         return FontPanel::show();
+    if (a == "orderFrontColorPanel:") {
+        // NSApplication's: the colour panel, its colour to the first responder (-[NSTextView
+        // changeColor:]: the selection's foreground colour)
+        ColorPanel::setTarget([this](const Color &c) {
+            for (Document *d : m_order) {
+                if (d->isRichText() && !d->isReadOnly())
+                    d->textView()->changeStyle([&c](Style &s) {
+                        s.coloured = !(c.r == 0 && c.g == 0 && c.b == 0);
+                        s.colour = c;
+                    });
+                break;
+            }
+        });
+        for (Document *d : m_order) {
+            const Style s = d->textView()->styleAtSelection();
+            ColorPanel::setColor(s.coloured ? s.colour : Color::gray(0));
+            break;
+        }
+        return ColorPanel::show();
+    }
     if (a == "showHelp:")
         return Workspace::openFile(Assets::path(std::string(Bundle) + "/Contents/Resources/TextEdit.help/Contents/Resources/English.lproj/index.html"));
     if (a == "openRecentDocument:") {

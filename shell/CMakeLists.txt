@@ -94,6 +94,7 @@ aquakit_framework(AppKit
     src/frameworks/AppKit/textruleroptions.cpp src/frameworks/AppKit/textruleroptions.h
     src/frameworks/AppKit/pagelayout.cpp src/frameworks/AppKit/pagelayout.h
     src/frameworks/AppKit/fontpanel.cpp src/frameworks/AppKit/fontpanel.h
+    src/frameworks/AppKit/colorpanel.cpp src/frameworks/AppKit/colorpanel.h
     src/frameworks/AppKit/attributedstring.cpp src/frameworks/AppKit/attributedstring.h
     src/frameworks/AppKit/textview.cpp src/frameworks/AppKit/textview.h
     src/frameworks/AppKit/panels.cpp src/frameworks/AppKit/panels.h
