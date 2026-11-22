@@ -864,6 +864,19 @@ public:
     // The songs chosen dragged (FUN_002fc392's click loop starting the drag): the pointer in the
     // window, and whether the button is up (the drop)
     std::function<void(Point, bool)> onDragSongs;
+    // the place songs dragged in the list would go (a line before that row), -1 none
+    int dropLine = -1;
+    int insertionAt(Point inWindow) const
+    {
+        const Point p = m_body->fromWindow(inWindow);
+        if (p.x < 0 || p.x > m_body->frame().w || p.y < 0 || p.y > m_body->frame().h)
+            return -1;
+        // FUN_001a8cae: the row under the pointer, the one after it past the row's middle
+        const int r = int(p.y / rowHeight);
+        if (r >= int(rows.size()))
+            return int(rows.size());
+        return r + (p.y - r * rowHeight > rowHeight / 2 ? 1 : 0);
+    }
     // 11.4: the header view's height at least 22 (26 with the large text), FUN_00e5675c's end
     static double headerHeight() { return eleven() ? std::max(22.0, std::ceil(lineHeight(textStyle(9004).font)) + 6) : 16; }
     double rowHeight = 16;
@@ -1024,6 +1037,11 @@ private:
                     x += col.width;
                     fill(cr, Rect{x - 1, y, 1, h}, line);
                 }
+            }
+            // the insertion line of a drag (by eye: 2 points of the selection's blue)
+            if (list->dropLine >= 0) {
+                const double ly = std::max(0.0, list->dropLine * h - 1);
+                fill(cr, Rect{0, ly, frame().w, 2}, colour(10));
             }
         }
         bool m_dragging = false;
@@ -1672,6 +1690,43 @@ private:
         // songs dragged from the list onto a playlist of the sources (FUN_000e894e): one that takes
         // songs (not smart, not a folder) and is not the list's own; added at its end (FUN_000e051a)
         m_list->onDragSongs = [this](Point inWindow, bool drop) {
+            // inside the list: a playlist sorted by its own order (FUN_001a40d6: field 1) takes its
+            // songs at the line (FUN_001a8cae), moved there
+            const int tagHere = selectedPlaylist();
+            const bool ordered = m_sortField == 1 && m_list->ascending && tagHere >= 0 && size_t(tagHere) < m_library.playlists().size() &&
+                                 !m_library.playlists()[size_t(tagHere)].smart && !m_library.playlists()[size_t(tagHere)].folder &&
+                                 m_viewMode == 0;
+            const int at = ordered ? m_list->insertionAt(inWindow) : -1;
+            if (m_list->dropLine != (drop ? -1 : at)) {
+                m_list->dropLine = drop ? -1 : at;
+                m_list->body()->setNeedsDisplay();
+            }
+            if (at >= 0) {
+                m_sources->setSongDrop(-1);
+                if (!drop)
+                    return;
+                Playlist &p = m_library.playlists()[size_t(tagHere)];
+                const std::vector<int> moving = selectedIds();
+                // the place in the playlist's items: before the song at the line, else the end
+                const int before = size_t(at) < m_list->ids.size() ? m_list->ids[size_t(at)] : -1;
+                std::vector<int> rest;
+                std::set<int> chosen(moving.begin(), moving.end());
+                int beforeIndex = -1;
+                for (size_t i = 0; i < p.items.size(); ++i) {
+                    if (chosen.count(p.items[i]))
+                        continue;
+                    if (p.items[i] == before && beforeIndex < 0)
+                        beforeIndex = int(rest.size());
+                    rest.push_back(p.items[i]);
+                }
+                if (beforeIndex < 0)
+                    beforeIndex = int(rest.size());
+                rest.insert(rest.begin() + beforeIndex, moving.begin(), moving.end());
+                p.items = rest;
+                m_library.save();
+                loadSource();
+                return;
+            }
             const int row = m_sources->isHidden() ? -1 : m_sources->rowAt(m_sources->fromWindow(inWindow));
             int target = -1;
             if (row >= 0) {
@@ -1695,7 +1750,7 @@ private:
                 m_flow->showSong(m_list->ids[size_t(row)]);
         };
         m_list->onSort = [this](int c) {
-            if (c <= 0 || size_t(c) > m_columnFields.size())
+            if (c < 0 || size_t(c) > m_columnFields.size())
                 return;
             if (m_list->sortColumn == c)
                 m_list->ascending = !m_list->ascending;
@@ -1703,7 +1758,8 @@ private:
                 m_list->sortColumn = c;
                 m_list->ascending = true;
             }
-            m_sortField = m_columnFields[size_t(c) - 1];
+            // the first column: the playlist's own order (field 1, FUN_000dcb80)
+            m_sortField = c == 0 ? 1 : m_columnFields[size_t(c) - 1];
             loadSource();
         };
 
@@ -2372,6 +2428,11 @@ private:
         const bool asc = m_list->ascending;
         const ListField *lf = listField(field);
         const bool numeric = lf && lf->numeric;
+        if (field == 1) {
+            // the playlist's order (the library's: its songs by their IDs), reversed descending
+            if (!asc)
+                std::reverse(shown.begin(), shown.end());
+        } else
         std::stable_sort(shown.begin(), shown.end(), [&](int a, int b) {
             const Track &ta = *m_library.track(a), &tb = *m_library.track(b);
             if (numeric) {
