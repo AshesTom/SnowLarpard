@@ -1545,8 +1545,13 @@ private:
             if (over < 0)
                 return p.parentId.empty() ? 0 : 3;
             const int ot = m_sources->rows[size_t(over)].tag;
-            if (ot < 0 || ot == ft || !m_library.playlists()[size_t(ot)].folder)
+            if (ot < 0 || ot == ft)
                 return 0;
+            // a playlist that takes songs (FUN_000e8f26 → 'plda' → FUN_000e8b6c → FUN_000e894e: its
+            // flag 8, not smart nor a folder): the songs dragged added to it (the row ringed, 4)
+            const Playlist &target = m_library.playlists()[size_t(ot)];
+            if (!target.folder)
+                return target.smart || target.master ? 0 : 4;
             const Playlist &folder = m_library.playlists()[size_t(ot)];
             if (p.parentId == folder.persistentId || inside(folder, p.persistentId))
                 return 0;
@@ -1554,6 +1559,15 @@ private:
         };
         m_sources->onDrop = [this](int from, int over) {
             Playlist &p = m_library.playlists()[size_t(m_sources->rows[size_t(from)].tag)];
+            if (over >= 0 && !m_library.playlists()[size_t(m_sources->rows[size_t(over)].tag)].folder) {
+                // its songs at the end of the playlist dropped on (FUN_000e051a), the ones there kept
+                const std::vector<int> songs = p.folder ? m_library.folderItems(p) : p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
+                Playlist &target = m_library.playlists()[size_t(m_sources->rows[size_t(over)].tag)];
+                target.items.insert(target.items.end(), songs.begin(), songs.end());
+                m_library.save();
+                loadSource();
+                return;
+            }
             // FUN_000dd8c8: out of its folder, into the new one (opened to show it)
             p.parentId = over < 0 ? std::string() : m_library.playlists()[size_t(m_sources->rows[size_t(over)].tag)].persistentId;
             const int moved = m_sources->rows[size_t(from)].tag;

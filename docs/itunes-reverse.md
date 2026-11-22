@@ -447,7 +447,7 @@ the selection flags at +0x2C (`FUN_002f79be`) its `selFlags`.
 
 | Item | Source | Status |
 |---|---|---|
-| The sources' drag (`FUN_00169d0a`, its state at +0x2D9 from `FUN_00166758`): over a folder, 4, when the playlist dragged is of the same library, not a kind kept out (+0xEC bit 0x20, `FUN_000dbeda`, kinds 0x13, 0x16, 0x1A), not the folder itself nor one of its parents (`FUN_000db944`), and not already in it; under the rows, 3, when the playlist dragged is in a folder; over a playlist, songs dropped on it (`FUN_000e8f26`) | `FUN_00166758` | Done for 4 and 3 (a playlist dropped on a playlist, which adds its songs, not done) |
+| The sources' drag (`FUN_00169d0a`, its state at +0x2D9 from `FUN_00166758`): over a folder, 4, when the playlist dragged is of the same library, not a kind kept out (+0xEC bit 0x20, `FUN_000dbeda`, kinds 0x13, 0x16, 0x1A), not the folder itself nor one of its parents (`FUN_000db944`), and not already in it; under the rows, 3, when the playlist dragged is in a folder; over a playlist, songs dropped on it (`FUN_000e8f26`) | `FUN_00166758` | Done (a playlist dropped on a playlist: below) |
 | The drop (`FUN_000bc4ea` → `FUN_000dd8c8`, the position {parent, after}): refused across libraries and into itself; out of its old folder (`FUN_002e6620`) and into the new one (`FUN_002e670a`: the folder's rule "Playlist is" its Persistent ID, field 0x28, added by `FUN_0037ce5e`, and the folder's flag 4 up its parents) | `FUN_000dd8c8`, `FUN_002e670a` | Done (the new folder opened to show it) |
 | The drop's mark: the folder ringed, or the whole list | | By eye (2 points in colour 10) |
 | The order of the playlists in a folder | | Done: section 24 |
@@ -488,4 +488,5 @@ the selection flags at +0x2C (`FUN_002f79be`) its `selFlags`.
 | M3U (`FUN_000d9fa2`): `#EXTM3U` first makes it extended; then `#EXTINF:…,title` names the next entry; each line not starting with `#` a file or URL (`FUN_000d99b4`); M3U8 in UTF-8 | `FUN_000d9fa2` | Done (relative paths from the playlist's folder; a name given to a stream's new track only) |
 | PLS (`FUN_000d9cf2`): `FileN=` starts an entry (the one before added), `TitleN=` names it, other lines passed over | `FUN_000d9cf2` | Done |
 | The imported playlist: named by the file (its XML's playlists by theirs) | | Done (by iTunes' use) |
+| Over a playlist (`FUN_000e8f26`: the message 'plda' to it, `FUN_000e6bd4` → `FUN_000e8b6c`; from iTunes itself `FUN_000e894e`): taken when it takes songs (its info's flag 8: not a smart playlist, not a folder), is not the playlist dragged, and `FUN_000e051a` can add them (not kind 0x15); the songs added at its end, those already there kept (8.2.1 asks nothing about duplicates) | `FUN_000e894e`, `FUN_000e051a` | Done (the row ringed; files and URLs dragged from elsewhere, `FUN_000e8b6c`'s other half, not done) |
 
