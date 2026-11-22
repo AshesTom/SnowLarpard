@@ -1253,6 +1253,45 @@ public:
     }
     std::function<void(int)> onToggle;   // a folder's triangle clicked: its row
     std::function<void(unsigned)> onDelete;   // Delete with the sources' keyboard: the modifiers
+    // Renaming in place (FUN_00166b90 → FUN_0058b80c: a field over the row's name, after a delay in
+    // ticks): onRename(row, the name) when it is kept
+    std::function<void(int, const std::string &)> onRename;
+    void startRename(int row, double delay)
+    {
+        cancelRename();
+        if (row < 0 || size_t(row) >= rows.size() || rows[size_t(row)].tag < 0)
+            return;
+        m_renameTimer = App::shared().addTimer(delay, false, [this, row] {
+            m_renameTimer = 0;
+            beginEditing(row);
+        });
+    }
+    void cancelRename()
+    {
+        if (m_renameTimer) {
+            App::shared().removeTimer(m_renameTimer);
+            m_renameTimer = 0;
+        }
+        if (m_editor) {
+            TextField *f = m_editor;
+            m_editor = nullptr;
+            m_editRow = -1;
+            if (window())
+                window()->makeFirstResponder(this);
+            App::shared().later([this, f] { removeSubview(f); });
+        }
+    }
+    void commitRename()
+    {
+        if (!m_editor)
+            return;
+        const int row = m_editRow;
+        const std::string name = m_editor->text;
+        cancelRename();
+        if (onRename)
+            onRename(row, name);
+    }
+    bool renaming() const { return m_editor != nullptr; }
     // A playlist dragged (FUN_00169d0a tracks it, FUN_00166758 says what a drop there does, +0x2D9):
     // dropState(from row, over row; -1 under the rows) 4 into that folder, 3 out to the top, 0 nothing;
     // onDrop(from, over) then
@@ -1264,6 +1303,8 @@ public:
             return;
         if (!m_dragging && std::hypot(e.location.x - m_downAt.x, e.location.y - m_downAt.y) < 4)
             return;
+        if (!m_dragging)
+            cancelRename();
         m_dragging = true;
         int over = int(e.location.y / RowHeight);
         if (e.location.y < 0 || over >= int(rows.size()))
@@ -1280,6 +1321,13 @@ public:
         m_dragging = false;
         m_drop = 0;
         m_dragFrom = i >= 0 && size_t(i) < rows.size() && rows[size_t(i)].tag >= 0 && !rows[size_t(i)].header ? i : -1;
+        commitRename();
+        // FUN_0016e5fe: a click on the row already chosen renames it after the double-click time
+        // (GetDblTime; 0.5 s here), a second click before then cancels it
+        if (e.clickCount > 1)
+            cancelRename();
+        else if (i == m_selected && m_dragFrom >= 0 && !(e.modifiers & Command))
+            startRename(i, 0.5);
         if (i >= 0 && size_t(i) < rows.size() && rows[size_t(i)].folder) {
             const double tx = 14 * rows[size_t(i)].level + 5;
             if (e.location.x >= tx - 3 && e.location.x < tx + 13) {
@@ -1311,6 +1359,11 @@ public:
     }
     void keyDown(Event &e) override
     {
+        // FUN_0016b9ea with FUN_003ae408: Enter, or ⌘-Return, renames the row chosen at once
+        if ((e.keysym == XKB_KEY_KP_Enter || (e.keysym == XKB_KEY_Return && (e.modifiers & Command))) && m_selected >= 0) {
+            startRename(m_selected, 0);
+            return;
+        }
         // Delete (FUN_001677bc → FUN_00165bec): the playlist chosen, the modifiers with it
         if ((e.keysym == XKB_KEY_BackSpace || e.keysym == XKB_KEY_Delete) && onDelete) {
             onDelete(e.modifiers);
@@ -1329,6 +1382,24 @@ public:
     }
 
 private:
+    void beginEditing(int row)
+    {
+        if (row < 0 || size_t(row) >= rows.size())
+            return;
+        const SourceRow &r = rows[size_t(row)];
+        const double tx = 14 * r.level + 39;
+        m_editor = add<TextField>();
+        m_editor->font = textStyle(g_listText).font;
+        m_editor->setFrame({tx - 3, row * RowHeight, std::max(40.0, frame().w - tx - 1), RowHeight});
+        m_editor->setText(r.title);
+        m_editor->selectAll();
+        m_editRow = row;
+        m_editor->onEnter = [this] { commitRename(); };
+        m_editor->onCancel = [this] { cancelRename(); };
+        window()->makeFirstResponder(m_editor);
+    }
+    TextField *m_editor = nullptr;
+    int m_editRow = -1, m_renameTimer = 0;
     int m_selected = -1;
     int m_pressed = -1;   // a triangle held
     int m_dragFrom = -1, m_dropOver = -1, m_drop = 0;
@@ -1501,6 +1572,20 @@ private:
             layout();
         };
         m_sources->onDelete = [this](unsigned mods) { deletePlaylist(mods); };
+        // the name kept (FUN_000dbc2e); an empty one leaves the old
+        m_sources->onRename = [this](int row, const std::string &name) {
+            const int tag = m_sources->rows[size_t(row)].tag;
+            if (tag < 0 || size_t(tag) >= m_library.playlists().size() || name.empty() ||
+                m_library.playlists()[size_t(tag)].name == name)
+                return;
+            m_library.playlists()[size_t(tag)].name = name;
+            m_library.save();
+            rebuildSources();   // its place by its new name
+            for (size_t i = 0; i < m_sources->rows.size(); ++i)
+                if (m_sources->rows[i].tag == tag)
+                    m_sources->select(int(i));
+            layout();
+        };
         m_sources->onToggle = [this](int row) {
             const int tag = m_sources->rows[size_t(row)].tag;
             const std::string id = m_library.playlists()[size_t(tag)].persistentId;
@@ -2084,6 +2169,7 @@ private:
 
     void rebuildSources()
     {
+        m_sources->cancelRename();
         // Localizable.strings: STR# 135 (the headers), 137 (the Store), 9000 (Music, untitled playlist)
         const int keep = m_sources->selected();
         m_sources->rows.clear();
@@ -2670,8 +2756,10 @@ private:
         rebuildSources();
         const int tag = int(m_library.playlists().size()) - 1;
         for (size_t i = 0; i < m_sources->rows.size(); ++i)
-            if (m_sources->rows[i].tag == tag)
+            if (m_sources->rows[i].tag == tag) {
                 m_sources->select(int(i), true);
+                m_sources->startRename(int(i), 1.0 / 60);   // FUN_00166d0a → FUN_00166b90 with 1 tick
+            }
         layout();
     }
     // A name not taken: "untitled playlist", then "untitled playlist 2"… (FUN_000dbb94 with STR# 9000's
