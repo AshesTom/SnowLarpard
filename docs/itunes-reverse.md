@@ -450,5 +450,13 @@ the selection flags at +0x2C (`FUN_002f79be`) its `selFlags`.
 | The sources' drag (`FUN_00169d0a`, its state at +0x2D9 from `FUN_00166758`): over a folder, 4, when the playlist dragged is of the same library, not a kind kept out (+0xEC bit 0x20, `FUN_000dbeda`, kinds 0x13, 0x16, 0x1A), not the folder itself nor one of its parents (`FUN_000db944`), and not already in it; under the rows, 3, when the playlist dragged is in a folder; over a playlist, songs dropped on it (`FUN_000e8f26`) | `FUN_00166758` | Done for 4 and 3 (a playlist dropped on a playlist, which adds its songs, not done) |
 | The drop (`FUN_000bc4ea` → `FUN_000dd8c8`, the position {parent, after}): refused across libraries and into itself; out of its old folder (`FUN_002e6620`) and into the new one (`FUN_002e670a`: the folder's rule "Playlist is" its Persistent ID, field 0x28, added by `FUN_0037ce5e`, and the folder's flag 4 up its parents) | `FUN_000dd8c8`, `FUN_002e670a` | Done (the new folder opened to show it) |
 | The drop's mark: the folder ringed, or the whole list | | By eye (2 points in colour 10) |
-| The order of the playlists in a folder | | Not read: the library's order kept |
+| The order of the playlists in a folder | | Done: section 24 |
+
+## 24. iTunes 8.2.1: the playlists' order in the sources
+
+| Item | Source | Status |
+|---|---|---|
+| Each row's group (`FUN_00168254`, the row's short at +0x20): 0x81 Purchased (kind 0xC), 0x82 Party Shuffle (0x16), 0x84 a folder (+0x128 bits 1 and 2), 0x85 or 0x86 a smart playlist (+0x12F set or not), 0x87 Genius (0x19), 0x88 a playlist; the Library's kinds 2 to 5 their own (4, 6, 3…) | `FUN_00168254` | Done for folders, smart playlists and playlists (the others not in the port; +0x12F not read: 0x86 taken) |
+| The sort (`FUN_0028a1d2` with `FUN_00166e76`): two rows compared at the first level their parents differ (+0x654 / +0x658, the paths from the top), there by `FUN_00166d96`: the group, then the name (`FUN_0028efca` with 0x1B), then the playlist's number (+0x24) | `FUN_00166e76`, `FUN_00166d96` | Done (the library's order for the last) |
+| The names' compare (`FUN_0028ec76`): flag 2 leading spaces and controls skipped, 1 the case ignored; letters past 0x7A, or digits with 0x10, go to `UCCompareTextDefault` (`FUN_002957e4`): 1 → 0xE (case, width, composition), 8 → 0x10 (diacritics), 0x10 → 0x38000 (digits as numbers) | `FUN_0028ec76`, `FUN_002957e4` | Done (accents: Latin-1's letters folded; other scripts compared by code point) |
 

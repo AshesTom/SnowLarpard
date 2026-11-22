@@ -2111,11 +2111,26 @@ private:
         std::function<void(const std::string &, int)> add = [&](const std::string &parent, int level) {
             if (level > 16)
                 return;
+            // FUN_00166e76 / FUN_00166d96: a level's rows by their group (FUN_00168254, row +0x20: 0x84
+            // a folder, 0x86 a smart playlist, 0x88 a playlist), then their names (FUN_0028efca with
+            // 0x1B), then their IDs
+            std::vector<size_t> order;
             for (size_t i = 0; i < lists.size(); ++i) {
                 const Playlist &p = lists[i];
                 const std::string up = ids.count(p.parentId) ? p.parentId : std::string();
-                if (p.master || up != parent)
-                    continue;
+                if (!p.master && up == parent)
+                    order.push_back(i);
+            }
+            auto group = [](const Playlist &p) { return p.folder ? 0x84 : p.smart ? 0x86 : 0x88; };
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                const int ga = group(lists[a]), gb = group(lists[b]);
+                if (ga != gb)
+                    return ga < gb;
+                const int c = compareNames(lists[a].name, lists[b].name);
+                return c != 0 ? c < 0 : a < b;
+            });
+            for (size_t i : order) {
+                const Playlist &p = lists[i];
                 SourceRow r;
                 r.title = p.name;
                 // 441's rows: a playlist, a smart playlist (the gear), a folder
@@ -2479,6 +2494,63 @@ private:
 
     // ---- editing
 
+    // Two names as FUN_0028ec76 compares them with flags 0x1B: leading spaces and controls skipped (2),
+    // the case ignored (1), the accents ignored (8: UCCompareText's diacritic-insensitive), digits as
+    // numbers (0x10: the digit masks 0x38000); -1, 0, 1
+    static int compareNames(const std::string &a, const std::string &b)
+    {
+        auto fold = [](const std::string &s) {
+            std::u32string out;
+            size_t i = 0;
+            while (i < s.size() && static_cast<unsigned char>(s[i]) < 0x21)
+                ++i;
+            for (; i < s.size();) {
+                unsigned char c = static_cast<unsigned char>(s[i]);
+                char32_t u = c;
+                int n = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+                if (n > 1) {
+                    u = c & (0x3F >> (n - 1));
+                    for (int k = 1; k < n && i + size_t(k) < s.size(); ++k)
+                        u = (u << 6) | (static_cast<unsigned char>(s[i + size_t(k)]) & 0x3F);
+                }
+                i += size_t(n);
+                // Latin-1's accented letters to their base letter
+                static const char *const base = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty";
+                if (u >= 0xC0 && u <= 0xFF)
+                    u = char32_t(static_cast<unsigned char>(base[u - 0xC0]));
+                if (u >= 'a' && u <= 'z')
+                    u -= 32;
+                out.push_back(u);
+            }
+            return out;
+        };
+        const std::u32string x = fold(a), y = fold(b);
+        size_t i = 0, j = 0;
+        while (i < x.size() && j < y.size()) {
+            if (x[i] >= '0' && x[i] <= '9' && y[j] >= '0' && y[j] <= '9') {
+                size_t ie = i, je = j;
+                while (ie < x.size() && x[ie] >= '0' && x[ie] <= '9')
+                    ++ie;
+                while (je < y.size() && y[je] >= '0' && y[je] <= '9')
+                    ++je;
+                std::u32string nx = x.substr(i, ie - i), ny = y.substr(j, je - j);
+                nx.erase(0, std::min(nx.find_first_not_of(U'0'), nx.size() - 1));
+                ny.erase(0, std::min(ny.find_first_not_of(U'0'), ny.size() - 1));
+                if (nx.size() != ny.size())
+                    return nx.size() < ny.size() ? -1 : 1;
+                if (nx != ny)
+                    return nx < ny ? -1 : 1;
+                i = ie;
+                j = je;
+                continue;
+            }
+            if (x[i] != y[j])
+                return x[i] < y[j] ? -1 : 1;
+            ++i;
+            ++j;
+        }
+        return x.size() - i == y.size() - j ? 0 : (x.size() - i < y.size() - j ? -1 : 1);
+    }
     // A folder is `id` or in it (FUN_000db944): its parents up from it
     bool inside(const Playlist &folder, const std::string &id)
     {
