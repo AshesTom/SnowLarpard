@@ -861,6 +861,9 @@ public:
     bool statusColumn = true;            // column 0 the speaker's (the songs'); the browser's have none
     int ratingColumn = -1;               // its cells the rating (0 to 100) drawn as stars
     std::function<void(int, int)> onRate;   // a click on the selected row's stars: row, rating
+    // The songs chosen dragged (FUN_002fc392's click loop starting the drag): the pointer in the
+    // window, and whether the button is up (the drop)
+    std::function<void(Point, bool)> onDragSongs;
     // 11.4: the header view's height at least 22 (26 with the large text), FUN_00e5675c's end
     static double headerHeight() { return eleven() ? std::max(22.0, std::ceil(lineHeight(textStyle(9004).font)) + 6) : 16; }
     double rowHeight = 16;
@@ -1023,9 +1026,29 @@ private:
                 }
             }
         }
+        bool m_dragging = false;
+        Point m_downAt;
+        void mouseDragged(Event &e) override
+        {
+            if (!list->onDragSongs || list->sel.empty())
+                return;
+            if (!m_dragging && std::hypot(e.location.x - m_downAt.x, e.location.y - m_downAt.y) < 4)
+                return;
+            m_dragging = true;
+            list->onDragSongs(toWindow(e.location), false);
+        }
+        void mouseUp(Event &e) override
+        {
+            if (m_dragging) {
+                m_dragging = false;
+                list->onDragSongs(toWindow(e.location), true);
+            }
+        }
         void mouseDown(Event &e) override
         {
             const int r = int(e.location.y / list->rowHeight);
+            m_downAt = e.location;
+            m_dragging = false;
             window()->makeFirstResponder(list);
             // a click on the selected row's stars rates it: the star under the pointer, none left of
             // the first
@@ -1239,9 +1262,10 @@ public:
             }
         }
         // the drop's place: the folder ringed (4), or the whole list (3), in the selection's blue (by eye)
-        if (m_dragging && m_drop) {
-            const Rect ring = m_drop == 4 && m_dropOver >= 0 ? Rect{1, m_dropOver * RowHeight + 1, frame().w - 2, RowHeight - 2}
-                                                            : Rect{1, 1, frame().w - 2, std::max(contentHeight(), frame().h) - 2};
+        if ((m_dragging && m_drop) || m_songDrop >= 0) {
+            const int over = m_songDrop >= 0 ? m_songDrop : m_dropOver;
+            const Rect ring = (m_songDrop >= 0 || m_drop == 4) && over >= 0 ? Rect{1, over * RowHeight + 1, frame().w - 2, RowHeight - 2}
+                                                                          : Rect{1, 1, frame().w - 2, std::max(contentHeight(), frame().h) - 2};
             cairo_save(cr);
             const Color c = colour(10);
             cairo_set_source_rgba(cr, c.r, c.g, c.b, 1);
@@ -1296,6 +1320,19 @@ public:
     // dropState(from row, over row; -1 under the rows) 4 into that folder, 3 out to the top, 0 nothing;
     // onDrop(from, over) then
     std::function<int(int, int)> dropState;
+    // songs dragged from the list over the sources: the row ringed (4), or none (-1)
+    void setSongDrop(int row)
+    {
+        if (row == m_songDrop)
+            return;
+        m_songDrop = row;
+        setNeedsDisplay();
+    }
+    int rowAt(Point inSources) const
+    {
+        const int r = int(std::floor(inSources.y / RowHeight));
+        return inSources.x >= 0 && inSources.x < frame().w && r >= 0 && size_t(r) < rows.size() ? r : -1;
+    }
     std::function<void(int, int)> onDrop;
     void mouseDragged(Event &e) override
     {
@@ -1402,7 +1439,7 @@ private:
     int m_editRow = -1, m_renameTimer = 0;
     int m_selected = -1;
     int m_pressed = -1;   // a triangle held
-    int m_dragFrom = -1, m_dropOver = -1, m_drop = 0;
+    int m_dragFrom = -1, m_dropOver = -1, m_drop = 0, m_songDrop = -1;
     bool m_dragging = false;
     Point m_downAt;
 };
@@ -1632,6 +1669,27 @@ private:
         applyColumns();
         m_list->onRate = [this](int row, int rating) { rate(m_list->ids[size_t(row)], rating); };
         m_list->onDoubleClick = [this](int row) { playRow(row); };
+        // songs dragged from the list onto a playlist of the sources (FUN_000e894e): one that takes
+        // songs (not smart, not a folder) and is not the list's own; added at its end (FUN_000e051a)
+        m_list->onDragSongs = [this](Point inWindow, bool drop) {
+            const int row = m_sources->isHidden() ? -1 : m_sources->rowAt(m_sources->fromWindow(inWindow));
+            int target = -1;
+            if (row >= 0) {
+                const int tag = m_sources->rows[size_t(row)].tag;
+                if (tag >= 0 && size_t(tag) < m_library.playlists().size() && tag != selectedPlaylist()) {
+                    const Playlist &p = m_library.playlists()[size_t(tag)];
+                    if (!p.folder && !p.smart && !p.master)
+                        target = tag;
+                }
+            }
+            m_sources->setSongDrop(drop || target < 0 ? -1 : row);
+            if (!drop || target < 0)
+                return;
+            Playlist &p = m_library.playlists()[size_t(target)];
+            for (int id : selectedIds())
+                p.items.push_back(id);
+            m_library.save();
+        };
         m_list->onSelect = [this](int row) {
             if (m_viewMode == 2 && row >= 0 && size_t(row) < m_list->ids.size())
                 m_flow->showSong(m_list->ids[size_t(row)]);
