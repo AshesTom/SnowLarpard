@@ -35,6 +35,7 @@
 #include "equalizer.h"
 
 #include "controls.h"
+#include "dialogs.h"
 #include "panels.h"
 #include "foundation.h"
 #include "frame.h"
@@ -484,48 +485,10 @@ void Equalizer::choosePreset(int index)
     save();
 }
 
-// Get String (DLOG 10002, 360 × 103): the prompt (17, 8) 318 × 16, the field (20, 30) 320 × 16, Cancel
-// (190, 63) and OK (270, 63), 70 × 20; done(the text) on OK
+// Get String (DLOG 10002, 360 × 103): dialogs.cpp
 void Equalizer::getString(const std::string &title, const std::string &text, std::function<void(std::string)> done)
 {
-    const Size size = dialogSize(10002);
-    m_askWindow = std::make_unique<Window>(Size{size.w > 0 ? size.w : 360, size.h > 0 ? size.h : 103}, title);
-    m_askWindow->setStyleMask(2);
-    m_askWindow->onClose = [this] { App::shared().later([this] { m_askWindow.reset(); }); };
-    View *c = m_askWindow->contentView();
-    TextField *field = nullptr;
-    Button *ok = nullptr, *cancel = nullptr;
-    int n = 0;
-    for (const DialogItem &it : dialogItems(10002)) {
-        ++n;
-        if (n == 1 || n == 2) {
-            Button *b = c->add<Button>(it.text);
-            b->setFrame(it.rect);
-            (n == 1 ? ok : cancel) = b;
-        } else if (n == 3) {
-            c->add<Label>(tr("177.010"), Font::system(13))->setFrame(it.rect);
-        } else if (n == 4) {
-            field = c->add<TextField>();
-            field->setFrame(Rect{it.rect.x - 3, it.rect.y - 3, it.rect.w + 6, it.rect.h + 6});
-        }
-    }
-    if (!ok || !cancel || !field)
-        return;
-    ok->isDefault = true;
-    field->setText(text);
-    field->selectAll();
-    auto finish = [this, field, done] {
-        const std::string t = field->text;
-        m_askWindow->close();
-        if (done)
-            done(t);
-    };
-    ok->action = finish;
-    field->onEnter = finish;
-    cancel->action = [this] { m_askWindow->close(); };
-    field->onCancel = [this] { m_askWindow->close(); };
-    m_askWindow->show();
-    m_askWindow->makeFirstResponder(field);
+    iTunes::getString(m_askWindow, 10002, title, tr("177.010"), text, std::move(done));
 }
 
 namespace {

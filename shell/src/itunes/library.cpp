@@ -2,6 +2,7 @@
 #include "library.h"
 
 #include "foundation.h"
+#include "resources.h"
 
 #include <taglib/audioproperties.h>
 #include <taglib/fileref.h>
@@ -430,7 +431,10 @@ bool Library::load()
             tr.bpm = int(t.num("BPM"));
             tr.rating = int(t.num("Rating"));
             tr.dateAdded = t.str("Date Added");
-            tr.path = pathFromURL(t.str("Location"));
+            {
+                const std::string loc = t.str("Location");
+                tr.path = loc.rfind("file:", 0) == 0 || loc.find("://") == std::string::npos ? pathFromURL(loc) : loc;
+            }
             if (tr.id > 0) {
                 m_tracks[tr.id] = tr;
                 m_nextId = std::max(m_nextId, tr.id + 1);
@@ -524,8 +528,13 @@ bool Library::save() const
         num("Play Count", t.playCount);
         num("Rating", t.rating);
         str("Comments", t.comments);
-        o << "\t\t\t<key>Track Type</key><string>File</string>\n";
-        str("Location", fileURL(t.path));
+        if (isStream(t)) {
+            o << "\t\t\t<key>Track Type</key><string>URL</string>\n";
+            str("Location", t.path);
+        } else {
+            o << "\t\t\t<key>Track Type</key><string>File</string>\n";
+            str("Location", fileURL(t.path));
+        }
         o << "\t\t</dict>\n";
     }
     o << "\t</dict>\n\t<key>Playlists</key>\n\t<array>\n";
@@ -566,6 +575,36 @@ bool Library::save() const
         f << o.str();
     }
     return std::rename(tmp.c_str(), file().c_str()) == 0;
+}
+
+int Library::addURL(const std::string &url)
+{
+    for (const auto &[id, t] : m_tracks)
+        if (t.path == url)
+            return id;
+    // FUN_00261b94's parts: the scheme up to ":/", the host, then the path after its "/"; the file name
+    // its last component, before a "?"
+    std::string rest = url;
+    const size_t scheme = rest.find(":/");
+    if (scheme != std::string::npos)
+        rest = rest.substr(scheme + 1);
+    rest.erase(0, rest.find_first_not_of('/'));
+    const size_t slash = rest.find('/');
+    const std::string path = slash == std::string::npos ? std::string() : rest.substr(slash + 1);
+    std::string file = path.substr(0, path.find('?'));
+    if (const size_t last = file.rfind('/'); last != std::string::npos)
+        file = file.substr(last + 1);
+    Track t;
+    t.id = m_nextId++;
+    t.path = url;
+    t.name = (!file.empty() ? file : !path.empty() ? path : url).substr(0, 255);
+    t.kind = tr("3101.003");   // "MPEG audio stream" (the MP3 decoder's: its format once read)
+    t.dateAdded = isoNow();
+    m_tracks[t.id] = t;
+    for (Playlist &p : m_playlists)
+        if (p.master)
+            p.items.push_back(t.id);
+    return t.id;
 }
 
 void Library::addFile(const std::string &path)

@@ -188,7 +188,7 @@ if(ITUNES_DEPS_FOUND)
     add_executable(iTunes src/itunes/main.cpp src/itunes/resources.cpp src/itunes/resources.h
                    src/itunes/library.cpp src/itunes/library.h src/itunes/player.cpp src/itunes/player.h
                    src/itunes/store.cpp src/itunes/store.h src/itunes/frame.cpp src/itunes/frame.h
-                   src/itunes/equalizer.cpp src/itunes/equalizer.h
+                   src/itunes/equalizer.cpp src/itunes/equalizer.h src/itunes/dialogs.cpp src/itunes/dialogs.h
                    src/itunes/getinfo.cpp src/itunes/getinfo.h
                    src/itunes/grid.cpp src/itunes/grid.h
                    src/itunes/smartplaylist.cpp src/itunes/smartplaylist.h

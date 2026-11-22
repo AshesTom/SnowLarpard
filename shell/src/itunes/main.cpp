@@ -29,6 +29,7 @@
 #include "panels.h"
 #include "text.h"
 
+#include "dialogs.h"
 #include "equalizer.h"
 #include "frame.h"
 #include "getinfo.h"
@@ -2264,6 +2265,52 @@ private:
     }
 
     // File ▸ New Smart Playlist… (nspl), Edit Smart Playlist (esmp)
+    // Advanced ▸ Open Audio Stream… (FUN_000b24d6): Get Long String (DLOG 10003) titled STR# 130.001
+    // "Open Audio Stream" (130.002 "Edit URL" when it has a text), its prompt 130.003 "URL:"; the URL
+    // trimmed, then FUN_000b21c4 by its scheme (FUN_00261b94):
+    //   itms: / itmss: (FUN_000fa2f4) the Store's page (FUN_0022cf82), unless an .m3u or .pls (then http)
+    //   pcast: / itpc: http, and a podcast subscribed to (FUN_003cd11c): not ported
+    //   else a stream: the library's URL track (FUN_000e29c6 → FUN_0017fd64), played (FUN_000c30b8)
+    // A URL ending in a media or playlist extension (FUN_00262270: mp3, m4a, m3u, pls…) goes through
+    // FUN_003cd11c in iTunes; here libmpv opens those as streams too.
+    void openStream()
+    {
+        iTunes::getString(m_askWindow, 10003, tr("130.001"), tr("130.003"), {}, [this](std::string url) {
+            const size_t from = url.find_first_not_of(" \t\r\n"), to = url.find_last_not_of(" \t\r\n");
+            if (from == std::string::npos)
+                return;
+            url = url.substr(from, to - from + 1);
+            const size_t colon = url.find(':');
+            const std::string scheme = colon == std::string::npos ? std::string() : lower(url.substr(0, colon));
+            const size_t dot = url.find_last_of("./?");
+            const std::string ext = dot == std::string::npos || url[dot] != '.' ? std::string() : lower(url.substr(dot + 1));
+            if ((scheme == "itms" || scheme == "itmss") && ext != "m3u" && ext != "pls") {
+                if (m_store) {
+                    m_sources->select(3, true);   // the iTunes Store source
+                    m_store->load("https" + url.substr(colon));
+                }
+                return;
+            }
+            if (scheme == "pcast" || scheme == "itpc") {
+                Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}),
+                           tr("131.001"), {}, {"OK"}, [](int) {});
+                return;
+            }
+            if (scheme == "itms" || scheme == "itmss")
+                url = "http" + url.substr(colon);
+            const int id = m_library.addURL(url);
+            m_library.save();
+            loadSource();
+            const auto row = std::find(m_list->ids.begin(), m_list->ids.end(), id);
+            if (row != m_list->ids.end()) {
+                m_list->selected = int(row - m_list->ids.begin());
+                m_list->scrollToRow(m_list->selected);
+                playRow(m_list->selected);
+            } else
+                playTrack(id);
+        });
+    }
+
     // File ▸ Show Duplicates / Show Exact Duplicates (⌥), or Show All (FUN_00150918, FUN_0014eae4,
     // FUN_00138cea): the list sorted by Name while they are shown, its sort before put back after
     void showDuplicates(bool exact)
@@ -2605,6 +2652,8 @@ private:
         }
         if (a == "SRAT")
             return hasSel;
+        if (a == "ourl")   // Advanced ▸ Open Audio Stream… (enabled unless +0x109bf)
+            return !eleven();
         if (a == "SDup") {   // FUN_00140f50: "Show All" while they are shown
             const auto d = m_dups.find(selectedPlaylist());
             if (d != m_dups.end() && d->second)
@@ -2730,6 +2779,8 @@ private:
             toggleBrowser();
         else if (a == "lisv" || a == "thmv" || a == "covv")
             setViewMode(a == "lisv" ? 0 : a == "thmv" ? 1 : 2);
+        else if (a == "ourl")
+            openStream();
         else if (a == "SDup")
             showDuplicates(it.alternate);
         else if (a == "nspl")
@@ -2776,6 +2827,7 @@ private:
     // File ▸ Show Duplicates: per source (its playlist's tag, -1 the library), 1 the duplicates, 2 the
     // exact ones (the playlist's +0x182 flag 8); the sort it had before (+0x10c), put back by Show All
     std::map<int, int> m_dups;
+    std::unique_ptr<Window> m_askWindow;   // Open Audio Stream's Get Long String
     int m_sortBeforeDups = 2;
     bool m_ascBeforeDups = true;
     MainMenu m_menu;

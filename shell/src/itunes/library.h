@@ -66,6 +66,10 @@ public:
     // Files and folders (their audio files, recursively) added: the tracks new to the library
     int add(const std::vector<std::string> &paths);
     bool isAudio(const std::string &path) const;
+    // Advanced ▸ Open Audio Stream (FUN_0017fd64): the URL's track ('HTTP', Track Type URL), the one
+    // already there with that URL or a new one named by the URL's file name (its last path component,
+    // the query left out), else its path, else the whole URL; its Track ID
+    int addURL(const std::string &url);
 
     const std::map<int, Track> &tracks() const { return m_tracks; }
     const Track *track(int id) const;
@@ -95,6 +99,8 @@ private:
 std::vector<int> duplicates(const Library &library, const std::vector<int> &ids, bool exact);
 
 std::string formatTime(int ms);   // "3:07", "1:02:03"
+// A track's Location is a URL of the network (a stream), not a file
+inline bool isStream(const Track &t) { return t.path.find("://") != std::string::npos; }
 // A song's own artwork, the first picture in its tags (ID3's APIC, MP4's covr, FLAC's and Vorbis'
 // METADATA_BLOCK_PICTURE): its encoded bytes, empty when it has none
 std::vector<unsigned char> artworkData(const std::string &path);
