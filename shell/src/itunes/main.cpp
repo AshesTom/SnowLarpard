@@ -50,6 +50,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -785,7 +786,72 @@ public:
     std::vector<Column> columns;
     std::vector<std::vector<std::string>> rows;
     std::vector<int> ids;
+    // The selection (FUN_002fc392, the List Manager's LClick as iTunes has it; the songs' list's flags 8,
+    // lNoRect: FUN_001b65da): the rows chosen, and `selected` the last click (+0x48), the focus
+    std::set<int> sel;
     int selected = -1, playing = -1;   // rows
+    bool isSelected(int r) const { return sel.count(r) != 0; }
+    void selectOnly(int r)
+    {
+        sel.clear();
+        if (r >= 0)
+            sel.insert(r);
+        selected = r;
+    }
+    // Edit ▸ Select All (FUN_002fb238: every cell), Select None (FUN_002fba90)
+    void selectAll()
+    {
+        for (int r = 0; r < int(rows.size()); ++r)
+            sel.insert(r);
+        if (selected < 0 && !rows.empty())
+            selected = 0;
+    }
+    void selectNone()
+    {
+        sel.clear();
+        selected = -1;
+    }
+    std::vector<int> selectedRows() const { return std::vector<int>(sel.begin(), sel.end()); }
+    // A click on row r (FUN_002fbfd6, the modifiers' bits 8 ⌘ and 9 ⇧: FUN_0025376e, FUN_003ae4be):
+    //   ⌘   the row toggled (its sense: FUN_002fb9a8), the last click the row
+    //   ⇧   lNoRect makes it add: the rows from the anchor to r chosen, the others kept (+0xB); the
+    //       anchor the selection's first row when r is past it, else its last (the bounds of the
+    //       cells chosen), or the last click when the chosen rows are not one run; r itself with none
+    //   else a row not chosen: the rest cleared (FUN_002f8858) and r chosen; a row chosen: kept as it
+    //       is, the others with it (the songs then dragged together)
+    bool multiple = true;   // false: one row at a time (the browser's columns here)
+    void click(int r, unsigned modifiers)
+    {
+        if (!multiple) {
+            selectOnly(r);
+            return;
+        }
+        if (modifiers & Command) {
+            if (!sel.erase(r))
+                sel.insert(r);
+            selected = r;
+            return;
+        }
+        if (modifiers & Shift) {
+            int anchor = r;
+            if (!sel.empty()) {
+                const int first = *sel.begin(), last = *sel.rbegin();
+                const bool run = last - first + 1 == int(sel.size());
+                if (!run && selected >= 0)
+                    anchor = selected;
+                else
+                    anchor = first <= r && r != first ? first : last;
+            }
+            for (int i = std::min(anchor, r); i <= std::max(anchor, r); ++i)
+                sel.insert(i);
+            selected = anchor;   // +0x48: the anchor
+            return;
+        }
+        if (!isSelected(r))
+            sel.clear();
+        sel.insert(r);
+        selected = r;
+    }
     bool playingPaused = false;
     int sortColumn = 1;
     bool ascending = true;
@@ -877,7 +943,7 @@ public:
         if (e.keysym == XKB_KEY_Down || e.keysym == XKB_KEY_Up) {
             if (rows.empty())
                 return;
-            selected = std::clamp(selected + (e.keysym == XKB_KEY_Down ? 1 : -1), 0, int(rows.size()) - 1);
+            selectOnly(std::clamp(selected + (e.keysym == XKB_KEY_Down ? 1 : -1), 0, int(rows.size()) - 1));
             scrollToRow(selected);
             m_body->setNeedsDisplay();
             if (onSelect)
@@ -913,7 +979,7 @@ private:
             const iTunes::TextStyle body = textStyle(g_listText);
             for (int r = 0; r < n; ++r) {
                 const double y = r * h;
-                const bool sel = r == list->selected && size_t(r) < list->rows.size();
+                const bool sel = list->isSelected(r) && size_t(r) < list->rows.size();
                 Color bg = colour(r % 2 == 0 ? 14 : 16), line = Color::gray(217), text = colour(23);
                 if (sel) {
                     bg = colour(focused ? 10 : 11);
@@ -963,7 +1029,8 @@ private:
             window()->makeFirstResponder(list);
             // a click on the selected row's stars rates it: the star under the pointer, none left of
             // the first
-            if (r >= 0 && r == list->selected && list->ratingColumn >= 0 && list->onRate) {
+            if (r >= 0 && r == list->selected && list->isSelected(r) && !(e.modifiers & (Shift | Command)) &&
+                list->ratingColumn >= 0 && list->onRate) {
                 double x = 0;
                 for (int c = 0; c < list->ratingColumn; ++c)
                     x += list->columns[size_t(c)].width;
@@ -974,8 +1041,9 @@ private:
                 }
             }
             if (r >= 0 && size_t(r) < list->rows.size()) {
-                const bool changed = list->selected != r;
-                list->selected = r;
+                const std::set<int> before = list->sel;
+                list->click(r, e.modifiers);
+                const bool changed = list->sel != before;
                 setNeedsDisplay();
                 list->setNeedsDisplay();
                 if (changed && list->onSelect)
@@ -1348,6 +1416,7 @@ private:
         for (int i = 0; i < 3; ++i) {
             m_browse[i] = c->add<TrackList>();
             m_browse[i]->statusColumn = false;
+            m_browse[i]->multiple = false;
             m_browse[i]->sortColumn = -1;
             m_browse[i]->columns = {{tr(titles[i]), 100, Align::Left}};
             m_browse[i]->onSelect = [this, i](int row) { chooseInBrowser(i, row); };
@@ -1372,7 +1441,7 @@ private:
             const auto it = std::find(m_list->ids.begin(), m_list->ids.end(), id);
             if (it == m_list->ids.end())
                 return;
-            m_list->selected = int(it - m_list->ids.begin());
+            m_list->selectOnly(int(it - m_list->ids.begin()));
             m_list->scrollToRow(m_list->selected);
             m_list->body()->setNeedsDisplay();
         };
@@ -1984,7 +2053,23 @@ private:
             const std::string x = cellKey(ta, field), y = cellKey(tb, field);
             return asc ? x < y : y < x;
         });
+        // the selection kept by song: the rows chosen and the last click follow their songs
+        std::set<int> chosenIds;
+        for (int r : m_list->sel)
+            if (r >= 0 && size_t(r) < m_list->ids.size())
+                chosenIds.insert(m_list->ids[size_t(r)]);
+        const int focusId = m_list->selected >= 0 && size_t(m_list->selected) < m_list->ids.size() ? m_list->ids[size_t(m_list->selected)] : -1;
         m_list->ids = shown;
+        m_list->sel.clear();
+        m_list->selected = -1;
+        for (size_t r = 0; r < shown.size(); ++r) {
+            if (chosenIds.count(shown[r]))
+                m_list->sel.insert(int(r));
+            if (shown[r] == focusId)
+                m_list->selected = int(r);
+        }
+        if (m_list->selected < 0 && !m_list->sel.empty())
+            m_list->selected = *m_list->sel.begin();
         m_list->rows.clear();
         long long ms = 0, bytes = 0;
         for (int id : shown) {
@@ -1996,7 +2081,6 @@ private:
             ms += t.totalTime;
             bytes += t.size;
         }
-        m_list->selected = std::min(m_list->selected, int(shown.size()) - 1);
         markPlaying();
         m_list->reload();
         if (m_viewMode == 2 && !eleven()) {
@@ -2037,10 +2121,10 @@ private:
             if (at != std::string::npos)
                 all.replace(at, 2, std::to_string(values.size()));
             b->rows.push_back({all});
-            b->selected = 0;
+            b->selectOnly(0);
             for (const std::string &v : values) {
                 if (v == m_browseSel[i])
-                    b->selected = int(b->rows.size());
+                    b->selectOnly(int(b->rows.size()));
                 b->rows.push_back({v});
             }
             b->reload();
@@ -2303,7 +2387,7 @@ private:
             loadSource();
             const auto row = std::find(m_list->ids.begin(), m_list->ids.end(), id);
             if (row != m_list->ids.end()) {
-                m_list->selected = int(row - m_list->ids.begin());
+                m_list->selectOnly(int(row - m_list->ids.begin()));
                 m_list->scrollToRow(m_list->selected);
                 playRow(m_list->selected);
             } else
@@ -2373,12 +2457,24 @@ private:
         m_smartWindow->show();
     }
 
+    // The songs chosen, in the list's order
+    std::vector<int> selectedIds() const
+    {
+        std::vector<int> ids;
+        for (int r : m_list->sel)
+            if (r >= 0 && size_t(r) < m_list->ids.size())
+                ids.push_back(m_list->ids[size_t(r)]);
+        return ids;
+    }
+
     void newPlaylistFromSelection()
     {
-        if (m_list->selected < 0)
+        const std::vector<int> ids = selectedIds();
+        if (ids.empty())
             return;
         newPlaylist();
-        m_library.playlists().back().items.push_back(m_list->ids[size_t(m_list->selected)]);
+        for (int id : ids)
+            m_library.playlists().back().items.push_back(id);
         m_library.save();
         loadSource();
     }
@@ -2388,19 +2484,22 @@ private:
         const int sel = m_sources->selected();
         const int tag = sel >= 0 ? m_sources->rows[size_t(sel)].tag : -1;
         // a smart playlist's songs are its rules': nothing to take out of it
-        if (m_list->selected < 0 || (tag >= 0 && m_library.playlists()[size_t(tag)].smart))
+        const std::vector<int> ids = selectedIds();
+        if (ids.empty() || (tag >= 0 && m_library.playlists()[size_t(tag)].smart))
             return;
-        const int id = m_list->ids[size_t(m_list->selected)];
-        if (tag >= 0) {
-            auto &items = m_library.playlists()[size_t(tag)].items;
-            items.erase(std::remove(items.begin(), items.end(), id), items.end());
-        } else {
-            if (id == m_current) {
-                m_player.stop();
-                m_current = -1;
+        for (int id : ids) {
+            if (tag >= 0) {
+                auto &items = m_library.playlists()[size_t(tag)].items;
+                items.erase(std::remove(items.begin(), items.end(), id), items.end());
+            } else {
+                if (id == m_current) {
+                    m_player.stop();
+                    m_current = -1;
+                }
+                m_library.remove(id);
             }
-            m_library.remove(id);
         }
+        m_list->selectNone();
         m_library.save();
         loadSource();
     }
@@ -2558,7 +2657,7 @@ private:
         m_sources->select(1, true);
         for (size_t i = 0; i < m_list->ids.size(); ++i)
             if (m_list->ids[i] == m_current) {
-                m_list->selected = int(i);
+                m_list->selectOnly(int(i));
                 m_list->scrollToRow(int(i));
             }
         m_list->body()->setNeedsDisplay();
@@ -2619,7 +2718,7 @@ private:
     bool validate(const MainMenuItem &it, MenuValidation &v)
     {
         const std::string &a = it.action;
-        const bool hasSel = m_list->selected >= 0;
+        const bool hasSel = !m_list->sel.empty();
         if (a == "plps") {
             v.title = eleven() ? tr(m_player.isPlaying() ? "136.004" : "136.002") : tr(m_player.isPlaying() ? "kMenuItemPause" : "kMenuItemPlay");
             if (v.title.rfind("kMenuItem", 0) == 0)
@@ -2646,12 +2745,16 @@ private:
         if (a == "eqwn")   // Window ▸ Equalizer: 8.2.1's EQWindow
             return !eleven();
         if (a.size() == 4 && a.rfind("SRT", 0) == 0 && a[3] >= '0' && a[3] <= '5') {   // File ▸ Rating
-            const Track *t = hasSel ? m_library.track(m_list->ids[size_t(m_list->selected)]) : nullptr;
+            const Track *t = hasSel && m_list->selected >= 0 ? m_library.track(m_list->ids[size_t(m_list->selected)]) : nullptr;
             v.checked = t && (t->rating + 10) / 20 == a[3] - '0';
             return t != nullptr;
         }
         if (a == "SRAT")
             return hasSel;
+        if (a == "sall")   // Edit ▸ Select All, Select None: the songs' list (FUN_001b0ec2)
+            return dynamic_cast<TextField *>(m_window->firstResponder()) || (!m_store8 && !m_list->rows.empty());
+        if (a == "SNon")
+            return !m_store8 && !m_list->sel.empty();
         if (a == "ourl")   // Advanced ▸ Open Audio Stream… (enabled unless +0x109bf)
             return !eleven();
         if (a == "SDup") {   // FUN_00140f50: "Show All" while they are shown
@@ -2781,6 +2884,20 @@ private:
             setViewMode(a == "lisv" ? 0 : a == "thmv" ? 1 : 2);
         else if (a == "ourl")
             openStream();
+        else if (a == "sall" && dynamic_cast<TextField *>(m_window->firstResponder())) {
+            auto *f = dynamic_cast<TextField *>(m_window->firstResponder());   // the search field's text
+            f->selectAll();
+            f->setNeedsDisplay();
+        } else if (a == "sall" || a == "SNon") {
+            if (a == "sall")
+                m_list->selectAll();
+            else
+                m_list->selectNone();
+            m_list->body()->setNeedsDisplay();
+            m_list->setNeedsDisplay();
+            if (m_list->onSelect)
+                m_list->onSelect(m_list->selected);
+        }
         else if (a == "SDup")
             showDuplicates(it.alternate);
         else if (a == "nspl")
@@ -2805,8 +2922,9 @@ private:
             m_info.onChanged = [this](int) { loadSource(); refreshLCD(); };
             m_info.show(m_list->ids, m_list->selected);
         }
-        else if (a.size() == 4 && a.rfind("SRT", 0) == 0 && m_list->selected >= 0)
-            rate(m_list->ids[size_t(m_list->selected)], (a[3] - '0') * 20);
+        else if (a.size() == 4 && a.rfind("SRT", 0) == 0)
+            for (int id : selectedIds())   // File ▸ Rating: every song chosen
+                rate(id, (a[3] - '0') * 20);
         else if (a == "terminate:")
             App::shared().quit();
     }
