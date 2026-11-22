@@ -1177,6 +1177,7 @@ struct SourceRow {
     bool header = false, selectable = true;
     int level = 0;
     int tag = 0;
+    bool folder = false, open = false;
 };
 
 class SourceList : public View {
@@ -1218,6 +1219,14 @@ public:
                 continue;
             }
             const double ix = 14 * r.level + 19, tx = 14 * r.level + 39;
+            // a folder's triangle (FUN_0002d3b2: at 14n + 5; PBUT 314 "TrackDisclosure", 10 × 10 cells:
+            // rows 0 closed, 2 open, 3 to 5 the same white on a chosen row; column 1, 2 pressed)
+            if (r.folder) {
+                const Image tri = picture(314);   // not in the picture table: its cells cut here
+                if (!tri.isNull())
+                    tri.draw(cr, Rect{10.0 * (int(i) == m_pressed ? 2 : 1), 10.0 * ((r.open ? 2 : 0) + (sel ? 3 : 0)), 10, 10},
+                             Rect{14 * r.level + 5, row.y + 5, 10, 10});
+            }
             if (r.icon >= 0 && !icons.isNull())
                 drawCell(cr, 441, sel ? 1 : 0, r.icon, Rect{ix, row.y + 2, 16, 16});
             t.font = name.font;
@@ -1230,10 +1239,28 @@ public:
             }
         }
     }
+    std::function<void(int)> onToggle;   // a folder's triangle clicked: its row
     void mouseDown(Event &e) override
     {
         window()->makeFirstResponder(this);
-        select(int(e.location.y / RowHeight), true);
+        const int i = int(e.location.y / RowHeight);
+        if (i >= 0 && size_t(i) < rows.size() && rows[size_t(i)].folder) {
+            const double tx = 14 * rows[size_t(i)].level + 5;
+            if (e.location.x >= tx - 3 && e.location.x < tx + 13) {
+                m_pressed = i;
+                setNeedsDisplay();
+                return;
+            }
+        }
+        select(i, true);
+    }
+    void mouseUp(Event &e) override
+    {
+        const int i = m_pressed;
+        m_pressed = -1;
+        setNeedsDisplay();
+        if (i >= 0 && int(e.location.y / RowHeight) == i && onToggle)
+            onToggle(i);
     }
     void keyDown(Event &e) override
     {
@@ -1251,6 +1278,7 @@ public:
 
 private:
     int m_selected = -1;
+    int m_pressed = -1;   // a triangle held
 };
 
 // ---- the application
@@ -1377,7 +1405,25 @@ private:
 
         m_sourceScroll = c->add<ScrollView>();
         m_sources = m_sourceScroll->document()->add<SourceList>();
+        for (const std::string &id : Settings("itunes").list("OpenFolders"))
+            m_openFolders.insert(id);
         m_sources->onSelect = [this](int) { loadSource(); };
+        m_sources->onToggle = [this](int row) {
+            const int tag = m_sources->rows[size_t(row)].tag;
+            const std::string id = m_library.playlists()[size_t(tag)].persistentId;
+            if (!m_openFolders.erase(id))
+                m_openFolders.insert(id);
+            Settings("itunes").set("OpenFolders", std::vector<std::string>(m_openFolders.begin(), m_openFolders.end()));
+            // the chosen playlist kept chosen, unless it was in the folder closed: then the folder
+            const int chosen = selectedPlaylist();
+            rebuildSources();
+            int at = row;
+            for (size_t i = 0; i < m_sources->rows.size(); ++i)
+                if (m_sources->rows[i].tag == chosen)
+                    at = int(i);
+            m_sources->select(at, at != m_sources->selected());
+            layout();
+        };
         m_divider = c->add<View>();
 
         m_list = c->add<TrackList>();
@@ -1971,17 +2017,33 @@ private:
         store.tag = -2;
         m_sources->rows.push_back(store);
         header(e ? "135.009" : "135.014");
-        int i = 0;
-        for (const Playlist &p : m_library.playlists()) {
-            if (!p.master) {
+        // the playlists by their folders (Parent Persistent ID), a folder's own below it when it is open
+        const std::vector<Playlist> &lists = m_library.playlists();
+        std::set<std::string> ids;
+        for (const Playlist &p : lists)
+            ids.insert(p.persistentId);
+        std::function<void(const std::string &, int)> add = [&](const std::string &parent, int level) {
+            if (level > 16)
+                return;
+            for (size_t i = 0; i < lists.size(); ++i) {
+                const Playlist &p = lists[i];
+                const std::string up = ids.count(p.parentId) ? p.parentId : std::string();
+                if (p.master || up != parent)
+                    continue;
                 SourceRow r;
                 r.title = p.name;
-                r.icon = p.smart ? 16 : 15;   // 441's rows: a playlist, a smart playlist (the gear)
-                r.tag = i;
+                // 441's rows: a playlist, a smart playlist (the gear), a folder
+                r.icon = p.folder ? 20 : p.smart ? 16 : 15;
+                r.tag = int(i);
+                r.level = level;
+                r.folder = p.folder;
+                r.open = p.folder && m_openFolders.count(p.persistentId);
                 m_sources->rows.push_back(r);
+                if (r.open)
+                    add(p.persistentId, level + 1);
             }
-            ++i;
-        }
+        };
+        add({}, 0);
         m_sources->setNeedsDisplay();
         m_sources->select(keep >= 0 && size_t(keep) < m_sources->rows.size() ? keep : 1);
     }
@@ -2015,7 +2077,7 @@ private:
         if (tag >= 0 && size_t(tag) < m_library.playlists().size()) {
             const Playlist &p = m_library.playlists()[size_t(tag)];
             // a smart playlist's songs: its rules applied now when it updates live, else as they were
-            ids = p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
+            ids = p.folder ? m_library.folderItems(p) : p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
         }
         else
             for (const auto &[id, t] : m_library.tracks())
@@ -2331,24 +2393,65 @@ private:
 
     // ---- editing
 
-    void newPlaylist()
+    // Where a new playlist or folder goes (FUN_0013c60c, FUN_0014ec46's nfld): in the folder chosen,
+    // beside the playlist chosen (in its folder), else at the top
+    std::string newParent()
     {
-        Playlist p;
-        p.name = "untitled playlist";
-        int n = 1;
-        auto taken = [&](const std::string &name) {
-            return std::any_of(m_library.playlists().begin(), m_library.playlists().end(), [&](const Playlist &q) { return q.name == name; });
-        };
-        while (taken(p.name))
-            p.name = "untitled playlist " + std::to_string(++n);
+        const int tag = selectedPlaylist();
+        if (tag < 0 || size_t(tag) >= m_library.playlists().size())
+            return {};
+        const Playlist &p = m_library.playlists()[size_t(tag)];
+        return p.folder ? p.persistentId : p.parentId;
+    }
+    // A new playlist or folder in the library, in its parent (opened to show it), and chosen
+    void addPlaylist(Playlist p)
+    {
+        p.persistentId = Library::newPersistentId();
+        p.parentId = newParent();
+        if (!p.parentId.empty()) {
+            m_openFolders.insert(p.parentId);
+            Settings("itunes").set("OpenFolders", std::vector<std::string>(m_openFolders.begin(), m_openFolders.end()));
+        }
         m_library.playlists().push_back(p);
         m_library.save();
         rebuildSources();
-        m_sources->select(int(m_sources->rows.size()) - 1, true);
+        const int tag = int(m_library.playlists().size()) - 1;
+        for (size_t i = 0; i < m_sources->rows.size(); ++i)
+            if (m_sources->rows[i].tag == tag)
+                m_sources->select(int(i), true);
         layout();
     }
+    // A name not taken: "untitled playlist", then "untitled playlist 2"… (FUN_000dbb94 with STR# 9000's
+    // pair: .001 / .002 for a playlist, .003 / .004 for a folder)
+    std::string untitled(const char *first, const char *numbered)
+    {
+        auto taken = [&](const std::string &name) {
+            return std::any_of(m_library.playlists().begin(), m_library.playlists().end(), [&](const Playlist &q) { return q.name == name; });
+        };
+        std::string name = tr(first);
+        for (int n = 2; taken(name); ++n) {
+            name = tr(numbered);
+            const size_t at = name.find("^1");
+            if (at != std::string::npos)
+                name.replace(at, 2, std::to_string(n));
+        }
+        return name;
+    }
+    void newPlaylist()
+    {
+        Playlist p;
+        p.name = untitled("9000.001", "9000.002");
+        addPlaylist(p);
+    }
+    // File ▸ New Playlist Folder (nfld; FUN_002e5f90): "untitled folder", its icon 441's row 20 (+0x4B6)
+    void newFolder()
+    {
+        Playlist p;
+        p.name = untitled("9000.003", "9000.004");
+        p.folder = true;
+        addPlaylist(p);
+    }
 
-    // File ▸ New Smart Playlist… (nspl), Edit Smart Playlist (esmp)
     // Advanced ▸ Open Audio Stream… (FUN_000b24d6): Get Long String (DLOG 10003) titled STR# 130.001
     // "Open Audio Stream" (130.002 "Edit URL" when it has a text), its prompt 130.003 "URL:"; the URL
     // trimmed, then FUN_000b21c4 by its scheme (FUN_00261b94):
@@ -2420,25 +2523,16 @@ private:
         const int sel = m_sources->selected();
         return sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
     }
+    // File ▸ New Smart Playlist… (nspl), Edit Smart Playlist (esmp)
     void newSmartPlaylist()
     {
         m_smartWindow = std::make_unique<SmartPlaylistWindow>(SmartInfo{}, [this](const SmartInfo &info) {
             Playlist p;
-            p.name = "untitled playlist";
-            int n = 1;
-            auto taken = [&](const std::string &name) {
-                return std::any_of(m_library.playlists().begin(), m_library.playlists().end(), [&](const Playlist &q) { return q.name == name; });
-            };
-            while (taken(p.name))
-                p.name = "untitled playlist " + std::to_string(++n);
+            p.name = untitled("9000.001", "9000.002");
             p.smart = true;
             p.info = info;
             p.items = m_library.evaluate(info);
-            m_library.playlists().push_back(p);
-            m_library.save();
-            rebuildSources();
-            m_sources->select(int(m_sources->rows.size()) - 1, true);
-            layout();
+            addPlaylist(p);
         });
         m_smartWindow->show();
     }
@@ -2763,7 +2857,7 @@ private:
                 v.title = tr("kMenuItemShowAll");
             return !eleven() && !m_store8;
         }
-        if (a == "nspl")
+        if (a == "nspl" || a == "nfld")
             return !eleven();
         if (a == "full")
             return !eleven() && ((m_visualizer && m_visualizerShown) || m_viewMode == 2);
@@ -2902,6 +2996,8 @@ private:
             showDuplicates(it.alternate);
         else if (a == "nspl")
             newSmartPlaylist();
+        else if (a == "nfld")
+            newFolder();
         else if (a == "VOpt")
             showViewOptions();
         else if (a == "vtog")
@@ -2949,6 +3045,7 @@ private:
     int m_sortField = 2;                  // the field the songs are sorted by
     // File ▸ Show Duplicates: per source (its playlist's tag, -1 the library), 1 the duplicates, 2 the
     // exact ones (the playlist's +0x182 flag 8); the sort it had before (+0x10c), put back by Show All
+    std::set<std::string> m_openFolders;   // the folders open in the sources (their Persistent IDs)
     std::map<int, int> m_dups;
     std::unique_ptr<Window> m_askWindow;   // Open Audio Stream's Get Long String
     int m_sortBeforeDups = 2;

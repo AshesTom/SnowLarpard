@@ -15,6 +15,8 @@
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
+#include <random>
+#include <functional>
 #include <set>
 #include <sstream>
 #include <tuple>
@@ -446,6 +448,12 @@ bool Library::load()
             pl.name = p.str("Name");
             const Node *m = p.get("Master");
             pl.master = m && m->text == "true";
+            const Node *f = p.get("Folder");
+            pl.folder = f && f->text == "true";
+            pl.persistentId = p.str("Playlist Persistent ID");
+            pl.parentId = p.str("Parent Persistent ID");
+            if (pl.persistentId.empty())
+                pl.persistentId = newPersistentId();
             if (const Node *items = p.get("Playlist Items"))
                 for (const Node &i : items->array)
                     pl.items.push_back(int(i.num("Track ID")));
@@ -542,6 +550,12 @@ bool Library::save() const
         o << "\t\t<dict>\n\t\t\t<key>Name</key><string>" << xmlEscape(p.name) << "</string>\n";
         if (p.master)
             o << "\t\t\t<key>Master</key><true/>\n\t\t\t<key>Visible</key><false/>\n";
+        if (!p.persistentId.empty())
+            o << "\t\t\t<key>Playlist Persistent ID</key><string>" << p.persistentId << "</string>\n";
+        if (!p.parentId.empty())
+            o << "\t\t\t<key>Parent Persistent ID</key><string>" << p.parentId << "</string>\n";
+        if (p.folder)
+            o << "\t\t\t<key>Folder</key><true/>\n";
         if (p.smart) {
             const SmartInfo &s = p.info;
             auto b = [](bool v) { return v ? "<true/>" : "<false/>"; };
@@ -575,6 +589,38 @@ bool Library::save() const
         f << o.str();
     }
     return std::rename(tmp.c_str(), file().c_str()) == 0;
+}
+
+std::string Library::newPersistentId()
+{
+    static std::mt19937_64 random(std::random_device{}());
+    char buf[17];
+    std::snprintf(buf, sizeof buf, "%016llX", static_cast<unsigned long long>(random()));
+    return buf;
+}
+
+std::vector<int> Library::folderItems(const Playlist &folder) const
+{
+    std::vector<int> out;
+    std::set<int> seen;
+    std::function<void(const std::string &, int)> walk = [&](const std::string &parent, int depth) {
+        if (depth > 16)
+            return;
+        for (const Playlist &p : m_playlists) {
+            if (p.parentId != parent || p.master)
+                continue;
+            if (p.folder) {
+                walk(p.persistentId, depth + 1);
+                continue;
+            }
+            const std::vector<int> ids = p.smart && p.info.live ? evaluate(p.info) : p.items;
+            for (int id : ids)
+                if (seen.insert(id).second)
+                    out.push_back(id);
+        }
+    };
+    walk(folder.persistentId, 0);
+    return out;
 }
 
 int Library::addURL(const std::string &url)

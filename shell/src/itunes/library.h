@@ -54,6 +54,10 @@ struct Playlist {
     bool master = false;      // "Library"
     bool smart = false;
     SmartInfo info;
+    // a folder (New Playlist Folder: FUN_002e5f90, its flag 2 at +0x128): its songs those of the
+    // playlists in it; the plist's Folder, Playlist Persistent ID and Parent Persistent ID
+    bool folder = false;
+    std::string persistentId, parentId;
 };
 
 class Library {
@@ -80,6 +84,10 @@ public:
     // Get Info's changes into the song's file (TagLib) as well as the library: false when the file
     // could not be written
     bool writeTags(const Track &t);
+    // A new playlist's Persistent ID (16 hex digits, as the plist has them)
+    static std::string newPersistentId();
+    // A folder's songs: those of the playlists in it and in its folders, each once, in their order
+    std::vector<int> folderItems(const Playlist &folder) const;
     // A smart playlist's songs: the rules applied to the library, then the limit
     std::vector<int> evaluate(const SmartInfo &info) const;
 
