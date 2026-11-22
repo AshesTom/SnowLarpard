@@ -79,7 +79,15 @@ struct Style {
     std::string face;                    // a face besides bold and italic ("Wide", "Thin")
     bool bold = false, italic = false;
     double size = 12;
-    bool underline = false, strike = false;
+    int underline = 0, strike = 0;       // 1 single (\\ul, \\strike), 2 double (\\uldb, \\striked1)
+    // NSShadow (\\shad\\shadx\\shady\\shadr\\shado): its offset (points, y up), blur radius and
+    // black's opacity
+    struct Shadow {
+        bool on = false;
+        double dx = 0, dy = 0, blur = 0, alpha = 1.0 / 3;
+        bool operator==(const Shadow &o) const { return on == o.on && (!on || (dx == o.dx && dy == o.dy && blur == o.blur && alpha == o.alpha)); }
+        bool operator!=(const Shadow &o) const { return !(*this == o); }
+    } shadow;
     bool coloured = false;               // \cf other than 0: the colour below, else the text's default (black)
     AK::Color colour = AK::Color::gray(0);
     int script = 0;                      // 1 superscript, -1 subscript (\super, \sub)

@@ -129,6 +129,7 @@ bool removeWord(std::string &s, const char *word)
 bool Style::operator==(const Style &o) const
 {
     return family == o.family && face == o.face && bold == o.bold && italic == o.italic && size == o.size && underline == o.underline &&
+           shadow == o.shadow &&
            strike == o.strike && coloured == o.coloured && (!coloured || (colour.r == o.colour.r && colour.g == o.colour.g && colour.b == o.colour.b)) &&
            script == o.script && baseline == o.baseline && align == o.align && para == o.para && link == o.link;
 }
@@ -708,12 +709,26 @@ RichText fromRTF(const std::string &rtf, const std::map<std::string, std::string
                     st.bold = on;
                 else if (word == "i")
                     st.italic = on;
-                else if (word == "ul" || word == "uld" || word == "uldb" || word == "ulw" || word == "ulth")
-                    st.underline = on;
+                else if (word == "uldb")
+                    st.underline = on ? 2 : 0;
+                else if (word == "ul" || word == "uld" || word == "ulw" || word == "ulth")
+                    st.underline = on ? 1 : 0;
                 else if (word == "ulnone")
-                    st.underline = false;
+                    st.underline = 0;
                 else if (word == "strike")
-                    st.strike = on;
+                    st.strike = on ? 1 : 0;
+                else if (word == "striked")
+                    st.strike = hasParam && param == 0 ? (st.strike == 2 ? 0 : st.strike) : 2;
+                else if (word == "shad")
+                    st.shadow.on = on;
+                else if (word == "shadx" && hasParam)
+                    st.shadow.dx = param / 20.0;
+                else if (word == "shady" && hasParam)
+                    st.shadow.dy = param / 20.0;
+                else if (word == "shadr" && hasParam)
+                    st.shadow.blur = param / 20.0;
+                else if (word == "shado" && hasParam)
+                    st.shadow.alpha = param / 255.0;
                 else if (word == "cf") {
                     if (param <= 0 || size_t(param) >= colours.size())
                         st.coloured = false;
@@ -872,11 +887,20 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
         colours.push_back(s.colour);
         return int(colours.size());
     };
+    // a shadow's colour, black, in the table
+    auto blackIndex = [&]() {
+        Style black;
+        black.coloured = true;
+        black.colour = AK::Color::gray(0);
+        return colourIndex(black);
+    };
     // the tables first: every style the text uses
     for (uint16_t r : t.runs)
         if (r < t.styles.size()) {
             fontIndex(t.styles[r]);
             colourIndex(t.styles[r]);
+            if (t.styles[r].shadow.on)
+                blackIndex();
         }
     if (fonts.empty())
         fontIndex(t.styles.empty() ? Style() : t.styles[0]);
@@ -1044,9 +1068,19 @@ std::string toRTF(const RichText &t, const std::vector<double> &tabStops)
             if (first || s.coloured != cur.coloured || rgb(s.colour) != rgb(cur.colour))
                 w += std::string(w.empty() ? "" : " ") + "\\cf" + std::to_string(colourIndex(s));
             if (first ? s.underline : s.underline != cur.underline)
-                w += s.underline ? "\\ul\\ulc0" : "\\ulnone";
+                w += s.underline == 2 ? "\\uldb\\ulc0" : s.underline ? "\\ul\\ulc0" : "\\ulnone";
             if (first ? s.strike : s.strike != cur.strike)
-                w += s.strike ? "\\strike\\strikec0" : "\\strike0\\striked0";
+                w += s.strike == 2 ? "\\striked1" : s.strike ? "\\strike\\strikec0" : "\\strike0\\striked0";
+            if (first ? s.shadow.on : s.shadow != cur.shadow) {
+                // -[NSRTFWriter writeShadow:] (0x4c605b): twips as floor(x × 20 + 0.01), the opacity × 255
+                if (s.shadow.on) {
+                    auto tw = [](double v) { return std::to_string(long(std::floor(v * 20 + 0.01))); };
+                    w += "\\shad\\shadx" + tw(s.shadow.dx) + "\\shady" + tw(s.shadow.dy) + "\\shadr" + tw(s.shadow.blur) + "\\shado" +
+                         std::to_string(long(s.shadow.alpha * 255 + 0.5)) + " \\shadc" + std::to_string(blackIndex());
+                } else {
+                    w += "\\shad0";
+                }
+            }
             if (first ? s.script != 0 : s.script != cur.script)
                 w += s.script > 0 ? "\\super" : s.script < 0 ? "\\sub" : "\\nosupersub";
             if (first ? s.baseline != 0 : s.baseline != cur.baseline) {

@@ -123,29 +123,116 @@ std::string sizeText(double v)
     return buf;
 }
 
-// NSActionTemplate on the action button: a gear, drawn (its picture is not on the DVD's assets)
-class Gear : public View {
+// AppKit's own pictures of the panel (extract.py cuts them out of AppKit's atlas)
+Image picture(const std::string &name)
+{
+    return Image::load(Assets::path(std::string(AppKitBundle) + "/Resources/Images/" + name + ".png"));
+}
+
+// The panel's picture buttons: their picture, the pressed one while held (or while on)
+class PictureButton : public View {
 public:
+    Image normal, pressed;
+    bool on = false;
+    bool enabled = true;
+    std::function<void()> onPress;
     void draw(cairo_t *cr) override
     {
-        const double cx = frame().w / 2, cy = frame().h / 2, r = 5.5, teeth = 8;
-        cairo_set_source_rgba(cr, 0.2, 0.2, 0.2, 1);
-        for (int k = 0; k < teeth; ++k) {
-            const double a = k * 2 * M_PI / teeth;
-            cairo_save(cr);
-            cairo_translate(cr, cx, cy);
-            cairo_rotate(cr, a);
-            cairo_rectangle(cr, -1.2, -r - 1.5, 2.4, 3);
-            cairo_fill(cr);
-            cairo_restore(cr);
-        }
+        const Image &img = (m_down || on) && !pressed.isNull() ? pressed : normal;
+        if (!img.isNull())
+            img.draw(cr, Point{0, 0}, enabled ? 1 : 0.5);
+    }
+    void mouseDown(Event &) override
+    {
+        if (!enabled)
+            return;
+        m_down = true;
+        setNeedsDisplay();
+        if (onPress)
+            onPress();
+        m_down = false;
+        setNeedsDisplay();
+    }
+
+private:
+    bool m_down = false;
+};
+
+// NSFontPanelEffectsSliderCell: NSFontPanelSliderTrack (41 × 10) and its thumb (7 × 7)
+class EffectsSlider : public View {
+public:
+    double value = 0, minValue = 0, maxValue = 1;
+    std::function<void()> onChange;
+    void draw(cairo_t *cr) override
+    {
+        static const Image track = picture("NSFontPanelSliderTrack"), thumb = picture("NSFontPanelSliderThumb"),
+                           thumbDown = picture("NSFontPanelSliderThumbPressed");
+        track.draw(cr, Point{0, std::floor((frame().h - track.height()) / 2)});
+        const double f = maxValue > minValue ? (value - minValue) / (maxValue - minValue) : 0;
+        const Image &t = m_drag ? thumbDown : thumb;
+        t.draw(cr, Point{std::round(2 + f * (frame().w - 4 - t.width())), std::floor((frame().h - t.height()) / 2)});
+    }
+    void mouseDown(Event &e) override
+    {
+        m_drag = true;
+        track(e.location.x);
+    }
+    void mouseDragged(Event &e) override { track(e.location.x); }
+    void mouseUp(Event &) override
+    {
+        m_drag = false;
+        setNeedsDisplay();
+    }
+
+private:
+    bool m_drag = false;
+    void track(double x)
+    {
+        const double f = std::clamp((x - 5.5) / (frame().w - 11), 0.0, 1.0);
+        value = minValue + f * (maxValue - minValue);
+        setNeedsDisplay();
+        if (onChange)
+            onChange();
+    }
+};
+
+// The shadow's angle: a small NSCircularSlider (0 to 360, its dot clockwise from the top)
+class AngleDial : public View {
+public:
+    double value = 135;
+    std::function<void()> onChange;
+    void draw(cairo_t *cr) override
+    {
+        const double cx = frame().w / 2, cy = frame().h / 2, r = std::min(cx, cy) - 1.5;
         cairo_arc(cr, cx, cy, r, 0, 2 * M_PI);
-        cairo_fill(cr);
-        cairo_set_source_rgba(cr, 0.93, 0.93, 0.93, 1);
-        cairo_arc(cr, cx, cy, 2, 0, 2 * M_PI);
+        cairo_pattern_t *g = cairo_pattern_create_linear(0, cy - r, 0, cy + r);
+        cairo_pattern_add_color_stop_rgb(g, 0, 0.98, 0.98, 0.98);
+        cairo_pattern_add_color_stop_rgb(g, 1, 0.82, 0.82, 0.82);
+        cairo_set_source(cr, g);
+        cairo_fill_preserve(cr);
+        cairo_pattern_destroy(g);
+        cairo_set_source_rgba(cr, 0, 0, 0, 0.45);
+        cairo_set_line_width(cr, 1);
+        cairo_stroke(cr);
+        const double a = (value - 90) * M_PI / 180;
+        cairo_arc(cr, cx + std::cos(a) * (r - 3), cy + std::sin(a) * (r - 3), 1.5, 0, 2 * M_PI);
+        cairo_set_source_rgba(cr, 0.15, 0.15, 0.15, 1);
         cairo_fill(cr);
     }
-    View *hitTest(Point) override { return nullptr; }
+    void mouseDown(Event &e) override { track(e.location); }
+    void mouseDragged(Event &e) override { track(e.location); }
+
+private:
+    void track(Point p)
+    {
+        double deg = std::atan2(p.y - frame().h / 2, p.x - frame().w / 2) * 180 / M_PI + 90;
+        while (deg < 0)
+            deg += 360;
+        value = std::fmod(deg, 360);
+        setNeedsDisplay();
+        if (onChange)
+            onChange();
+    }
 };
 
 struct Panel {
@@ -164,6 +251,14 @@ struct Panel {
     Style lastSeen;
     bool haveSeen = false;
     int timer = 0;
+    // the effects bar (NSFontEffectsBox)
+    View *effects = nullptr, *main = nullptr;
+    bool effectsShown = true;
+    PictureButton *underline = nullptr, *strike = nullptr, *shadowToggle = nullptr;
+    EffectsSlider *opacity = nullptr, *blur = nullptr, *radius = nullptr;
+    AngleDial *angle = nullptr;
+    Label *angleLabel = nullptr;
+    PopUpButton *actions = nullptr;
 
     TextView *text() const { return target ? target() : nullptr; }
 
@@ -248,8 +343,10 @@ struct Panel {
             return;
         const Style s = t->styleAtSelection();
         if (!force && haveSeen && s.family == lastSeen.family && s.face == lastSeen.face && s.bold == lastSeen.bold &&
-            s.italic == lastSeen.italic && s.size == lastSeen.size)
+            s.italic == lastSeen.italic && s.size == lastSeen.size && s.underline == lastSeen.underline && s.strike == lastSeen.strike &&
+            s.shadow == lastSeen.shadow)
             return;
+        showEffects(s);
         lastSeen = s;
         haveSeen = true;
         // the family as fontconfig names it (Helvetica may be another's alias)
@@ -261,6 +358,98 @@ struct Panel {
         fillFamilies();
         fillFaces(&s);
         showSize();
+    }
+
+    // -[NSFontEffectsBox _setAttributes:isMultiple:] (0x3ac270): the bar shows the selection's
+    void showEffects(const Style &s)
+    {
+        if (!underline)
+            return;
+        underline->on = s.underline != 0;
+        strike->on = s.strike != 0;
+        shadowToggle->on = s.shadow.on;
+        if (s.shadow.on) {
+            opacity->value = s.shadow.alpha;
+            blur->value = std::clamp(s.shadow.blur, blur->minValue, blur->maxValue);
+            const double dist = std::hypot(s.shadow.dx, s.shadow.dy);
+            radius->value = std::clamp(s.size > 0 ? dist / s.size : 0.125, radius->minValue, radius->maxValue);
+            if (dist > 0) {
+                double a = 450 - std::atan2(s.shadow.dy, s.shadow.dx) * 180 / M_PI;
+                angle->value = std::fmod(std::fmod(a, 360) + 360, 360);
+            }
+        }
+        showAngle();
+        for (View *v : std::initializer_list<View *>{underline, strike, shadowToggle, opacity, blur, radius, angle})
+            v->setNeedsDisplay();
+    }
+
+    void showAngle()
+    {
+        // -_changeShadowAngle: (0x3abc9f): "%d%@" with the degree sign, the dial's angle as the
+        // offset's direction (450 − the dial, within 360)
+        double a = 450 - angle->value;
+        if (a >= 360)
+            a -= 360;
+        if (angleLabel)
+            angleLabel->setText(std::to_string(std::lround(a) % 360) + "\u00B0");
+    }
+
+    // -[NSFontEffectsBox convertAttributes:] (0x3abf3f): the shadow from the bar, each run's: its
+    // distance the radius slider times the run's point size, its direction 450° − the dial, the blur
+    // slider's radius, black at the opacity slider's alpha; none when the toggle is off
+    void sendShadow()
+    {
+        TextView *t = text();
+        if (!t)
+            return;
+        const bool on = shadowToggle->on;
+        double a = 450 - angle->value;
+        if (a > 360)
+            a -= 360;
+        const double rad = a * M_PI / 180, r = radius->value, b = blur->value, al = opacity->value;
+        t->changeStyle([=](Style &s) {
+            s.shadow.on = on;
+            if (on) {
+                s.shadow.dx = std::cos(rad) * r * s.size;
+                s.shadow.dy = std::sin(rad) * r * s.size;
+                s.shadow.blur = b;
+                s.shadow.alpha = al;
+            }
+        });
+        lastSeen = t->styleAtSelection();
+    }
+
+    // _openEffectsButton:: None, Single, Double (Color… with the colour panel: not here)
+    void effectsMenu(PictureButton *b, bool isStrike)
+    {
+        TextView *t = text();
+        const Style cur = t ? t->styleAtSelection() : Style();
+        const int now = isStrike ? cur.strike : cur.underline;
+        const std::vector<MenuItem> items = {MenuItem("None", false, true, now == 0), MenuItem("Single", false, true, now == 1),
+                                             MenuItem("Double", false, true, now == 2), MenuItem({}, true),
+                                             MenuItem("Color\u2026", false, false)};
+        const Rect f = b->frame(), e = effects->frame();
+        b->on = true;
+        b->setNeedsDisplay();
+        Menu::popUp(window.get(), Point{e.x + f.x, e.y + f.bottom()}, items, 90, Font::system(13), [this, b, isStrike](int i) {
+            TextView *tv = text();
+            if (tv && i >= 0 && i <= 2)
+                tv->changeStyle([i, isStrike](Style &s) { (isStrike ? s.strike : s.underline) = i; });
+            if (tv)
+                showEffects(lastSeen = tv->styleAtSelection());
+            b->setNeedsDisplay();
+        });
+    }
+
+    // Show Effects / Hide Effects: the bar above the columns, the panel taller by it
+    void layoutEffects()
+    {
+        const double top = effectsShown ? 40 : 0;
+        effects->setHidden(!effectsShown);
+        main->setFrame({0, top, 622, 231});
+        window->setContentSize({622, 231 + top});
+        if (actions)
+            actions->items[3].title = fm(effectsShown ? "Hide Effects" : "Show Effects");
     }
 
     // -changeFont: to the text: each run converted (NSFontManager convertFont:)
@@ -299,9 +488,11 @@ struct Panel {
     {
         // the nib's main box (622 × 271) without its effects bar (the top 40 points)
         const double W = 622, H = 231;
-        window = std::make_unique<Window>(Size{W, H}, fm("Font") == "Font" ? "Fonts" : "Fonts");
+        window = std::make_unique<Window>(Size{W, H + 40}, "Fonts");
         window->setFloatingPanel(true);
-        View *c = window->contentView();
+        main = window->contentView()->add<View>();
+        main->setFrame({0, 40, W, H});
+        View *c = main;
         all = allFamilies();
         auto table = [&](const Rect &r, const std::string &title, bool header) {
             auto *t = c->add<TableView>();
@@ -339,24 +530,40 @@ struct Panel {
         slider->maxValue = 72;
         slider->setFrame({588, 38, 21, 164});
 
-        auto *add = c->add<Button>("+", Button::SmallSquare);
+        // + and − (collections: not here), AppKit's pictures
+        auto *add = c->add<PictureButton>();
+        add->normal = picture("NSFontPanelPlusIdle");
+        add->pressed = picture("NSFontPanelPlusPressed");
+        add->enabled = false;
         add->setFrame({3, 205, 23, 20});
-        add->setEnabled(false);
-        auto *remove = c->add<Button>("−", Button::SmallSquare);
+        auto *remove = c->add<PictureButton>();
+        remove->normal = picture("NSFontPanelMinusIdle");
+        remove->pressed = picture("NSFontPanelMinusPressed");
+        remove->enabled = false;
         remove->setFrame({26, 205, 22, 20});
-        remove->setEnabled(false);
-        auto *actions = c->add<PopUpButton>();
+        actions = c->add<PopUpButton>();
         actions->pullDown = true;
         actions->small = true;
         actions->items = {MenuItem("⚙"), MenuItem(fm("Add to Favorites") == "Add to Favorites" ? "Add to Favorites" : fm("Add to Favorites")),
-                          MenuItem(fm("Show Preview"), false, false), MenuItem(fm("Show Effects"), false, false), MenuItem({}, true),
+                          MenuItem(fm("Show Preview"), false, false), MenuItem(fm("Hide Effects")), MenuItem({}, true),
                           MenuItem("Color…", false, false), MenuItem("Characters…", false, false), MenuItem("Typography…", false, false),
                           MenuItem({}, true), MenuItem("Edit Sizes…", false, false), MenuItem({}, true),
                           MenuItem("Manage Fonts…", false, false)};
-        actions->setFrame({52, 205, 40, 20});
+        actions->setFrame({52, 205, 28, 20});
         actions->items[0].title = " ";
-        auto *gear = c->add<Gear>();
-        gear->setFrame({56, 205, 18, 20});
+        actions->setHidden(true);   // its menu opened by the picture over it (NSFontPanelActionButton)
+        auto *gear = c->add<PictureButton>();
+        gear->normal = picture("NSFontPanelActionButton");
+        gear->pressed = picture("NSFontPanelActionButtonPressed");
+        gear->setFrame({52, 205, 28, 22});
+        gear->onPress = [this, gear] {
+            std::vector<MenuItem> items(actions->items.begin() + 1, actions->items.end());
+            const Rect f = gear->frame(), m = main->frame();
+            Menu::popUp(window.get(), Point{m.x + f.x, m.y + f.bottom()}, items, 150, Font::system(13), [this](int i) {
+                if (actions->onSelect && i >= 0)
+                    actions->onSelect(i + 1);
+            });
+        };
         search = c->add<SearchField>();
         search->inToolbar = false;
         search->setFrame({144, 205, 155, 19});
@@ -398,6 +605,11 @@ struct Panel {
             p->send(SizeChange);
         };
         actions->onSelect = [p](int i) {
+            if (i == 3) {
+                p->effectsShown = !p->effectsShown;
+                p->layoutEffects();
+                return;
+            }
             if (i == 1 && !p->family.empty()) {
                 std::vector<std::string> favorites = p->list("Favorites");
                 if (std::find(favorites.begin(), favorites.end(), p->family) == favorites.end())
@@ -408,6 +620,73 @@ struct Panel {
             }
         };
         search->onChange = [p](const std::string &) { p->fillFamilies(); };
+
+        // NSFontEffectsBox (NSFontPanel.nib's, 616 × 34 at the top): underline and strikethrough
+        // (pop-up picture buttons), text and document colour (the colour panel: not here), the divider,
+        // the shadow's toggle, opacity, blur and distance sliders and its angle dial
+        effects = window->contentView()->add<View>();
+        effects->setFrame({3, 0, 616, 34});
+        auto pictureButton = [&](const char *name, const Rect &r) {
+            auto *b = effects->add<PictureButton>();
+            b->normal = picture(name);
+            b->pressed = picture(std::string(name) + "Pressed");
+            b->setFrame(r);
+            return b;
+        };
+        auto icon = [&](const char *name, const Rect &r) {
+            auto *v = effects->add<ImageView>();
+            v->image = picture(name);
+            v->setFrame(r);
+        };
+        underline = pictureButton("NSFontPanelUnderlineEffect", {53, 2, 40, 22});
+        strike = pictureButton("NSFontPanelStrikeEffect", {99, 2, 40, 22});
+        auto *textColour = pictureButton("NSFontPanelTextColour", {145, 2, 40, 22});
+        auto *paperColour = pictureButton("NSFontPanelPaperColour", {191, 2, 40, 22});
+        textColour->enabled = paperColour->enabled = false;
+        icon("NSFontPanelEffectsDivider", {235, 1, 1, 23});
+        shadowToggle = pictureButton("NSFontPanelDropEffect", {240, 2, 40, 22});
+        icon("NSFontPanelOpacityEffect", {302, 3, 13, 9});
+        icon("NSFontPanelBlurEffect", {343, 0, 20, 14});
+        icon("NSFontPanelSpreadEffect", {394, 1, 11, 11});
+        auto slider = [&](double x, double lo, double hi, double v) {
+            auto *sl = effects->add<EffectsSlider>();
+            sl->minValue = lo;
+            sl->maxValue = hi;
+            sl->value = v;
+            sl->setFrame({x, 13, 41, 12});
+            return sl;
+        };
+        // -awakeFromNib (0x3aadd4): opacity 0…1 at ⅓, blur 0…10 (the nib's 50: its most), the
+        // distance 0.01…0.5 at 0.125 of the point size
+        opacity = slider(287, 0, 1, 1.0 / 3);
+        blur = slider(333, 0, 10, 10);
+        radius = slider(379, 0.01, 0.5, 0.125);
+        angle = effects->add<AngleDial>();
+        angle->setFrame({430, 3, 18, 20});
+        angleLabel = effects->add<Label>("", Font::system(11));
+        angleLabel->setFrame({453, 6, 35, 17});
+        auto *line = effects->add<Box>();
+        line->kind = Box::Separator;
+        line->setFrame({-3, 33, 622, 1});
+        showAngle();
+        underline->onPress = [p] { p->effectsMenu(p->underline, false); };
+        strike->onPress = [p] { p->effectsMenu(p->strike, true); };
+        // _toggleShadow: the toggle flipped, the shadow sent
+        shadowToggle->onPress = [p] {
+            p->shadowToggle->on = !p->shadowToggle->on;
+            p->sendShadow();
+        };
+        for (EffectsSlider *sl : {opacity, blur, radius})
+            sl->onChange = [p] {
+                if (p->shadowToggle->on)
+                    p->sendShadow();
+            };
+        angle->onChange = [p] {
+            p->showAngle();
+            if (p->shadowToggle->on)
+                p->sendShadow();
+        };
+        layoutEffects();
         window->onClose = [p] {
             if (p->timer) {
                 App::shared().removeTimer(p->timer);

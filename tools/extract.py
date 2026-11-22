@@ -460,6 +460,96 @@ def menu_apple(pkg, assets, tmp):
     shutil.rmtree(Path(tmp) / "System", ignore_errors=True)
 
 
+APPKIT_IMAGES = "/System/Library/Frameworks/AppKit.framework/Versions/C/Resources/Images"
+
+
+def png_bytes(w, h, rows):
+    """An RGBA PNG of rows of straight (not premultiplied) pixels."""
+    raw = b"".join(b"\0" + bytes(r) for r in rows)
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def appkit_images(pkg, assets, tmp, prefix=b"NSFontPanel"):
+    """AppKit's own pictures (+[NSImage imageNamed:]'s built-in ones): a table of 24-byte entries (the
+    name's address, its place in an atlas as y << 16 | x from the atlas's bottom left, its width and
+    height, the atlas's kind) and the atlases in their sections (kind 7: __fullcolor_alph, a 16-byte
+    header (width, height, ..., bytes per row) then premultiplied RGBA). The Font panel's, as PNGs."""
+    appkit = "./System/Library/Frameworks/AppKit.framework/Versions/C/AppKit"
+    unpack(pkg, [appkit], tmp)
+    binary = Path(tmp) / appkit
+    if not binary.exists():
+        return
+    data = macho_slice(binary.read_bytes())
+    shutil.rmtree(Path(tmp) / "System", ignore_errors=True)
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    o, segments, sections = 32, [], {}
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, o)
+        if cmd == 0x19:
+            vm, vs, fo, _fs = struct.unpack_from("<QQQQ", data, o + 24)
+            segments.append((vm, vs, fo))
+            for i in range(struct.unpack_from("<I", data, o + 64)[0]):
+                sct = o + 72 + 80 * i
+                sections[data[sct:sct + 16].rstrip(b"\0")] = struct.unpack_from("<QQI", data, sct + 32)
+        o += size
+
+    def offset(addr):
+        for vm, vs, fo in segments:
+            if vm <= addr < vm + vs:
+                return fo + addr - vm
+        return None
+
+    def name_at(addr):
+        at = offset(addr)
+        if at is None or at >= len(data):
+            return None
+        end = data.find(b"\0", at, at + 96)
+        name = data[at:end] if end > at else b""
+        return name if name and all(32 < c < 127 for c in name) else None
+
+    probe = data.find(b"\0NSFontPanelUnderlineEffect\0")
+    atlas = sections.get(b"__fullcolor_alph")
+    if probe < 0 or not atlas:
+        print("    AppKit: no built-in image table, the Font panel draws its own")
+        return
+    probe += 1
+    va = next((vm + probe - fo for vm, vs, fo in segments if fo <= probe < fo + vs), None)
+    entry = data.find(struct.pack("<Q", va))
+    while entry > 24 and name_at(struct.unpack_from("<Q", data, entry - 24)[0]):
+        entry -= 24
+    _addr, _size, aoff = atlas
+    aw, ah = struct.unpack_from(">HH", data, aoff)
+    bpr = struct.unpack_from(">H", data, aoff + 10)[0]
+    pixels = data[aoff + 16:aoff + 16 + bpr * ah]
+    out = assets / APPKIT_IMAGES.lstrip("/")
+    out.mkdir(parents=True, exist_ok=True)
+    while True:
+        name = name_at(struct.unpack_from("<Q", data, entry)[0])
+        if not name:
+            break
+        place, w, h, kind = struct.unpack_from("<IHHH", data, entry + 8)
+        entry += 24
+        if not name.startswith(prefix) or kind != 7:
+            continue
+        x, y = place & 0xFFFF, place >> 16
+        top = ah - y - h
+        rows = []
+        for r in range(h):
+            row = bytearray(pixels[(top + r) * bpr + x * 4:(top + r) * bpr + (x + w) * 4])
+            for i in range(0, len(row), 4):
+                a = row[i + 3]
+                if 0 < a < 255:
+                    for c in range(3):
+                        row[i + c] = min(255, row[i + c] * 255 // a)
+            rows.append(row)
+        (out / (name.decode() + ".png")).write_bytes(png_bytes(w, h, rows))
+
+
 SCREENCAPTURE_CROSSHAIR = "/usr/sbin/screencapture-crosshair.png"
 
 
@@ -715,6 +805,7 @@ def main():
             unpack(pkg, patterns, assets)
             if name == "BaseSystem.pkg":
                 menu_apple(pkg, assets, tmp)
+                appkit_images(pkg, assets, tmp)
                 cursor_theme(pkg, assets, tmp)
             if name == "Essentials.pkg":
                 screencapture_crosshair(pkg, assets, tmp)

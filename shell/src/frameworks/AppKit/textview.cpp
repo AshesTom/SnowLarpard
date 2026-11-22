@@ -668,6 +668,25 @@ void TextView::drawGlyphs(cairo_t *cr, double top, double bottom)
             const bool linked = !st.link.empty();
             const Color c = linked ? Color{0, 0, 1, 1} : st.coloured ? st.colour : Color::gray(0);
             const double y = baseline - rise(st);
+            // NSShadow first: black at its opacity, offset (y up), its blur spread as faint copies
+            if (st.shadow.on && st.shadow.alpha > 0) {
+                const double r = std::max(0.0, st.shadow.blur) / 2;
+                const int n = r < 0.5 ? 1 : 4;
+                double total = 0;
+                for (int i = -n + 1; i < n; ++i)
+                    for (int k = -n + 1; k < n; ++k)
+                        total += 1;
+                for (int i = -n + 1; i < n; ++i)
+                    for (int k = -n + 1; k < n; ++k) {
+                        const double ox = n > 1 ? r * i / (n - 1) : 0, oy = n > 1 ? r * k / (n - 1) : 0;
+                        cairo_new_path(cr);
+                        cairo_move_to(cr, x + st.shadow.dx + ox, y - st.shadow.dy + oy);
+                        pango_cairo_glyph_string_path(cr, run->item->analysis.font, run->glyphs);
+                        cairo_set_source_rgba(cr, 0, 0, 0, n > 1 ? std::min(1.0, st.shadow.alpha * 2.5 / total) : st.shadow.alpha);
+                        cairo_fill(cr);
+                    }
+            }
+            cairo_new_path(cr);
             cairo_move_to(cr, x, y);
             pango_cairo_glyph_string_path(cr, run->item->analysis.font, run->glyphs);
             c.set(cr);
@@ -679,11 +698,18 @@ void TextView::drawGlyphs(cairo_t *cr, double top, double bottom)
                     const double t = std::max(1.0, pango_font_metrics_get_underline_thickness(m) / double(PANGO_SCALE));
                     const double pos = pango_font_metrics_get_underline_position(m) / double(PANGO_SCALE);
                     fill(cr, Rect{x, std::round(y - pos), w, std::round(t)}, c);
+                    if (st.underline == 2)   // NSUnderlineStyleDouble: a second line under it
+                        fill(cr, Rect{x, std::round(y - pos) + 2 * std::round(t), w, std::round(t)}, c);
                 }
                 if (st.strike) {
                     const double t = std::max(1.0, pango_font_metrics_get_strikethrough_thickness(m) / double(PANGO_SCALE));
                     const double pos = pango_font_metrics_get_strikethrough_position(m) / double(PANGO_SCALE);
-                    fill(cr, Rect{x, std::round(y - pos), w, std::round(t)}, c);
+                    if (st.strike == 2) {
+                        fill(cr, Rect{x, std::round(y - pos) - std::round(t), w, std::round(t)}, c);
+                        fill(cr, Rect{x, std::round(y - pos) + std::round(t), w, std::round(t)}, c);
+                    } else {
+                        fill(cr, Rect{x, std::round(y - pos), w, std::round(t)}, c);
+                    }
                 }
                 pango_font_metrics_unref(m);
             }
