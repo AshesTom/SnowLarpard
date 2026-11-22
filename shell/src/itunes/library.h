@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -66,6 +67,16 @@ public:
     std::string file() const;           // ~/Music/iTunes/iTunes Music Library.xml
     bool load();
     bool save() const;
+    // The library's plist at `path`: only the songs in `songs` and the playlists in `lists` (indexes)
+    // when given (File ▸ Library ▸ Export Playlist… as XML, FUN_000ab536 formats 3 and 6)
+    bool saveTo(const std::string &path, const std::set<int> *songs, const std::vector<size_t> *lists) const;
+    // Export Playlist… as text (FUN_000aa206): a header of STR# 132's columns, then a row a song,
+    // tab-separated; Unicode (format 2) UTF-16 with its BOM, else the Mac's encoding (1, Plain Text)
+    bool exportText(const std::string &path, const std::vector<int> &ids, bool unicode) const;
+    // Import Playlist… (FUN_000fc1d6 by the extension: pls 4, m3u 8, m3u8 0x80000; XML or text
+    // else): the songs it names, added to the library when new; `lists` its XML's playlists (name,
+    // songs) or one named by the file
+    bool importPlaylist(const std::string &path, std::vector<std::pair<std::string, std::vector<int>>> &lists);
 
     // Files and folders (their audio files, recursively) added: the tracks new to the library
     int add(const std::vector<std::string> &paths);

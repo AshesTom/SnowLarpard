@@ -2732,6 +2732,73 @@ private:
         }
         return false;
     }
+    // File ▸ Library ▸ Export Playlist… (expr: FUN_000a8ef2's panel, STR# 149's types: Plain Text,
+    // Unicode Text, XML; OPML for a podcast list) and Export Library… (expl: XML). The panel the
+    // desktop's: the type by the name's extension, .xml XML, else Unicode Text
+    void exportPlaylist(bool library)
+    {
+        const int tag = library ? -1 : selectedPlaylist();
+        const Playlist *p = tag >= 0 && size_t(tag) < m_library.playlists().size() ? &m_library.playlists()[size_t(tag)] : nullptr;
+        const std::string name = library ? "Library" : p ? p->name : tr("9000.036");
+        std::vector<FileFilter> filters;
+        if (!library)
+            filters.push_back({tr("149.002"), {"*.txt"}});
+        filters.push_back({tr("149.003"), {"*.xml"}});
+        const std::string title = library ? "Export Library" : "Export";
+        SavePanel::run(title, Library::musicFolder() + "/" + name + (library ? ".xml" : ".txt"), filters,
+                       [this, library, tag, p](std::string path) {
+                           if (path.empty())
+                               return;
+                           const bool xml = path.size() > 4 && lower(path.substr(path.size() - 4)) == ".xml";
+                           std::vector<int> ids;
+                           if (p)
+                               ids = p->folder ? m_library.folderItems(*p) : p->smart && p->info.live ? m_library.evaluate(p->info) : p->items;
+                           else
+                               for (const auto &[id, t] : m_library.tracks())
+                                   ids.push_back(id);
+                           if (xml && library) {
+                               m_library.saveTo(path, nullptr, nullptr);
+                           } else if (xml) {
+                               // the playlist's songs and the playlist alone (the master for the library)
+                               std::set<int> songs(ids.begin(), ids.end());
+                               std::vector<size_t> lists;
+                               for (size_t i = 0; i < m_library.playlists().size(); ++i)
+                                   if (int(i) == tag || (tag < 0 && m_library.playlists()[i].master))
+                                       lists.push_back(i);
+                               m_library.saveTo(path, &songs, &lists);
+                           } else {
+                               m_library.exportText(path, ids, true);
+                           }
+                       });
+    }
+    // File ▸ Library ▸ Import Playlist… (impt: FUN_000a9198's panel titled STR# 149.005 "Import"): a
+    // playlist made of each list the file has (its name the file's, or its XML's playlists')
+    void importPlaylist()
+    {
+        OpenPanel::run(tr("149.005"), Library::musicFolder(),
+                       {{"Playlists", {"*.xml", "*.txt", "*.m3u", "*.m3u8", "*.pls"}}}, false, [this](std::vector<std::string> files) {
+                           if (files.empty())
+                               return;
+                           std::vector<std::pair<std::string, std::vector<int>>> lists;
+                           if (!m_library.importPlaylist(files.front(), lists))
+                               return;
+                           int last = -1;
+                           for (auto &[name, songs] : lists) {
+                               Playlist p;
+                               p.name = name.empty() ? untitled("9000.001", "9000.002") : name;
+                               p.items = songs;
+                               p.persistentId = Library::newPersistentId();
+                               m_library.playlists().push_back(p);
+                               last = int(m_library.playlists().size()) - 1;
+                           }
+                           m_library.save();
+                           rebuildSources();
+                           for (size_t i = 0; i < m_sources->rows.size(); ++i)
+                               if (m_sources->rows[i].tag == last)
+                                   m_sources->select(int(i), true);
+                           layout();
+                       });
+    }
     // Where a new playlist or folder goes (FUN_0013c60c, FUN_0014ec46's nfld): in the folder chosen,
     // beside the playlist chosen (in its folder), else at the top
     std::string newParent()
@@ -3198,8 +3265,10 @@ private:
                 v.title = tr("kMenuItemShowAll");
             return !eleven() && !m_store8;
         }
-        if (a == "nspl" || a == "nfld")
+        if (a == "nspl" || a == "nfld" || a == "impt" || a == "expl")
             return !eleven();
+        if (a == "expr")   // Export Playlist…: the source chosen (the library or a playlist)
+            return !eleven() && !m_store8;
         if (a == "full")
             return !eleven() && ((m_visualizer && m_visualizerShown) || m_viewMode == 2);
         if (a == "VisM") {   // View ▸ Visualizer ▸ iTunes Visualizer: the one there is
@@ -3343,6 +3412,12 @@ private:
             newSmartPlaylist();
         else if (a == "nfld")
             newFolder();
+        else if (a == "expr")
+            exportPlaylist(false);
+        else if (a == "expl")
+            exportPlaylist(true);
+        else if (a == "impt")
+            importPlaylist();
         else if (a == "VOpt")
             showViewOptions();
         else if (a == "vtog")
