@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -831,6 +831,22 @@ bundle SystemUIServer loads.
 | `-switchToUser:` → `-switchToUserThread:`: the user's session, or the login window asking for them | | Done (dm-tool, GDM, the DisplayManager seat's SwitchToUser) |
 | The guest account, network users (Open Directory's search node), Family Controls | | Not ported |
 
+## 27. The Displays menu extra
+
+Displays.menu 2.2, x86_64, read with REA. Port: [`displays.cpp`](../shell/src/menuextras/Displays/displays.cpp),
+an AquaKit bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| `-initWithBundle:`: display.pdf as a template; the menu made again on `NSApplicationDidChangeScreenParametersNotification` and `com.apple.preference.displays2` | `initWithBundle:` | Done (made each time it opens) |
+| `-createMenu`: Detect Displays (`_DoWeHaveDisplayDetection`), Turn On / Off Mirroring (`CGSDisplayStatusQuery` 7; more than one display, mirroring not forced), a line; a display's name, disabled, then its modes, a line between displays; a line; Number of Recent Items (0, 3, 5, 10, checked), Displays Preferences… | `createMenu` | Done (RandR through xrandr; Detect Displays as `xrandr --auto`) |
+| The names: `_CopyDisplayName` (IODisplay's DisplayProductName in the user's language); two alike: `-nameDupeDisplays`, "Main Display" for the main one, "Display %d" from 2 | `findDisplayNames`, `nameDupeDisplays` | Done (the EDID's monitor name, "Color LCD" for a built-in panel without one, else the connector) |
+| The modes: `numberOfRecentModes` (com.apple.preference.displays2, current user and host; unset: 3); `_GetRecentModes` (the display's `recentModeDescriptions`), `_MakeSureOurModeIsAccountedFor` (the current one, in the last place when full), `_AddDefaultModes` (safe modes in millions of colours, the largest by width + height); sorted (FUN_00001118): television modes last, then width, height, refresh rate, stretched, simulscan; tagged mode + 1 with the display's index << 20; the current one checked (`-updateMenuState`) | | Done (displays2.conf; the recent modes the ones chosen in this menu: the Displays pane doesn't keep them yet) |
+| `-timingString:forDisplayID:`: "%d × %d, %d Hz" (refresh in 16.16, "%.1f Hz" when not whole), "%d × %d" for a display without rates; interlaced, stretched, simulscan, external and the television names (480i… 1080p, PAL); `-modeString:` adds the depth for fewer than millions of colours | | Done (built-in panels and 0 Hz modes without a rate; interlaced; the others have no RandR counterpart) |
+| `-_displayMenuHit:`: `CGSConfigureDisplayMode`; a mode not flagged safe (bit 2) asks to be kept: `-handleConfirmationAlert`, DisplaysMenu.nib's panel titled with the display's name at `CGWindowLevelForKey(10)`, "Will automatically revert in %d seconds." from 15, the old mode back on Cancel or time out | `_displayMenuHit:`, `handleConfirmationAlert`, `timeOut:` | Done for the change (`xrandr --mode --rate`); the confirmation not needed: RandR's modes are the EDID's |
+| `-_mirrorMenuHit:`: `MirrorAllDisplays` / `UnmirrorAllDisplays` | | Done (`--same-as` the main display; off: side by side) |
+| Checked in Xvfb (one output, no EDID); X11 only (on the Wayland window server, RandR is Xwayland's) | | Partial |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
@@ -841,7 +857,7 @@ bundle SystemUIServer loads.
   `TIMPrivate -recreateMenu` builds the sources (icon, name, `activate:`), then Show / Hide Input
   Source Name (ModeNameVisible in com.apple.menuextra.textinput, tag -3), Open Keyboard… (tag -2,
   with a palette), Open Language & Text… (tag -2); the layouts' icons are packed in
-  AppleKeyboardLayouts-L.dat, a format to read first), Displays, Spaces,
+  AppleKeyboardLayouts-L.dat, a format to read first), Spaces,
   Time Machine, Universal Access, Script Menu, PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
 - SystemUIServer: the other can-load methods (`_textInputCanLoad`...), Command-drag's
