@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -814,6 +814,23 @@ AquaKit bundle SystemUIServer loads.
 | SystemUIServer's `_ejectCanLoad`: two optical drives not internal, or a keyboard with the F12 eject key | SystemUIServer 10.6.8 | Done (drives on USB or FireWire; an Apple keyboard, vendor 05AC); otherwise in the bar when the user adds it (menuExtras) |
 | Checked with no optical drive here ("No Drives"); the drives' path not tried on a machine with one | | Partial |
 
+## 26. The User menu extra (fast user switching)
+
+User.menu 4.0, x86_64, read with REA. Port: [`user.cpp`](../shell/src/menuextras/User/user.cpp), an AquaKit
+bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| SystemUIServer's `_userCanLoad`: MultipleSessionEnabled in the global domain | SystemUIServer 10.6.8; `-isMenuExtraEnabledForMachine` | Done (appearance.conf, the global domain here; Accounts' Login Options aren't ported yet, so it is set by hand or the extra added to menuExtras) |
+| The bar: `-titleDisplayType` (userMenuExtraStyle, any application's: 0 full name, the default, 1 short name, 2 picture; anything else 2) → `-setMenuBarTitleOrPicture`; UserSwitcherView's text cell in the bold system font of 14, centred, `NSLineBreakByTruncatingMiddle`, drawn a point down; the picture UserSwitcher.pdf as a template | `-setMenuBarTitleOrPicture`, `-titleDisplayType`, `UserSwitcherView -textCell`, `-drawRect:` | Done |
+| `-updateSize`: the picture's or the text's width + 2 + 2, between 22 and 160, given to the extra (`setLength:`) | `UserSwitcherView -updateSize` | Done |
+| `-createMenu:`: the users' items, or "Building user list" disabled; a line; "Login Window…" (`logOut:`: `CGSCreateLoginSession`, the login window over the session); a line; "Account Preferences…" (`openAccounts:`, Accounts.prefPane) | `AppleUser(Menu) -createMenu:` | Done (the display manager's greeter: dm-tool, GDM, the DisplayManager seat, else the screen locked) |
+| `-updateMenu:withUserList:`: a USMenuItem a user, sorted by full name, the name cut to 320 points, `switchToUser:` | | Done (/etc/passwd's accounts that log in) |
+| USMenuItem from MenuItem.nib, laid out by `-awakeFromNib`: the view 360 x 38, the mark at (4, 11), the picture 36 x 36 at (24, 1), the name (menu font 14) at (61, 16) 278 x 18, the status 281 x 14 at (61, 3); `-setStatus:` without a status: the name centred down the view; the view leaves the events to the menu (`_setViewHandlesEvents:NO`) | `USMenuItem -awakeFromNib`, `-setStatus:` | Done: AquaKit's MenuItem `drawItem` (drawn over the menu's own highlight) |
+| `-updateMenuItemStatus:forUser:loginAllowed:`: the user's picture; the current user's item disabled (`-setEnabled:`: the pictures' disabledImage, the name in disabledControlTextColor); the state: logged in elsewhere (`isSuspended`: greenmarker.tiff) when the user may log in, else mixed (noentry) with "Can’t log in right now" / "Can log in at %@" (Parental Controls' curfews, five seconds added) | | Done (logind's sessions; no curfews on Linux; disabledImage as half alpha, by eye) |
+| `-switchToUser:` → `-switchToUserThread:`: the user's session, or the login window asking for them | | Done (dm-tool, GDM, the DisplayManager seat's SwitchToUser) |
+| The guest account, network users (Open Directory's search node), Family Controls | | Not ported |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
@@ -824,10 +841,10 @@ AquaKit bundle SystemUIServer loads.
   `TIMPrivate -recreateMenu` builds the sources (icon, name, `activate:`), then Show / Hide Input
   Source Name (ModeNameVisible in com.apple.menuextra.textinput, tag -3), Open Keyboard… (tag -2,
   with a palette), Open Language & Text… (tag -2); the layouts' icons are packed in
-  AppleKeyboardLayouts-L.dat, a format to read first), User (fast user switching), Displays, Spaces,
+  AppleKeyboardLayouts-L.dat, a format to read first), Displays, Spaces,
   Time Machine, Universal Access, Script Menu, PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
-- SystemUIServer: the other can-load methods (`_userCanLoad`, `_textInputCanLoad`...), Command-drag's
+- SystemUIServer: the other can-load methods (`_textInputCanLoad`...), Command-drag's
   insertion animation and poof, Control-F8 (section 19).
 - The protected daemons, decrypted now: backupd (Time Machine's backups), mds (Spotlight's index:
   its MIG interface, for Spotlight's menu beyond the applications).

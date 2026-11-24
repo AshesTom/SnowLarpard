@@ -138,6 +138,10 @@ struct MenuItem {
     // -[NSMenuItem setView:]: a view made each time the menu opens, as wide as the menu, viewHeight high
     std::function<View *(double width)> makeView;
     double viewHeight = 0, viewWidth = 0;
+    // A view that leaves the events to the menu ([NSMenuItem _setViewHandlesEvents:NO]): the item
+    // tracked, highlighted and chosen as the others, drawn by this over the highlight, viewHeight high
+    // and at least viewWidth wide
+    std::function<void(cairo_t *cr, const Rect &row, bool highlighted)> drawItem;
 };
 class Menu {
 public:

@@ -364,6 +364,13 @@ public:
             }
             if (items[i].makeView)
                 continue;   // its view draws it
+            if (items[i].drawItem) {
+                const Rect row{0, top, frame().w, Menu::itemHeight(items[i])};
+                if (int(i) == highlighted)
+                    CoreUI::menuSelection(cr, row);
+                items[i].drawItem(cr, row, int(i) == highlighted);
+                continue;
+            }
             const Rect row{0, top, frame().w, Menu::ItemHeight};
             const bool hi = int(i) == highlighted;
             if (hi)
@@ -617,7 +624,7 @@ Size menuSize(const std::vector<MenuItem> &items, double minWidth, const Font &f
     double w = minWidth;
     for (const MenuItem &i : items) {
         w = std::max(w, i.viewWidth);
-        if (i.separator || i.makeView)
+        if (i.separator || i.makeView || i.drawItem)
             continue;
         double title = textWidth(i.title, font);
         if (!i.swatches.empty())
@@ -771,7 +778,7 @@ void MenuView::finish(int index)
 
 double Menu::itemHeight(const MenuItem &item)
 {
-    if (item.makeView)
+    if (item.makeView || item.drawItem)
         return item.viewHeight;
     return item.separator ? SeparatorHeight : !item.swatches.empty() ? SwatchRowHeight : ItemHeight;
 }

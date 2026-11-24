@@ -87,7 +87,9 @@ bool canLoad(const std::string &method)
                 return true;
         return false;
     }
-    // _userCanLoad (fast user switching), _textInputCanLoad, _pppCanLoad,
+    if (method == "_userCanLoad")   // fast user switching: MultipleSessionEnabled (the global domain's)
+        return Settings("appearance").boolean("MultipleSessionEnabled", false);
+    // _textInputCanLoad, _pppCanLoad,
     // _pppoeCanLoad, _remoteDesktopCanLoad, _timeMachineCanLoad: off by default on 10.6
     return false;
 }
