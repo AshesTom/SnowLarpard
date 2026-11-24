@@ -16,8 +16,17 @@ with ImageMagick.
 
 ## 0. What can be read
 
+Every Mach-O of BaseSystem, Essentials, AdditionalEssentials, BSD and X11User (the whole installed
+system, 4.6 GB unpacked) was scanned for a `__TEXT` flagged `SG_PROTECTED_VERSION_1`: seven binaries
+have one, and `tools/deprotect.py` decrypts all seven (their x86_64 slices). Everything else on the
+DVD is in the clear.
+
 | Binary | `__TEXT` | Notes |
 |---|---|---|
+| loginwindow (6.0) | protected (`SG_PROTECTED_VERSION_1`, Intel slices; PowerPC in the clear) | decrypted (x86_64, 117 pages); About This Mac and Log Out reversed (section 12) |
+| backupd (Time Machine's engine, /System/Library/CoreServices) | protected (`SG_PROTECTED_VERSION_1`, all three slices' Intel ones) | decrypted (x86_64, 82 pages); Time Machine not ported: nothing reversed yet |
+| mds (Spotlight's metadata server, Metadata.framework/Support) | protected (`SG_PROTECTED_VERSION_1`) | decrypted (x86_64, 202 pages); its MIG interface (CopyStoreInformation, CloseAsyncQuery, CopyImporterInformation…) for Spotlight's index, not reversed yet |
+| fontd (ATS.framework/Support) | protected (`SG_PROTECTED_VERSION_1`) | decrypted (x86_64, one page): `main` only calls `ATSServerMain` in libATSServer, which is in the clear; nothing of its own to reverse |
 | Dock | protected (`SG_PROTECTED_VERSION_1`, both slices) | decrypted for analysis with `tools/deprotect.py` (x86_64 slice, 365 pages); reversed below (section 4, minimizing) |
 | Finder | protected (`SG_PROTECTED_VERSION_1`, both slices) | decrypted for analysis with `tools/deprotect.py` (x86_64 slice); its menus, contextual menu and commands reversed (section 13) |
 | SystemUIServer | protected (`SG_PROTECTED_VERSION_1`, both slices) | decrypted for analysis with `tools/deprotect.py` (10.6.8's x86_64 slice, 103 pages); its menu extras' host reversed (section 19) |
