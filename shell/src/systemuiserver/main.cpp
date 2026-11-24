@@ -19,23 +19,33 @@
 #include <clocale>
 #include <cstdio>
 #include <dlfcn.h>
+#include <map>
 
 using namespace AK;
 
 namespace {
 
-// -[NSBundle load] for a .menu bundle beside SystemUIServer.app: its library registers its class
-void loadBundleCode(const std::string &bundle)
+// -[NSBundle load] for a .menu bundle beside SystemUIServer.app: its library registers its classes.
+// -[NSBundle principalClass]: the class NSPrincipalClass names, else the bundle's first class (Eject.menu's
+// Info.plist names ProcessExtra, its code's class is EjectExtra); its name, empty when none
+std::string loadBundleCode(const std::string &bundle)
 {
     static const std::string coreServices = "/System/Library/CoreServices/";
     if (bundle.rfind(coreServices, 0) != 0)
-        return;
+        return {};
     const std::string rel = bundle.substr(coreServices.size());
     const std::string library = LaunchServices::appsDir() + "/" + rel + "/Contents/MacOS/" + baseName(bundle);
     if (!isFile(library))
-        return;
-    if (!dlopen(library.c_str(), RTLD_NOW | RTLD_GLOBAL))
+        return {};
+    static std::map<std::string, std::string> first;   // loaded once: its first class kept
+    if (auto it = first.find(bundle); it != first.end())
+        return it->second;
+    const size_t before = SystemUI::classCount();
+    if (!dlopen(library.c_str(), RTLD_NOW | RTLD_GLOBAL)) {
         std::fprintf(stderr, "SystemUIServer: %s: %s\n", bundle.c_str(), dlerror());
+        return {};
+    }
+    return first[bundle] = SystemUI::classRegisteredAt(before);
 }
 
 } // namespace
@@ -78,9 +88,14 @@ int main()
             const std::string cls = Assets::plistStrings(bundle + "/Contents/Info.plist")["NSPrincipalClass"];
             if (!Startup::canLoadClass(cls))
                 continue;
-            if (!SystemUI::classNamed(cls))
-                loadBundleCode(bundle);
-            if (SystemUI::Factory make = SystemUI::classNamed(cls))
+            SystemUI::Factory make = SystemUI::classNamed(cls);
+            if (!make) {
+                const std::string first = loadBundleCode(bundle);
+                make = SystemUI::classNamed(cls);
+                if (!make && !first.empty())
+                    make = SystemUI::classNamed(first);
+            }
+            if (make)
                 toolbar->insertItem(make(bundle), index++);
         }
         if (!spotlight) {

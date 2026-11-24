@@ -125,6 +125,9 @@ constexpr double MenuBarHeight = 22;
 using Factory = std::function<MenuExtra *(const std::string &bundle)>;
 void registerClass(const std::string &name, Factory make);
 Factory classNamed(const std::string &name);
+// the classes in the order they registered: a bundle's are those registered while its library loaded
+size_t classCount();
+std::string classRegisteredAt(size_t index);
 
 } // namespace SystemUI
 

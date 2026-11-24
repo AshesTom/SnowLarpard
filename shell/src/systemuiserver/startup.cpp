@@ -3,6 +3,8 @@
 
 #include "foundation.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <dirent.h>
 #include <fstream>
@@ -66,7 +68,26 @@ bool canLoad(const std::string &method)
     }
     if (method == "_bluetoothCanLoad")   // an IOBluetoothHCIController
         return !entries("/sys/class/bluetooth").empty();
-    // _userCanLoad (fast user switching), _textInputCanLoad, _ejectCanLoad, _pppCanLoad,
+    if (method == "_ejectCanLoad") {
+        // two optical drives not internal (the DVD drives on USB or FireWire), or a keyboard with
+        // F12 as its eject key (HIDKeyboardSupportsF12Eject: Apple's, vendor 05AC)
+        int external = 0;
+        for (const std::string &n : entries("/sys/class/block")) {
+            if (fileName(n).rfind("sr", 0) != 0)
+                continue;
+            char real[4096];
+            const ssize_t len = readlink(n.c_str(), real, sizeof real - 1);
+            const std::string path = len > 0 ? std::string(real, size_t(len)) : std::string();
+            external += path.find("/usb") != std::string::npos || path.find("/firewire") != std::string::npos;
+        }
+        if (external >= 2)
+            return true;
+        for (const std::string &h : entries("/sys/bus/hid/devices"))
+            if (fileName(h).find(":05AC:") != std::string::npos)
+                return true;
+        return false;
+    }
+    // _userCanLoad (fast user switching), _textInputCanLoad, _pppCanLoad,
     // _pppoeCanLoad, _remoteDesktopCanLoad, _timeMachineCanLoad: off by default on 10.6
     return false;
 }

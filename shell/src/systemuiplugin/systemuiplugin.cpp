@@ -216,9 +216,23 @@ static std::map<std::string, Factory> &classes()
     return c;
 }
 
+static std::vector<std::string> &registrationOrder()
+{
+    static std::vector<std::string> order;
+    return order;
+}
+
 void registerClass(const std::string &name, Factory make)
 {
     classes()[name] = std::move(make);
+    registrationOrder().push_back(name);
+}
+
+size_t classCount() { return registrationOrder().size(); }
+
+std::string classRegisteredAt(size_t index)
+{
+    return index < registrationOrder().size() ? registrationOrder()[index] : std::string();
 }
 
 Factory classNamed(const std::string &name)

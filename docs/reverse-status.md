@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -797,6 +797,22 @@ CoreUI 1.0's x86_64 slice and the Appearance pane's code (Appearance.prefPane's 
 | Highlight Color: highlightColors.plist's pairs in the file's order (Graphite, Silver, Blue, Gold, Red, Orange, Green, Purple, Other...), names through Localizable.strings, each item a 24 x 12 swatch (the colour, a frame 2 wide in black at 0.1); the one equal to AppleHighlightColor selected, else the last given that colour; Other... opens the colour panel from AppleOtherHighlightColor (`-applyColorClicked:`); a choice written as "%f %f %f" (`_rgbStringFromColor`) | `-populatePopUp:fromColorListFile:`, `+namedColorsFromFile:bundle:`, `-addNamedColor:toPopUp:`, `-selectColor:inPopUp:`, `-newHighlightColor:` 0x2b01 | Done (extract.py takes highlightColors.plist) |
 | NSPopUpButtonCell: the item's image before its title | AppKit | Done (the gap of 5 points by eye) |
 | WindowServer's title bars redrawn at once on a change | | Partial: on their next redraw (focus, a move) |
+
+## 25. The Eject menu extra
+
+Eject.menu 2.0.2 (213), x86_64, read with REA. Port: [`eject.cpp`](../shell/src/menuextras/Eject/eject.cpp), an
+AquaKit bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| Its Info.plist names `ProcessExtra` as the principal class (one of the 36 SystemUIServer allows); the code's only class is `EjectExtra`: `-[NSBundle principalClass]` falls back on the bundle's first class | the bundle | Done: SystemUIServer's loader does the same (the class a bundle's library registers first) |
+| `-initWithBundle:`: Eject.pdf as a template image; an empty menu, its delegate the extra (`menuIsDirty`, `firstMenuClick`) | `initWithBundle:` 0x1e68 | Done |
+| `-menuNeedsUpdate:`: "No Drives" alone without a drive; else an item a drive, the internal ones (DRDevicePhysicalInterconnectLocationInternal) first; the key equivalent F12 or the eject key (HIDKeyboardSupportsF12Eject) | `menuNeedsUpdate:` | Done (the key equivalent left out) |
+| `-validateMenuItem:`: media in the drive "Eject" (tag 3), the tray open and closable "Close" (2), else "Open" (1); the title "%1$@ %2$@" (action, drive), "%1$@ %2$@ %3$@" with Upper / Lower / Left / Right for two internal drives | `validateMenuItem:` | Done (the drives' places as Upper then Lower: DRDevice's LocationDescription has no Linux counterpart) |
+| `-formattedDeviceName:`: SuperDrive (writes DVD), Combo Drive (writes CD, reads DVD), CD-R/RW Drive, DVD-RAM; else the drive's display name, else "Unknown Drive" | `formattedDeviceName:` | Done (/proc/sys/dev/cdrom/info, the drive's vendor and model) |
+| `-deviceMenuPicked:`: tag 2 `closeTray`, 3 `ejectMedia`, else `openTray`, on a thread | `deviceMenuPicked:` | Done (eject(1), udisks unmounting first) |
+| SystemUIServer's `_ejectCanLoad`: two optical drives not internal, or a keyboard with the F12 eject key | SystemUIServer 10.6.8 | Done (drives on USB or FireWire; an Apple keyboard, vendor 05AC); otherwise in the bar when the user adds it (menuExtras) |
+| Checked with no optical drive here ("No Drives"); the drives' path not tried on a machine with one | | Partial |
 
 ## Next
 
