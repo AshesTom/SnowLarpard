@@ -379,6 +379,12 @@ menu_extra(ScriptMenu src/menuextras/ScriptMenu/scriptmenu.cpp)
 target_link_libraries(ScriptMenuMenu PRIVATE "$<COMPILE_ONLY:CoreServices>")
 set_target_properties(ScriptMenuMenu PROPERTIES OUTPUT_NAME "Script Menu"
                       LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Menu Extras/Script Menu.menu/Contents/MacOS")
+# PPP, PPPoE and VPN: NetworkMenusCommon.framework's AppleNetworkMenuExtra compiled into each
+foreach(extra IN ITEMS VPN PPP PPPoE)
+    string(TOLOWER ${extra} file)
+    menu_extra(${extra} src/menuextras/${extra}/${file}.cpp src/menuextras/NetworkMenusCommon/networkmenu.cpp)
+    target_include_directories(${extra}Menu PRIVATE src/menuextras/NetworkMenusCommon)
+endforeach()
 
 # Apple80211.framework's ClientDialogs.bundle: AirPort's panels from its nibs, on AquaKit; the AirPort
 # menu extra starts it
@@ -487,7 +493,7 @@ foreach(app IN ITEMS Preview Mail PhotoBooth)
         component_info(${dir} "${bundle}.app/Contents")
     endif()
 endforeach()
-foreach(extra IN ITEMS Clock Battery Volume AirPort Bluetooth Eject User Displays TextInput Spaces TimeMachine UniversalAccess)
+foreach(extra IN ITEMS Clock Battery Volume AirPort Bluetooth Eject User Displays TextInput Spaces TimeMachine UniversalAccess VPN PPP PPPoE)
     component_info(menuextras/${extra} "Menu Extras/${extra}.menu/Contents")
 endforeach()
 component_info(menuextras/ScriptMenu "Menu Extras/Script Menu.menu/Contents")
