@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29), TimeMachine (section 31), UniversalAccess (section 32), Script Menu (section 33), PPP, PPPoE and VPN on NetworkMenusCommon (section 34), ExpressCard (section 35); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29), TimeMachine (section 31), UniversalAccess (section 32), Script Menu (section 33), PPP, PPPoE and VPN on NetworkMenusCommon (section 34), ExpressCard (section 35), WWAN (section 36); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | NSMenuExtra, NSMenuExtraView (section 19), NSMenuExtraAnimationView's text (section 32); DockExtra and the image animation to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -975,13 +975,25 @@ SystemUIServer loads; `-[NSMenuExtra unload]` in [`systemuiplugin.h`](../shell/s
 | `-getCardDescriptionWithClassCode:`: "ClassCode%02x%02x%02x", then "ClassCode%02x%02x", then "ClassCode%02x" in Localizable.strings, else "Unknown Card Type" | 0x1412 | Done |
 | `-menu`: each card (the bridges only if nothing else is there), a line between them: its two lines disabled, "Power off Card" (`_powerOffMenuHit:` → `ExpressCardPowerOffCard`) | `menu` 0x18a3, 0x1b50 | Done (the slot's power file, through pkexec when it needs root); not tried with a card here |
 
+## 36. The WWAN menu extra
+
+WWAN.menu 2.0 (AppleWWANExtra, WWANExtraView, WWANSIMController, AboutVerizonController), x86_64, read
+with REA; its strings are in the binary (no Localizable.strings). Port: [`wwan.cpp`](../shell/src/menuextras/WWAN/wwan.cpp),
+an AquaKit bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| `-initWithBundle:`: the view 22 × 16; the WWAN services (IOKit notifications); none and the extra is released; `-loadImages`: not connected Off, 0Disc…5Disc, connected Off, 0…5 (WWANSignal5Bars*.pdf) | `initWithBundle:` 0x1fdb, `loadImages` 0x1970 | Done (ModemManager's modems, read every five seconds; the extra unloads without one) |
+| `-updateImage`: NoSim for "NO SIM" or "LOCKED", 5Disc while initializing, else `-convertRSSIToNBars:` (≥ −77 dBm 5, ≥ −86 4, ≥ −92 3, ≥ −101 2, ≥ −108 1, else 0; no service or no reading: Off) among the connected or disconnected pictures | `updateImage` 0x171c, `convertRSSIToNBars:` 0x16af | Done (the RSSI from ModemManager's quality on the CSQ scale) |
+| `-menu`: Option's "RSSI: %d dBm"; GSM without SIM "No SIM" alone; a locked SIM "SIM PIN Locked", "Unlock SIM" (`handleSIMLocking:`, SIMPanel.nib's PIN); "Initializing…" alone; else "<network> <2G, 2.5G or 3G by the service state>: Connected" (": Disconnected", ": Connecting…", ": Disconnecting…", ": Not Configured"; "Unknown" without a name) disabled, "Turn WWAN Off" (`turnCardOff:`, POWER_STATE OFF); a line, Connect / Disconnect (`pppConnect`, `pppDisconnect`), Connecting / Disconnecting; a line, "About WWAN…", "Open Network Preferences…"; more than one modem: a line and one item each (`setActiveDevice:`) | `menu` 0x2504, `addMenuItem:title:action:enabled:tag:state:image:` 0x1c73 | Done: the connection is NetworkManager's mobile broadband one, Turn WWAN Off its WWAN radio (nmcli); checked in Xvfb over stand-in mmcli and nmcli. Unlock SIM opens the Network preferences (SIMPanel's PIN sheet not ported); About WWAN… an alert of the modem's identity (AboutBox.nib's panel not ported); LTE and 5G show no generation (10.6 knew up to 3G) |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
 - The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject,
-  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu, PPP, PPPoE, VPN, ExpressCard: sections 25 to 29, 31 to 35). Left: WWAN, iChat, Ink, IrDA,
+  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu, PPP, PPPoE, VPN, ExpressCard, WWAN: sections 25 to 29, 31 to 36). Left: iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
 - SystemUIServer: Command-drag's insertion animation and poof, Control-F8 (section 19).
 - The protected daemons, decrypted now: backupd (Time Machine's backups), mds (Spotlight's index:

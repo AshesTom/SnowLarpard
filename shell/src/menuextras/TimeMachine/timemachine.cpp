@@ -183,12 +183,12 @@ public:
             MenuItem enter{tr("Enter Time Machine")};
             enter.action = [] { enterTimeMachine(false); };
             // Browse Other Time Machine Disks: its alternate with Option (setAlternate:, 0x80000)
-            if (modifierFlags() & 0x80000) {
+            if (modifierFlags() & Option) {
                 enter = MenuItem{tr("Browse Other Time Machine Disks")};
                 enter.action = [] { enterTimeMachine(true); };
             }
             m.push_back(enter);
-        } else if (modifierFlags() & 0x80000) {
+        } else if (modifierFlags() & Option) {
             // not configured: no longer an alternate, shown on its own with Option
             MenuItem browse{tr("Browse Other Time Machine Disks")};
             browse.action = [] { enterTimeMachine(true); };
