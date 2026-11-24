@@ -367,6 +367,7 @@ menu_extra(Bluetooth src/menuextras/Bluetooth/bluetooth.cpp src/menuextras/Bluet
 menu_extra(Eject src/menuextras/Eject/eject.cpp)
 menu_extra(User src/menuextras/User/user.cpp)
 menu_extra(Displays src/menuextras/Displays/displays.cpp)
+menu_extra(TextInput src/menuextras/TextInput/textinput.cpp)
 
 # Apple80211.framework's ClientDialogs.bundle: AirPort's panels from its nibs, on AquaKit; the AirPort
 # menu extra starts it
@@ -475,7 +476,7 @@ foreach(app IN ITEMS Preview Mail PhotoBooth)
         component_info(${dir} "${bundle}.app/Contents")
     endif()
 endforeach()
-foreach(extra IN ITEMS Clock Battery Volume AirPort Bluetooth Eject User Displays)
+foreach(extra IN ITEMS Clock Battery Volume AirPort Bluetooth Eject User Displays TextInput)
     component_info(menuextras/${extra} "Menu Extras/${extra}.menu/Contents")
 endforeach()
 component_info(systemuiplugin "PrivateFrameworks/SystemUIPlugin.framework/Resources")

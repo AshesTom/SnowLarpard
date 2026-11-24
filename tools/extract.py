@@ -35,6 +35,11 @@ PACKAGES = "Mac OS X Install DVD/System/Installation/Packages"
 # package -> cpio patterns (fnmatch, '*' crosses '/')
 WANTED = {
     "BaseSystem.pkg": [
+        # the keyboard layouts (their names, languages and icons: TextInput.menu's input sources) and
+        # TextInput.menu's words (its TIMCore.bundle)
+        "./System/Library/Keyboard Layouts/AppleKeyboardLayouts.bundle/Contents/Resources/AppleKeyboardLayouts-L.dat",
+        "./System/Library/Keyboard Layouts/AppleKeyboardLayouts.bundle/Contents/Resources/English.lproj/InfoPlist.strings",
+        "./System/Library/CoreServices/Menu Extras/TextInput.menu/Contents/SharedSupport/TIMCore.bundle/Contents/Resources/English.lproj/*.strings",
         # the system's version, build and copyright (About This Mac)
         "./System/Library/CoreServices/SystemVersion.plist",
         # the controls', menus' and title bars' art: CoreUI's ArtFile.bin and SArtFile.bin (its

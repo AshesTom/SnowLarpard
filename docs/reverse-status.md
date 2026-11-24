@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -847,20 +847,31 @@ an AquaKit bundle SystemUIServer loads.
 | `-_mirrorMenuHit:`: `MirrorAllDisplays` / `UnmirrorAllDisplays` | | Done (`--same-as` the main display; off: side by side) |
 | Checked in Xvfb (one output, no EDID); X11 only (on the Wayland window server, RandR is Xwayland's) | | Partial |
 
+## 28. The TextInput menu extra (input sources)
+
+TextInput.menu 1.2.0 (AppleTextInputExtra, TIMPrivate, TIMExtraView), x86_64, read with REA, and the
+keyboard layouts' bundle. Port: [`textinput.cpp`](../shell/src/menuextras/TextInput/textinput.cpp), an
+AquaKit bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| Its words: `-bundleForResources` is TIMPrivate's bundle, Contents/SharedSupport/TIMCore.bundle (Localizable.strings: "Open IntlPrefs" = "Open Language & Text…", "Show Name of Source in Menu Bar" = "Show Input Source Name"…) | `TIMPrivate -createStringTemplates` | Done (extract.py takes them) |
+| `-recreateMenu`: an item a source (its icon, its name, `-activate:` on the source), the current one checked; palettes ('cplt') after a line; Handwriting when Ink is there; secure mode's Other Input Sources and Remove Current Input Source; then a line, Show / Hide Input Source Name (tag -3, ModeNameVisible in com.apple.menuextra.textinput), a line, Open Keyboard… (with a palette) or Open Language & Text… (tag -2, Localization.prefPane) | `TIMPrivate -recreateMenu`, `-showHideSourceNameInMenuBar:`, `-openIntlPrefsMenuSelected:` | Done (keyboard layouts only: no palettes, Ink or secure mode) |
+| TIMExtraView: the current source's icon centred in 22 points; the name shown: `-imageOfString:onMenuDown:` (the system font of 11 in black, white with the menu down; wider than 90 points: the system font of 9 kerned -0.8; still wider: `NSLineBreakByTruncatingMiddle` at 90) after it, the length 22 + 1 + its width | `-drawRect:`, `-imageOfString:onMenuDown:` | Done (the kerning left out) |
+| AppleKeyboardLayouts-L.dat (AppleKeyboardLayouts.bundle): u32 0xABCDEF02, the count (113), the entries' offset (0x20), two tables of IDs; a 48-byte entry a layout: its name's offset ("French"), its KLID (signed 16 bits: French 1, U.S. 0, Russian - PC 19458…), its language's ("fr"), its 'uchr' size and offset, its icon's size and offset (an icns: is32 / s8mk, or only the classic ics#, ics4, ics8); the names shown from the bundle's English.lproj InfoPlist.strings ("RussianWin" = "Russian - PC") | the file | Done: read at run time (extract.py takes it); AquaKit's icns reader gained the classic 16 x 16 icons (the Mac's 16- and 256-colour system palettes, ics#'s mask) |
+| SystemUIServer's `_textInputCanLoad`: `TSMShouldTextInputMenuBeDisplayed` | | Done: more than one XKB layout |
+| The sources on Linux: XKB's layouts (`setxkbmap -query`), each shown as the closest Mac layout (the shell's own table: us → U.S., fr → French, ru → Russian - PC, ara → Arabic - PC…; one without a counterpart by XKB's name, no icon); `-activate:` makes the layout the first group | | Done (X11; checked in Xvfb with six layouts); the group switched by XKB's own shortcuts isn't followed |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
 - The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject:
-  section 25). Left: TextInput (its words and nib in Contents/SharedSupport/TIMCore.bundle;
-  `TIMPrivate -recreateMenu` builds the sources (icon, name, `activate:`), then Show / Hide Input
-  Source Name (ModeNameVisible in com.apple.menuextra.textinput, tag -3), Open Keyboard… (tag -2,
-  with a palette), Open Language & Text… (tag -2); the layouts' icons are packed in
-  AppleKeyboardLayouts-L.dat, a format to read first), Spaces,
+  section 25). Left: Spaces,
   Time Machine, Universal Access, Script Menu, PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
-- SystemUIServer: the other can-load methods (`_textInputCanLoad`...), Command-drag's
+- SystemUIServer: the other can-load methods (`_pppCanLoad`, `_timeMachineCanLoad`...), Command-drag's
   insertion animation and poof, Control-F8 (section 19).
 - The protected daemons, decrypted now: backupd (Time Machine's backups), mds (Spotlight's index:
   its MIG interface, for Spotlight's menu beyond the applications).

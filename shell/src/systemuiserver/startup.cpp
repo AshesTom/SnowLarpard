@@ -6,6 +6,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <dirent.h>
 #include <fstream>
 #include <regex>
@@ -89,7 +92,24 @@ bool canLoad(const std::string &method)
     }
     if (method == "_userCanLoad")   // fast user switching: MultipleSessionEnabled (the global domain's)
         return Settings("appearance").boolean("MultipleSessionEnabled", false);
-    // _textInputCanLoad, _pppCanLoad,
+    if (method == "_textInputCanLoad") {
+        // TSMShouldTextInputMenuBeDisplayed: more than one input source (XKB's layouts here)
+        FILE *p = popen("setxkbmap -query 2>/dev/null", "r");
+        std::string q;
+        char buf[256];
+        while (p && fgets(buf, sizeof buf, p))
+            q += buf;
+        if (p)
+            pclose(p);
+        const size_t at = q.find("layout:");
+        if (at == std::string::npos) {
+            const char *env = std::getenv("XKB_DEFAULT_LAYOUT");
+            return env && std::strchr(env, ',');
+        }
+        const std::string layouts = q.substr(at, q.find('\n', at) - at);
+        return layouts.find(',') != std::string::npos;
+    }
+    // _pppCanLoad,
     // _pppoeCanLoad, _remoteDesktopCanLoad, _timeMachineCanLoad: off by default on 10.6
     return false;
 }

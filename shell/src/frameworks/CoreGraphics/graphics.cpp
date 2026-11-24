@@ -361,6 +361,58 @@ Image jpeg(const std::vector<unsigned char> &bytes, Size atLeast)
 
 uint32_t be32(const unsigned char *p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 
+// The classic 16 x 16 icons of an icns without RGB ones (the keyboard layouts' older flags): ics8 in
+// the Mac's 256-colour system palette (clut 8: the 6 x 6 x 6 cube from white without black, then
+// ramps of red, green, blue and grey, black last), ics4 in its 16 colours, ics# one bit a pixel then
+// its mask; the mask s8mk's when there is one, else ics#'s
+Image classicIcon(const unsigned char *mono, const unsigned char *four, const unsigned char *eight, const unsigned char *alpha)
+{
+    if (!mono && !four && !eight)
+        return {};
+    static const uint32_t clut4[16] = {0xFFFFFF, 0xFCF305, 0xFF6402, 0xDD0806, 0xF20884, 0x4600A5, 0x0000D4, 0x02ABEA,
+                                       0x1FB714, 0x006411, 0x562C05, 0x90713A, 0xC0C0C0, 0x808080, 0x404040, 0x000000};
+    auto clut8 = [](int i) -> uint32_t {
+        if (i < 215) {
+            const int r = i / 36, g = i / 6 % 6, b = i % 6;
+            return uint32_t(0xFF - 0x33 * r) << 16 | uint32_t(0xFF - 0x33 * g) << 8 | uint32_t(0xFF - 0x33 * b);
+        }
+        if (i == 255)
+            return 0;
+        static const int ramp[10] = {0xEE, 0xDD, 0xBB, 0xAA, 0x88, 0x77, 0x55, 0x44, 0x22, 0x11};
+        const int v = ramp[(i - 215) % 10];
+        switch ((i - 215) / 10) {
+        case 0: return uint32_t(v) << 16;
+        case 1: return uint32_t(v) << 8;
+        case 2: return uint32_t(v);
+        default: return uint32_t(v) * 0x010101;
+        }
+    };
+    Image out(16, 16);
+    cairo_surface_flush(out.surface());
+    unsigned char *dst = cairo_image_surface_get_data(out.surface());
+    const int stride = cairo_image_surface_get_stride(out.surface());
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x) {
+            const int i = y * 16 + x;
+            uint32_t rgb = 0;
+            if (eight)
+                rgb = clut8(eight[i]);
+            else if (four)
+                rgb = clut4[(four[i / 2] >> (i % 2 ? 0 : 4)) & 0xF];
+            else
+                rgb = (mono[i / 8] >> (7 - i % 8)) & 1 ? 0 : 0xFFFFFF;
+            unsigned a = 255;
+            if (alpha)
+                a = alpha[i];
+            else if (mono)
+                a = (mono[32 + i / 8] >> (7 - i % 8)) & 1 ? 255 : 0;
+            auto *px = reinterpret_cast<uint32_t *>(dst + y * stride) + x;
+            *px = a << 24 | (((rgb >> 16) & 0xFF) * a / 255) << 16 | (((rgb >> 8) & 0xFF) * a / 255) << 8 | ((rgb & 0xFF) * a / 255);
+        }
+    cairo_surface_mark_dirty(out.surface());
+    return out;
+}
+
 // icns: 'icns', u32 length, then elements (type, u32 length with its header). The RGB elements
 // (is32 16, il32 32, ih32 48, it32 128 after 4 zero bytes) are PackBits per channel, their masks
 // (s8mk, l8mk, h8mk, t8mk) 8 bits a pixel; ic07 and later hold a PNG (or a JPEG 2000, not read).
@@ -376,6 +428,7 @@ Image icns(const std::vector<unsigned char> &b, Size atLeast)
         size_t pngLength = 0;
     };
     std::vector<Rep> reps;
+    const unsigned char *icsMono = nullptr, *ics4 = nullptr, *ics8 = nullptr, *mask16 = nullptr;
     auto rep = [&](int size) -> Rep & {
         for (Rep &r : reps)
             if (r.size == size)
@@ -394,7 +447,10 @@ Image icns(const std::vector<unsigned char> &b, Size atLeast)
         else if (type == "il32") rep(32).rgb = data, rep(32).rgbLength = n;
         else if (type == "ih32") rep(48).rgb = data, rep(48).rgbLength = n;
         else if (type == "it32" && n > 4) rep(128).rgb = data + 4, rep(128).rgbLength = n - 4;
-        else if (type == "s8mk") rep(16).mask = data;
+        else if (type == "s8mk") rep(16).mask = data, mask16 = data;
+        else if (type == "ics#" && n >= 64) icsMono = data;
+        else if (type == "ics4" && n >= 128) ics4 = data;
+        else if (type == "ics8" && n >= 256) ics8 = data;
         else if (type == "l8mk") rep(32).mask = data;
         else if (type == "h8mk") rep(48).mask = data;
         else if (type == "t8mk") rep(128).mask = data;
@@ -414,7 +470,7 @@ Image icns(const std::vector<unsigned char> &b, Size atLeast)
                 break;
         }
     if (!best)
-        return {};
+        return classicIcon(icsMono, ics4, ics8, mask16);
     if (best->png)
         return fromPngBytes(best->png, best->pngLength);
     const int s = best->size, count = s * s;
