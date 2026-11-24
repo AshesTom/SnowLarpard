@@ -341,7 +341,7 @@ add_executable(SystemUIServer src/systemuiserver/main.cpp src/systemuiserver/men
                src/systemuiserver/clock.cpp src/systemuiserver/clock.h src/systemuiserver/battery.cpp src/systemuiserver/battery.h
                src/systemuiserver/volume.cpp src/systemuiserver/volume.h
                src/systemuiserver/screencapture.cpp src/systemuiserver/screencapture.h
-               src/prefs/desktop.cpp src/prefs/desktop.h)
+               src/prefs/desktop.cpp src/prefs/desktop.h src/prefs/catalog.cpp src/prefs/catalog.h)
 target_include_directories(SystemUIServer PRIVATE src/systemuiserver src/prefs)
 target_link_libraries(SystemUIServer PRIVATE SystemUIPlugin
                       "$<LINK_LIBRARY:WHOLE_ARCHIVE,AppKit,CoreUI,CoreText,CoreServices,CoreGraphics,Foundation,LinuxGlue>" ${CMAKE_DL_LIBS})
