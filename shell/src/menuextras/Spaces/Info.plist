@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>Spaces</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.apple.menuextra.spaces</string>
+	<key>CFBundleName</key>
+	<string>Spaces</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.7</string>
+	<key>CFBundleVersion</key>
+	<string>82</string>
+	<key>NSPrincipalClass</key>
+	<string>AppleSpacesExtra</string>
+	<key>SLReproducesBundle</key>
+	<string>/System/Library/CoreServices/Menu Extras/Spaces.menu</string>
+	<key>SLReproducesSystem</key>
+	<string>Mac OS X 10.6.8 (10K549)</string>
+</dict>
+</plist>

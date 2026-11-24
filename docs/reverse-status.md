@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -862,13 +862,26 @@ AquaKit bundle SystemUIServer loads.
 | SystemUIServer's `_textInputCanLoad`: `TSMShouldTextInputMenuBeDisplayed` | | Done: more than one XKB layout |
 | The sources on Linux: XKB's layouts (`setxkbmap -query`), each shown as the closest Mac layout (the shell's own table: us → U.S., fr → French, ru → Russian - PC, ara → Arabic - PC…; one without a counterpart by XKB's name, no icon); `-activate:` makes the layout the first group | | Done (X11; checked in Xvfb with six layouts); the group switched by XKB's own shortcuts isn't followed |
 
+## 29. The Spaces menu extra
+
+Spaces.menu 1.7 (82), x86_64, read with REA. Port: [`spaces.cpp`](../shell/src/menuextras/Spaces/spaces.cpp),
+an AquaKit bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| SpacesStatusView `-drawRect:`: SpacesBackground.pdf as a template in a SpacesCell, enabled when `CoreDockGetWorkspacesEnabled`, the cell's background style the status bar's for the menu's state | `SpacesStatusView -drawRect:` | Done (more than one EWMH desktop is Spaces enabled; disabled at half alpha) |
+| SpacesCell `-drawInteriorWithFrame:inView:`: the picture, then the space's number (`CGSGetWorkspace`, shown for 1 to 16, NSNumberFormatter's decimal style) in Lucida Grande Bold 11, white; with the menu down black with a shadow of white at 0.66 | | Done (the shadow's offset by eye: one point down) |
+| `-menu`: "Spaces is not enabled" (`doNothing:`) or an item a space (`CoreDockGetWorkspacesCount`'s rows × columns), the current one checked; a line; "Open Spaces Preferences%C" with an ellipsis (an Apple event to System Preferences for Exposé & Spaces' Spaces tab) | `-menu`, `-openSpacesPreferences:` | Done (_NET_NUMBER_OF_DESKTOPS, _NET_CURRENT_DESKTOP) |
+| `-switchToSpace:`: `com.apple.switchSpaces` posted with the space from 0; the Dock switches | `-switchToSpace:` | Done (a _NET_CURRENT_DESKTOP message to the window manager) |
+| WindowServer has one desktop (Spaces itself, the Dock's, not ported): under it the extra says Spaces isn't enabled; under another EWMH window manager it follows its desktops | | Partial (checked in Xvfb with the root's properties set by hand) |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
 - The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject:
-  section 25). Left: Spaces,
+  section 25). Left:
   Time Machine, Universal Access, Script Menu, PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
 - SystemUIServer: the other can-load methods (`_pppCanLoad`, `_timeMachineCanLoad`...), Command-drag's
