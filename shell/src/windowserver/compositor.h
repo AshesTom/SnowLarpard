@@ -57,6 +57,15 @@ public:
                  double seconds, bool waitForTarget);
     void retarget(xcb_window_t key, const QRect &target);
 
+    // Spaces: a window drawn moved by `offset` (the Dock's switch slides the windows of the two spaces
+    // with CGS window transforms, the windows themselves not moved); clearOffsets() puts them all back
+    void setOffset(xcb_window_t frame, QPoint offset);
+    void clearOffsets();
+    bool hasOffsets() const { return !m_offsets.isEmpty(); }
+    // a picture over everything at `at` (Spaces' bezel, WVBezelLayer's window at the overlay level),
+    // at `opacity`; a null image takes it away
+    void setOverlay(const QImage &image, QPoint at, double opacity);
+
 private:
     struct Snapshot {
         xcb_render_picture_t picture = 0;
@@ -132,4 +141,10 @@ private:
     QHash<int, xcb_render_picture_t> m_opacityMasks;  // a solid alpha for each, in 1/255
     QVector<Animation> m_animations;
     QTimer m_animTimer;
+    xcb_render_picture_t opacityMask(double opacity);   // a repeated 1 x 1 A8 picture, none for opaque
+    QHash<xcb_window_t, QPoint> m_offsets;
+    xcb_render_picture_t m_overlayImage = 0;
+    QRect m_overlayRect;
+    double m_overlayOpacity = 1;
+    qint64 m_overlayKey = 0;
 };

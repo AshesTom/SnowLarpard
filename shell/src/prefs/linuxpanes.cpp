@@ -5,6 +5,7 @@
 // 10.6's.
 #include "colorpanel.h"
 #include "foundation.h"
+#include "desktop.h"
 #include "nibpane.h"
 
 #include <algorithm>
@@ -584,6 +585,185 @@ void showMenuExtra(const std::string &bundle, bool shown)
     prefs.set("menuExtras", list);
 }
 
+// ---- Exposé & Spaces' Spaces tab (ExposePaneMouse.nib, WorkspacesPrefs): what WindowServer's Spaces
+// reads (the Dock's preferences on the Mac)
+
+// The spaces' grid (WorkspacesView, -updateWorkspacesView's layers): on black, a cell a space at the
+// top, centred (CATableLayoutManager), 140 / n by 100 / n points for n the larger of rows and columns,
+// 15 apart (10 from four), the desktop picture with the space's number in white (the font
+// 24 - 2n, -addCellAtRow:column:number:); "Columns:" at the top right and "Rows:" at the bottom
+// right, 15 and 20 points in, in Helvetica Bold 13, white, each with its - at the right and its + 5
+// points before it (-layoutSublayersOfLayer:): round black buttons, a white edge 2 wide, plus.png and
+// minus.png in them; at most four by four, two spaces at least (-addColumn:, -loadPreferences)
+struct SpacesGrid : View {
+    std::shared_ptr<Settings> dock;
+    Image desktop, plus, minus;
+    std::string rowsTitle, columnsTitle;
+    static constexpr double Button = 20;
+    int rows() const { return std::clamp(dock->integer("workspaces-rows", 2), 1, 4); }
+    int cols() const { return std::clamp(dock->integer("workspaces-cols", 2), 1, 4); }
+    bool enabled() const { return dock->boolean("workspaces", false); }
+    int n() const { return std::max(rows(), cols()); }
+    double spacing() const { return rows() >= 4 || cols() >= 4 ? 10 : 15; }
+    Size cellSize() const { return {double(int(140 / n())), double(int(100 / n()))}; }
+    Rect gridRect() const
+    {
+        const Size c = cellSize();
+        const double w = cols() * c.w + (cols() - 1) * spacing(), h = rows() * c.h + (rows() - 1) * spacing();
+        return {std::floor((frame().w - w) / 2), spacing(), w, h};
+    }
+    // 0 columns -, 1 columns +, 2 rows -, 3 rows +
+    Rect button(int i) const
+    {
+        const double y = i < 2 ? 15 : frame().h - 15 - Button;
+        const double x = frame().w - 20 - Button - (i % 2 ? Button + 5 : 0);
+        return {x, y, Button, Button};
+    }
+    void draw(cairo_t *cr) override
+    {
+        fill(cr, bounds(), Color::gray(0));
+        const Size c = cellSize();
+        const Rect g = gridRect();
+        TextStyle number;
+        number.font = Font::system(24 - 2 * n());
+        number.color = Color::gray(255);
+        number.align = Align::Center;
+        for (int r = 0; r < rows(); ++r)
+            for (int k = 0; k < cols(); ++k) {
+                const Rect cell{g.x + k * (c.w + spacing()), g.y + r * (c.h + spacing()), c.w, c.h};
+                if (!desktop.isNull())
+                    desktop.draw(cr, cell, enabled() ? 1 : 0.5);
+                else
+                    fill(cr, cell, Color::rgb(0x3D, 0x5B, 0x8C));
+                drawText(cr, std::to_string(r * cols() + k + 1), cell, number);
+            }
+        TextStyle t;
+        t.font = Font::boldSystem(13);
+        t.color = Color::gray(255, enabled() ? 1 : 0.5);
+        t.align = Align::Right;
+        for (int i = 0; i < 4; ++i) {
+            const Rect b = button(i);
+            cairo_new_path(cr);
+            cairo_arc(cr, b.x + b.w / 2, b.y + b.h / 2, b.w / 2 - 1, 0, 2 * M_PI);
+            cairo_set_source_rgb(cr, 0, 0, 0);
+            cairo_fill_preserve(cr);
+            cairo_set_source_rgba(cr, 1, 1, 1, enabled() ? 1 : 0.5);
+            cairo_set_line_width(cr, 2);
+            cairo_stroke(cr);
+            const Image &img = i % 2 ? plus : minus;
+            if (!img.isNull())
+                img.draw(cr, Point{b.x + (b.w - img.width()) / 2, b.y + (b.h - img.height()) / 2}, enabled() ? 1 : 0.5);
+        }
+        drawText(cr, columnsTitle, Rect{0, button(1).y, button(1).x - 8, Button}, t);
+        drawText(cr, rowsTitle, Rect{0, button(3).y, button(3).x - 8, Button}, t);
+    }
+    void mouseDown(Event &e) override
+    {
+        if (!enabled())
+            return;
+        for (int i = 0; i < 4; ++i)
+            if (button(i).contains(e.location)) {
+                int r = rows(), k = cols();
+                int &v = i < 2 ? k : r;
+                v = std::clamp(v + (i % 2 ? 1 : -1), 1, 4);
+                if (r * k < 2)
+                    return;
+                dock->set("workspaces-rows", r);
+                dock->set("workspaces-cols", k);
+                setNeedsDisplay();
+            }
+    }
+};
+
+void spaces(NibPane &p)
+{
+    auto dock = std::make_shared<Settings>("dock");
+    auto global = std::make_shared<Settings>("appearance");
+    // -enableWorkspaces: com.apple.dock's workspaces
+    if (auto *b = p.nib.outlet<CheckBox>("_enableWorkspacesButton")) {
+        b->setChecked(dock->boolean("workspaces", false));
+        then(b, [dock, b] { dock->set("workspaces", b->checked()); });
+    }
+    // -changeSpacesInMenuBar: the Spaces menu extra in the bar or not
+    const std::string extra = "/System/Library/CoreServices/Menu Extras/Spaces.menu";
+    if (auto *b = p.nib.outlet<CheckBox>("_spacesInMenuBarButton")) {
+        const std::vector<std::string> list = Settings("systemuiserver").list("menuExtras");
+        b->setChecked(std::find(list.begin(), list.end(), extra) != list.end());
+        then(b, [extra, b] { showMenuExtra(extra, b->checked()); });
+    }
+    // the grid of spaces and its rows and columns
+    if (View *v = p.nib.outlet("_addRemoveWorkspacesView")) {
+        const std::string res = "/System/Library/PreferencePanes/Expose.prefPane/Contents/Resources/";
+        auto *grid = v->add<SpacesGrid>();
+        grid->setFrame(v->bounds());
+        grid->dock = dock;
+        const Desktop::Settings d = Desktop::load();
+        grid->desktop = Desktop::thumbnail(Desktop::picturePath(d), {160, 100});
+        grid->plus = Image::load(Assets::path(res + "plus.png"));
+        grid->minus = Image::load(Assets::path(res + "minus.png"));
+        const std::string pane = "/System/Library/PreferencePanes/Expose.prefPane";
+        grid->rowsTitle = Assets::tr(pane, "Localizable", "Rows:", "Rows:");
+        grid->columnsTitle = Assets::tr(pane, "Localizable", "Columns:", "Columns:");
+        if (auto *b = p.nib.outlet<CheckBox>("_enableWorkspacesButton"))
+            then(b, [grid] { grid->setNeedsDisplay(); });
+    }
+    // the switching keys (_createKeyPopupWithString): the modifiers with "Arrow Keys" or "Number Keys",
+    // a line, "–" (none); the tag the modifiers (0x40000 Control), WindowServer's
+    // workspaces-switch-modifier-binding and workspaces-switchDirectly-modifier-binding
+    const std::string pane = "/System/Library/PreferencePanes/Expose.prefPane";
+    auto keyPopup = [&](const char *outlet, const char *what, const char *key) {
+        auto *b = p.nib.outlet<PopUpButton>(outlet);
+        if (!b)
+            return;
+        static const int masks[] = {0x40000, 0x60000, 0xc0000, 0x140000, 0x1c0000, 0x160000, 0x1e0000,
+                                    0x100000, 0x180000, 0x120000, 0x1a0000, 0x80000, 0xa0000, 0xe0000};
+        auto glyphs = [](int m) {   // -[NSPrefPaneUtils stringForModifiers:]: ⌃⌥⇧⌘
+            std::string s;
+            if (m & 0x40000) s += "⌃";
+            if (m & 0x80000) s += "⌥";
+            if (m & 0x20000) s += "⇧";
+            if (m & 0x100000) s += "⌘";
+            return s;
+        };
+        const std::string label = Assets::tr(pane, "Localizable", what, what);
+        b->items.clear();
+        for (int m : masks) {
+            MenuItem it{glyphs(m) + " " + label};
+            it.tag = m;
+            b->items.push_back(it);
+        }
+        b->items.push_back(MenuItem::line());
+        MenuItem none{"\u2013"};
+        none.tag = 0;
+        b->items.push_back(none);
+        const int current = dock->integer(key, 0x40000);
+        for (size_t i = 0; i < b->items.size(); ++i)
+            if (!b->items[i].separator && b->items[i].tag == current)
+                b->setSelected(int(i));
+        then(b, [dock, b, key] {
+            const int s = b->selected();
+            if (s >= 0 && size_t(s) < b->items.size())
+                dock->set(key, b->items[size_t(s)].tag);
+        });
+    };
+    keyPopup("_switchPopupButton", "Arrow Keys", "workspaces-switch-modifier-binding");
+    keyPopup("_switchDirectlyPopupButton", "Number Keys", "workspaces-switchDirectly-modifier-binding");
+    // to activate Spaces: F8 by default (symbolic hot key 75), the mouse's button none
+    std::vector<std::string> keys{"\u2013"};
+    for (int f = 1; f <= 19; ++f)
+        keys.push_back("F" + std::to_string(f));
+    fillPopUp(p.nib.outlet<PopUpButton>("_workspacesPopup"), keys, 8);
+    if (auto *b = p.nib.outlet<PopUpButton>("_workspacesPopup"))
+        b->setSelected(8);
+    fillPopUp(p.nib.outlet<PopUpButton>("_workspacesButtonPopup"),
+              {"\u2013", "Secondary Mouse Button", "Middle Mouse Button", "Mouse Button 4", "Mouse Button 5"}, 0);
+    // -automaticallySwitchSpaces: AppleSpacesSwitchOnActivate, any application's (on unless set)
+    if (auto *b = p.nib.outlet<CheckBox>("_spacesAutomaticallySwitchButton")) {
+        b->setChecked(global->boolean("AppleSpacesSwitchOnActivate", true));
+        then(b, [global, b] { global->set("AppleSpacesSwitchOnActivate", b->checked()); });
+    }
+}
+
 // ---- Date & Time's Clock tab (ClockPref.nib's bindings): com.apple.menuextra.clock's DateFormat as
 // the checkboxes make it, IsAnalog, FlashDateSeparators
 
@@ -1025,8 +1205,10 @@ void wirePane(NibPane &p)
         printFax(p);
     else if (id == "com.apple.preference.general")
         appearance(p);
-    else if (id == "com.apple.preference.expose")
+    else if (id == "com.apple.preference.expose") {
         expose(p);
+        spaces(p);
+    }
     else if (id == "com.apple.preference.energysaver")
         energy(p);
     else if (id == "com.apple.preference.spotlight")

@@ -441,7 +441,7 @@ endif()
 pkg_check_modules(XCB_COMPOSITOR REQUIRED IMPORTED_TARGET xcb-composite xcb-damage xcb-render xcb-xfixes xcb-cursor)
 add_executable(WindowServer src/windowserver/main.cpp src/windowserver/windowserver.cpp src/windowserver/windowserver.h
                src/windowserver/frame.cpp src/windowserver/frame.h
-               src/windowserver/compositor.cpp src/windowserver/compositor.h)
+               src/windowserver/compositor.cpp src/windowserver/compositor.h src/windowserver/spaces.cpp)
 target_link_libraries(WindowServer PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
 target_compile_options(WindowServer PRIVATE -Wall -Wextra)
 set_target_properties(WindowServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")

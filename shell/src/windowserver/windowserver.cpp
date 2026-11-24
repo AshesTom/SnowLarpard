@@ -11,6 +11,8 @@
 #include "x11.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QFileInfo>
 #include <cmath>
 #include <QFontMetrics>
 #include <QGuiApplication>
@@ -107,7 +109,7 @@ bool WindowServer::start()
                                "_NET_WM_STATE_ABOVE", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DOCK", "_NET_WM_WINDOW_TYPE_DESKTOP",
                                "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_WM_WINDOW_TYPE_NORMAL", "_NET_WM_STRUT", "_NET_WM_STRUT_PARTIAL",
                                "_NET_WORKAREA", "_NET_FRAME_EXTENTS", "_NET_NUMBER_OF_DESKTOPS", "_NET_CURRENT_DESKTOP",
-                               "_NET_DESKTOP_GEOMETRY", "_NET_WM_DESKTOP"};
+                               "_NET_DESKTOP_GEOMETRY", "_NET_WM_DESKTOP", "_NET_DESKTOP_LAYOUT", "_NET_WM_STATE_STICKY"};
     QVector<uint32_t> atoms;
     for (const char *s : supported)
         atoms.append(atom(s));
@@ -122,6 +124,25 @@ bool WindowServer::start()
     xcb_create_gc(m_conn, m_gc, m_root, 0, nullptr);
     m_keySymbols = xcb_key_symbols_alloc(m_conn);
     grabKeys();
+    // Spaces: the Dock's preferences, read again when they change (com.apple.dock's notification)
+    m_slideTimer.setInterval(16);
+    QObject::connect(&m_slideTimer, &QTimer::timeout, this, [this] { stepSlide(); });
+    m_bezelTimer.setInterval(16);
+    QObject::connect(&m_bezelTimer, &QTimer::timeout, this, [this] { stepBezel(); });
+    readSpacesPrefs();
+    publishSpaces();
+    auto *prefsTimer = new QTimer(this);
+    QObject::connect(prefsTimer, &QTimer::timeout, this, [this] {
+        static QDateTime dock, global;
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/";
+        const QDateTime d = QFileInfo(dir + "dock.conf").lastModified(), g = QFileInfo(dir + "appearance.conf").lastModified();
+        if (d != dock || g != global) {
+            dock = d;
+            global = g;
+            readSpacesPrefs();
+        }
+    });
+    prefsTimer->start(1000);
 
     // The windows that are already there
     if (auto *tree = xcb_query_tree_reply(m_conn, xcb_query_tree(m_conn, m_root), nullptr)) {
@@ -240,7 +261,20 @@ void WindowServer::manage(xcb_window_t w, bool existing)
 
     const uint32_t extents[4] = {0, 0, uint32_t(th), 0};
     xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, w, atom("_NET_FRAME_EXTENTS"), XCB_ATOM_CARDINAL, 32, 4, extents);
-    const uint32_t desktop = 0;
+    // its space: the one it had (a window kept from before), its parent's, else the current one
+    // (CGS puts a new window on the active workspace); on all of them when sticky
+    c->space = m_space;
+    for (Client *p : std::as_const(m_clients))
+        if (c->transientFor && p->window == c->transientFor)
+            c->space = p->space, c->allSpaces = p->allSpaces;
+    if (existing) {
+        const QVector<uint32_t> d = X11::cardinals(w, atom("_NET_WM_DESKTOP"), XCB_ATOM_CARDINAL);
+        if (!d.isEmpty())
+            d[0] == 0xFFFFFFFF ? void(c->allSpaces = true) : void(c->space = qBound(0, int(d[0]), spaceCount() - 1));
+    }
+    if (X11::cardinals(w, atom("_NET_WM_STATE"), XCB_ATOM_ATOM).contains(atom("_NET_WM_STATE_STICKY")))
+        c->allSpaces = true;
+    const uint32_t desktop = c->allSpaces ? 0xFFFFFFFF : uint32_t(c->space);
     xcb_change_property(m_conn, XCB_PROP_MODE_REPLACE, w, atom("_NET_WM_DESKTOP"), XCB_ATOM_CARDINAL, 32, 1, &desktop);
 
     // full screen asked for before mapping; a panel's own states (loginwindow's About This Mac)
@@ -263,11 +297,13 @@ void WindowServer::manage(xcb_window_t w, bool existing)
     m_compositor.setOpacity(c->frame, c->opacity);
     xcb_map_window(m_conn, w);
     xcb_map_window(m_conn, c->grip);
-    xcb_map_window(m_conn, c->frame);
+    if (onCurrentSpace(c))
+        xcb_map_window(m_conn, c->frame);
     setWmState(c, ICCCM_NormalState);
     paintTitle(c);
     raise(c);
-    focus(c);
+    if (onCurrentSpace(c))
+        focus(c);
     updateClientLists();
 }
 
@@ -312,6 +348,10 @@ void WindowServer::unmanage(Client *c, bool destroyed)
     m_byWindow.remove(c->frame);
     m_byWindow.remove(c->grip);
     m_clients.removeAll(c);
+    m_slide.in.removeAll(c);
+    m_slide.out.removeAll(c);
+    if (m_slide.carried == c)
+        m_slide.carried = nullptr;
     if (m_dragClient == c)
         m_drag = NoDrag, m_dragClient = nullptr;
     bool wasActive = m_active == c;
@@ -321,7 +361,7 @@ void WindowServer::unmanage(Client *c, bool destroyed)
     if (wasActive) {
         // the topmost window left takes the focus, as the Mac gives it to the application's next window
         for (int i = m_clients.size() - 1; i >= 0; --i)
-            if (!m_clients[i]->minimized) {
+            if (!m_clients[i]->minimized && onCurrentSpace(m_clients[i])) {
                 focus(m_clients[i]);
                 break;
             }
@@ -706,7 +746,7 @@ void WindowServer::minimize(Client *c, bool hide)
     if (m_active == c) {
         m_active = nullptr;
         for (int i = m_clients.size() - 1; i >= 0; --i)
-            if (!m_clients[i]->minimized) {
+            if (!m_clients[i]->minimized && onCurrentSpace(m_clients[i])) {
                 focus(m_clients[i]);
                 break;
             }
@@ -735,7 +775,8 @@ void WindowServer::unminimize(Client *c)
         const Compositor::Effect effect = minimizeEffect(&seconds);
         m_compositor.animate(c->window, c->frame, frameRect(c), iconGeometry(c), effect, false, seconds, false);
     }
-    xcb_map_window(m_conn, c->frame);
+    if (onCurrentSpace(c))
+        xcb_map_window(m_conn, c->frame);
     setWmState(c, ICCCM_NormalState);
     setNetState(c);
     xcb_delete_property(m_conn, c->window, atom("_SNOWLEOPARD_WINDOW_PREVIEW"));
@@ -884,6 +925,8 @@ xcb_window_t WindowServer::frontAppKeyboard()
 void WindowServer::handleKey(xcb_key_press_event_t *e)
 {
     xcb_keysym_t sym = xcb_key_symbols_get_keysym(m_keySymbols, e->detail, 0);
+    if (spacesKey(sym, e->state))
+        return;
     if (const int hotKey = symbolicHotKey(sym, e->state); hotKey >= 0) {
         const QVector<uint32_t> owners = X11::cardinals(m_root, atom("_SNOWLEOPARD_SYMBOLIC_HOTKEYS"), XCB_ATOM_CARDINAL);
         for (int i = 0; i + 1 < owners.size(); i += 2)
@@ -912,6 +955,7 @@ void WindowServer::handleKey(xcb_key_press_event_t *e)
         for (int i = m_clients.size() - 2; i >= 0; --i)
             if (!m_clients[i]->minimized) {
                 Client *next = m_clients[i];
+                activateSpaceFor(next);
                 raise(next);
                 focus(next);
                 break;
@@ -1249,8 +1293,16 @@ void WindowServer::buttonRelease(xcb_button_release_event_t *e)
 void WindowServer::clientMessage(xcb_client_message_event_t *e)
 {
     Client *c = find(e->window);
+    if (e->type == atom("_NET_CURRENT_DESKTOP") && e->window == m_root) {
+        // a pager's, the Spaces menu extra's (com.apple.switchSpaces)
+        if (m_spacesEnabled)
+            switchSpace(int(e->data.data32[0]));
+        xcb_flush(m_conn);
+        return;
+    }
     if (e->type == atom("_NET_ACTIVE_WINDOW")) {
         if (c) {
+            activateSpaceFor(c);
             unminimize(c);
             raise(c);
             focus(c);
@@ -1267,6 +1319,10 @@ void WindowServer::clientMessage(xcb_client_message_event_t *e)
         return;
     } else if (e->type == atom("_NET_CLOSE_WINDOW")) {
         close(c);
+    } else if (e->type == atom("_NET_WM_DESKTOP")) {
+        // to another space, or on all of them
+        c->allSpaces = e->data.data32[0] == 0xFFFFFFFF;
+        setClientSpace(c, c->allSpaces ? c->space : int(e->data.data32[0]));
     } else if (e->type == atom("_SNOWLEOPARD_CAPTURE_WINDOW")) {
         // screencapture's window mode (CGSHWCaptureWindowList): data 0, 1 its shadow too; data 1, the
         // window that wants the picture, in its _SNOWLEOPARD_WINDOW_CAPTURE

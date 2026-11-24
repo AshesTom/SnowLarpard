@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QObject>
 #include <QRect>
+#include <QTimer>
 #include <QVector>
 #include <xcb/xcb.h>
 #include <xcb/xcb_keysyms.h>
@@ -59,6 +60,8 @@ private:
         int hover = None, pressed = None;
         bool overButtons = false;
         int titleHeight() const { return decorated && !fullscreen ? (utility ? UtilityTitleHeight : TitleHeight) : 0; }
+        int space = 0;            // its space, from 0 (CGSGetWindowWorkspace)
+        bool allSpaces = false;   // on every space (_NET_WM_STATE_STICKY, _NET_WM_DESKTOP 0xFFFFFFFF)
     };
 
     void manage(xcb_window_t w, bool existing);
@@ -99,6 +102,24 @@ private:
     void handleKey(xcb_key_press_event_t *e);
     xcb_window_t frontAppKeyboard();   // the window of the application in front without one, when it has the keyboard
 
+    // ---- Spaces (spaces.cpp): the window server's workspaces as the Dock drives them on 10.6
+    void readSpacesPrefs();
+    int spaceCount() const { return m_rows * m_cols; }
+    bool onCurrentSpace(const Client *c) const { return c->allSpaces || c->space == m_space; }
+    void publishSpaces();
+    void setClientSpace(Client *c, int space);
+    void switchSpace(int target, Client *carried = nullptr);
+    void switchSpaceBy(int direction);       // the Dock's 1 left, 2 right, 3 up, 4 down
+    bool activateSpaceFor(Client *c);        // a window of another space activated: true when switched to it
+    bool spacesKey(xcb_keysym_t sym, uint16_t state);
+    void grabSpacesKeys(bool grab);
+    void stepSlide();
+    void finishSlide();
+    void showBezel(int from, int to);
+    void stepBezel();
+    QImage bezelPanel() const;
+    QRect bezelCell(int space) const;
+
     void buttonPress(xcb_button_press_event_t *e);
     void buttonRelease(xcb_button_release_event_t *e);
     void motion(xcb_motion_notify_event_t *e);
@@ -125,4 +146,27 @@ private:
     xcb_window_t m_lastTitleWindow = 0;
     int m_cascade = 0;
     Compositor m_compositor;   // the windows put together, with their shadows
+
+    // Spaces
+    bool m_spacesEnabled = false, m_wrapArrows = true, m_swooshOff = false, m_switchOnActivate = true;
+    int m_rows = 1, m_cols = 1, m_space = 0;
+    uint16_t m_switchModifier = XCB_MOD_MASK_CONTROL, m_directModifier = XCB_MOD_MASK_CONTROL;
+    bool m_spacesKeysGrabbed = false;
+    struct Slide {
+        int from = -1, to = -1;
+        QPoint delta;              // the old space's windows go by it, the new one's come from minus it
+        QVector<Client *> out, in;
+        Client *carried = nullptr;
+        QElapsedTimer clock;
+        bool running = false;
+    } m_slide;
+    QTimer m_slideTimer;
+    struct Bezel {
+        int from = 0, to = 0;      // the indicator's cells
+        QElapsedTimer clock;       // since it showed; the indicator moves, then it fades
+        double hideAt = -1;        // when it starts fading, in seconds from clock
+        bool shown = false;
+    } m_bezel;
+    QTimer m_bezelTimer;
+    QImage m_bezelPanel;
 };

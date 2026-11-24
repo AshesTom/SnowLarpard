@@ -873,7 +873,29 @@ an AquaKit bundle SystemUIServer loads.
 | SpacesCell `-drawInteriorWithFrame:inView:`: the picture, then the space's number (`CGSGetWorkspace`, shown for 1 to 16, NSNumberFormatter's decimal style) in Lucida Grande Bold 11, white; with the menu down black with a shadow of white at 0.66 | | Done (the shadow's offset by eye: one point down) |
 | `-menu`: "Spaces is not enabled" (`doNothing:`) or an item a space (`CoreDockGetWorkspacesCount`'s rows × columns), the current one checked; a line; "Open Spaces Preferences%C" with an ellipsis (an Apple event to System Preferences for Exposé & Spaces' Spaces tab) | `-menu`, `-openSpacesPreferences:` | Done (_NET_NUMBER_OF_DESKTOPS, _NET_CURRENT_DESKTOP) |
 | `-switchToSpace:`: `com.apple.switchSpaces` posted with the space from 0; the Dock switches | `-switchToSpace:` | Done (a _NET_CURRENT_DESKTOP message to the window manager) |
-| WindowServer has one desktop (Spaces itself, the Dock's, not ported): under it the extra says Spaces isn't enabled; under another EWMH window manager it follows its desktops | | Partial (checked in Xvfb with the root's properties set by hand) |
+| Under WindowServer's Spaces (section 30) and any EWMH window manager's desktops | | Done |
+
+## 30. Spaces in WindowServer
+
+On 10.6 the window server keeps the workspaces (`CGSSetWorkspace`, `CGSGetWindowWorkspace`,
+`CGSMoveWorkspaceWindowList`) and the Dock drives them. Read on the Dock's x86_64 slice, decrypted with
+`tools/deprotect.py`, and on Exposé & Spaces' code (Expose.prefPane, `WorkspacesPrefs`, in the clear),
+with REA. Port: [`spaces.cpp`](../shell/src/windowserver/spaces.cpp) (WindowServer, X11),
+[`compositor.cpp`](../shell/src/windowserver/compositor.cpp), [`linuxpanes.cpp`](../shell/src/prefs/linuxpanes.cpp).
+
+| What | Where | Status |
+|---|---|---|
+| The preferences (com.apple.dock, read again on its change notification): `workspaces` (off), `workspaces-rows` and `workspaces-cols` (2, 2; under one, or one by one: 2 by 2), `workspaces-switch-modifier-binding` and `workspaces-switchDirectly-modifier-binding` (0x40000, Control), `workspaces-wrap-arrows` (on), `workspaces-swoosh-animation-off` (off), `workspaces-auto-swoosh`, `workspaces-preserve-window-order`; `AppleSpacesSwitchOnActivate` (any application's, on) given to the server as `WorkspaceSwitchOnAppActivation` | Dock FUN_100048505, FUN_10004d5cc, FUN_10007822b | Done (dock.conf, appearance.conf; read again when they change) |
+| Spaces turned off: every space's windows to space 1, the workspace 1 (`CGSSetWorkspace(1)`), the bindings dropped | FUN_1000784e9 | Done (fewer rows or columns: the windows beyond on the last space) |
+| The switch: left and right go round the grid's rows when wrapping (past the first column the previous row's last; past the last space the first), up and down stop at the edges; the same space does nothing; `CGSSetNextWorkspace`, the front application the new space's | FUN_10007a320 | Done (Control with the arrows and 1 to 9; the front application its top window) |
+| The slide: the two spaces' windows moved together by CGS window transforms, not the windows themselves: the old space's by (old column − new column) × the screens' width and (old row − new row) × their height, the new one's from minus that (FUN_100079079; the distance the screens' union, FUN_10001c42a); the progress 0.5 − 0.5 cos(π t / T), T 250 ms (DAT_10019e9d0; 2500 slowed), none with the swoosh off; the desktop stays | FUN_10007a320, FUN_10007933b | Done: the compositor draws the windows moved (`setOffset`), the old space's unmapped at the end |
+| A window being dragged comes along to the new space (`-gatherApplicationWindowsForWindow:fromWorkspace:toWorkspace:`) | WVSpaces | Done (a window being moved by its title bar) |
+| A window of another space activated (the Dock, ⌘Tab): `WorkspaceSwitchOnAppActivation` switches to its space, else the window comes | CGS | Done |
+| The bezel (WVBezelLayer, dispatched with each switch, FUN_10007780d) in a window at `CGWindowLevelForKey(7)` over the main display: squares of the display's shape scaled to 100 points at most (45 at least), 11 % of a square apart; the panel (`_generateGrid`) rounded by a quarter of a square, black at 0.85, its top third shining (a grey axial shading); the cells (`_generateBackground`) black at 0.45, a white line at 0.2, a black one at 0.5 along their tops; the indicator (`_generateSpaceIndicator`) the cell 3 points in, white at 0.9, its top 40 % shining; centred across, its bottom (display height − 100) / 5 over the display's (`-show`); the indicator moved to the new cell; faded 0.25 s after over 0.25 s (`-scheduleHide`) | WVBezelLayer | Done (the shadings' exact ramps by eye) |
+| EWMH: _NET_NUMBER_OF_DESKTOPS, _NET_DESKTOP_LAYOUT, _NET_CURRENT_DESKTOP, each window's _NET_WM_DESKTOP (0xFFFFFFFF sticky); _NET_CURRENT_DESKTOP and _NET_WM_DESKTOP messages | | Done (the Spaces menu extra switches through them) |
+| Exposé & Spaces' Spaces tab: Enable Spaces (`-enableWorkspaces:`), Show Spaces in menu bar (the extra added or removed), When switching to an application… (`-automaticallySwitchSpaces:`); the keys' popups (`_createKeyPopupWithString`: the modifiers' combinations with "Arrow Keys" or "Number Keys", a line, "–"; the tag the modifiers); To activate Spaces F8 | `WorkspacesPrefs -awakeFromNib`, `-loadPreferences`, `-switchPopupChanged:` | Done (the keys kept as the Dock's modifier bindings, not as symbolic hot keys 79–85) |
+| The pane's grid (WorkspacesView, `-updateWorkspacesView`): on black, the spaces at the top, centred (CATableLayoutManager), 140 / n by 100 / n points, 15 apart (10 from four), the desktop picture and the number in white (24 − 2n points); "Columns:" top right and "Rows:" bottom right in Helvetica Bold 13 with their round + and − (a white edge 2 wide, plus.png, minus.png; − at the right, + 5 before it); four by four at most, two spaces at least | `-updateWorkspacesView`, `-addCellAtRow:column:number:`, `-layoutSublayersOfLayer:`, `-addColumn:` | Done (no add or remove animation; removing a row with windows doesn't ask) |
+| Application Assignments (`workspaces-app-bindings`), the Spaces overview (F8: WVSpaces, its windows dragged between spaces), the screen edges' switch while dragging (`workspaces-edge-delay`), the Wayland window server | | Not ported |
 
 ## Next
 
@@ -891,7 +913,7 @@ an AquaKit bundle SystemUIServer loads.
   (kCUIVariantMenuItemSearch and the results' variants: read, section 3).
 - AquaKit's text selection in AppleHighlightColor (CoreUI's colour 0xE0), WindowServer's title bars
   redrawn as soon as the appearance changes.
-- Spaces itself (the Dock's workspaces, in the decrypted Dock) for WindowServer, which has one desktop.
+- Spaces' overview (F8), Application Assignments and the screen edges (section 30); Spaces on the Wayland window server.
 - Accounts' Login Options (MultipleSessionEnabled, userMenuExtraStyle: the User extra's settings).
 - Sheets and the genie effect (section 5); the global menu over GTK 4 and GMenuModel (section 6).
 - TextEdit's zoom popup (ScalingScrollView) and Page Setup; the ruler's tab wells and NSTextRulerOptions' panels (Spacing's Other…, Styles, Lists).

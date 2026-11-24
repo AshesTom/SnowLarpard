@@ -528,7 +528,7 @@ void Compositor::paint()
         // a window coming out of the Dock: its picture is drawn instead, warped
         if (std::any_of(m_animations.cbegin(), m_animations.cend(), [w](const Animation &a) { return a.frame == w->id; }))
             continue;
-        const QRect &g = w->geometry;
+        const QRect g = w->geometry.translated(m_offsets.value(w->id));
         if (!g.intersects(m_screen.adjusted(-ShadowReach, -ShadowReach, ShadowReach, ShadowReach)))
             continue;
         const int kind = shadowKind(w);
@@ -558,25 +558,8 @@ void Compositor::paint()
         xcb_xfixes_translate_region(m_conn, m_scratch, int16_t(g.x()), int16_t(g.y()));
         xcb_xfixes_intersect_region(m_conn, m_scratch, m_damage, m_scratch);
         xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_scratch, 0, 0);
-        const double opacity = m_opacity.value(w->id, 1.0);
-        xcb_render_picture_t mask = XCB_NONE;
-        if (opacity < 1) {
-            // the window's pixels through a solid alpha (a repeated 1 x 1 A8 picture)
-            const int level = qBound(0, int(std::lround(opacity * 255)), 255);
-            mask = m_opacityMasks.value(level);
-            if (!mask) {
-                const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
-                xcb_create_pixmap(m_conn, 8, pixmap, m_root, 1, 1);
-                mask = xcb_generate_id(m_conn);
-                const uint32_t repeat = 1;
-                xcb_render_create_picture(m_conn, mask, pixmap, m_a8, XCB_RENDER_CP_REPEAT, &repeat);
-                const xcb_render_color_t color = {0, 0, 0, uint16_t(level * 257)};
-                const xcb_rectangle_t one = {0, 0, 1, 1};
-                xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, mask, color, 1, &one);
-                xcb_free_pixmap(m_conn, pixmap);
-                m_opacityMasks.insert(level, mask);
-            }
-        }
+        // the window's pixels through a solid alpha
+        const xcb_render_picture_t mask = opacityMask(m_opacity.value(w->id, 1.0));
         xcb_render_composite(m_conn, w->alpha || mask ? XCB_RENDER_PICT_OP_OVER : XCB_RENDER_PICT_OP_SRC, w->picture, mask, m_buffer, 0,
                              0, 0, 0, int16_t(g.x()), int16_t(g.y()), uint16_t(g.width()), uint16_t(g.height()));
         xcb_xfixes_set_picture_clip_region(m_conn, m_buffer, m_damage, 0, 0);
@@ -585,10 +568,86 @@ void Compositor::paint()
     for (Animation &a : m_animations)
         if (auto it = m_snapshots.constFind(a.key); it != m_snapshots.constEnd())
             a.drawn = drawAnimation(a, *it);
+    // Spaces' bezel over everything
+    if (m_overlayImage)
+        xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_OVER, m_overlayImage, opacityMask(m_overlayOpacity), m_buffer, 0, 0, 0, 0,
+                             int16_t(m_overlayRect.x()), int16_t(m_overlayRect.y()), uint16_t(m_overlayRect.width()),
+                             uint16_t(m_overlayRect.height()));
     xcb_xfixes_set_picture_clip_region(m_conn, m_overlayPicture, m_damage, 0, 0);
     xcb_render_composite(m_conn, XCB_RENDER_PICT_OP_SRC, m_buffer, XCB_NONE, m_overlayPicture, 0, 0, 0, 0, 0, 0, sw, sh);
     xcb_xfixes_set_region(m_conn, m_damage, 0, nullptr);
     xcb_flush(m_conn);
+}
+
+xcb_render_picture_t Compositor::opacityMask(double opacity)
+{
+    if (opacity >= 1)
+        return XCB_NONE;
+    const int level = qBound(0, int(std::lround(opacity * 255)), 255);
+    xcb_render_picture_t mask = m_opacityMasks.value(level);
+    if (!mask) {
+        const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+        xcb_create_pixmap(m_conn, 8, pixmap, m_root, 1, 1);
+        mask = xcb_generate_id(m_conn);
+        const uint32_t repeat = 1;
+        xcb_render_create_picture(m_conn, mask, pixmap, m_a8, XCB_RENDER_CP_REPEAT, &repeat);
+        const xcb_render_color_t color = {0, 0, 0, uint16_t(level * 257)};
+        const xcb_rectangle_t one = {0, 0, 1, 1};
+        xcb_render_fill_rectangles(m_conn, XCB_RENDER_PICT_OP_SRC, mask, color, 1, &one);
+        xcb_free_pixmap(m_conn, pixmap);
+        m_opacityMasks.insert(level, mask);
+    }
+    return mask;
+}
+
+// ---- Spaces: the windows slid aside, the bezel over them
+
+void Compositor::setOffset(xcb_window_t frame, QPoint offset)
+{
+    if (offset.isNull())
+        m_offsets.remove(frame);
+    else
+        m_offsets.insert(frame, offset);
+    damageAll();
+}
+
+void Compositor::clearOffsets()
+{
+    m_offsets.clear();
+    damageAll();
+}
+
+void Compositor::setOverlay(const QImage &image, QPoint at, double opacity)
+{
+    if (!running())
+        return;
+    damageRect(m_overlayRect);
+    if (image.isNull()) {
+        if (m_overlayImage)
+            xcb_render_free_picture(m_conn, m_overlayImage);
+        m_overlayImage = 0;
+        m_overlayRect = QRect();
+        return;
+    }
+    const QImage argb = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (!m_overlayImage || m_overlayRect.size() != argb.size() || image.cacheKey() != m_overlayKey) {
+        if (m_overlayImage)
+            xcb_render_free_picture(m_conn, m_overlayImage);
+        const xcb_pixmap_t pixmap = xcb_generate_id(m_conn);
+        xcb_create_pixmap(m_conn, 32, pixmap, m_root, uint16_t(argb.width()), uint16_t(argb.height()));
+        const xcb_gcontext_t gc = xcb_generate_id(m_conn);
+        xcb_create_gc(m_conn, gc, pixmap, 0, nullptr);
+        xcb_put_image(m_conn, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap, gc, uint16_t(argb.width()), uint16_t(argb.height()), 0, 0, 0, 32,
+                      uint32_t(argb.sizeInBytes()), argb.constBits());
+        xcb_free_gc(m_conn, gc);
+        m_overlayImage = xcb_generate_id(m_conn);
+        xcb_render_create_picture(m_conn, m_overlayImage, pixmap, m_argb32, 0, nullptr);
+        xcb_free_pixmap(m_conn, pixmap);
+        m_overlayKey = image.cacheKey();
+    }
+    m_overlayRect = QRect(at, argb.size());
+    m_overlayOpacity = opacity;
+    damageRect(m_overlayRect);
 }
 
 // ---- Minimizing: 10.6's Dock warps the window into its tile (docs/reverse-status.md, the Dock)
