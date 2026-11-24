@@ -1024,12 +1024,19 @@ Port: [`spotlight.cpp`](../shell/src/systemuiserver/spotlight.cpp) (SystemUIServ
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
-- The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject,
-  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu, PPP, PPPoE, VPN, ExpressCard, WWAN: sections 25 to 29, 31 to 36). Left: iChat, Ink, IrDA,
-  Fax, HomeSync, Sync, Remote Desktop.
+- The menu extras: every one with a Linux counterpart is done (AirPort and Bluetooth: section 17;
+  Eject, User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu, PPP, PPPoE,
+  VPN, ExpressCard, WWAN: sections 25 to 29, 31 to 36). Decompiled but not ported, their technology
+  having none on Linux: IrDA (IrDAExtra: Linux dropped IrDA in 4.17), Ink (AppleInkExtra: Inkwell's
+  handwriting recognition), Fax (AppleFaxExtra: fax modems' status), Sync and HomeSync (AppleBRExtra,
+  AppleMHDExtra: MobileMe's sync and portable home folders), iChat (AppleFezExtra: iChat's IMDaemon),
+  Remote Desktop (AppleRDExtra: Apple Remote Desktop's agent). Their decompilations are in
+  .local/media/re/mx-<Name>.
 - SystemUIServer: Command-drag's insertion animation and poof, Control-F8 (section 19).
-- The protected daemons: mds (Spotlight's index: its MIG interface, for Spotlight's menu beyond the
-  applications); backupd is done (section 37), the Time Machine application (its browser) is not.
+- mds (protected, decrypted): Spotlight's index stays the desktop's (Baloo, else plocate; section
+  38), its MIG interface not needed; Spotlight's calculator and dictionary rows, the indexing messages
+  and Show All's window are left (section 38). The Time Machine application (the browser) isn't ported:
+  backupd is (section 37).
 - CoreUI's gamma (CUIGamma) on the art, the menu bar variant 0xC5, Help menu search's items
   (kCUIVariantMenuItemSearch and the results' variants: read, section 3).
 - AquaKit's text selection in AppleHighlightColor (CoreUI's colour 0xE0), WindowServer's title bars
