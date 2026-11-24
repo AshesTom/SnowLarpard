@@ -791,13 +791,44 @@ void listHeader(cairo_t *cr, const Rect &r, const State &s)
     draw(cr, first({{"listheader", s.windowActive ? "active" : "clear", "clear", "regular"}, {"listheader", "clear", "regular"}}), r);
 }
 
-void menuBackground(cairo_t *cr, const Rect &r, bool fromMenuBar)
+void menuBackground(cairo_t *cr, const Rect &r, MenuShape shape, double resultsColumn)
 {
-    Element e = element({"menu", fromMenuBar ? "straighttop" : "allround"});
-    if (e.isNull())
-        AK::fill(cr, r, color(MenuFill));
+    // CUIRenderer::DrawMenu (0x8df4): no art, a path of 5 point corners, each round or square by
+    // the variant, clipped and filled with _CUIColorGet(0xE1) (white at 0.95); the shadow is the
+    // window server's. Quartz's y goes up: its MaxY corners are the top ones here.
+    const double radius = 5;   // 0x3f0f0
+    bool topLeft = false, topRight = false;
+    switch (shape) {
+    case MenuShape::Popup: topLeft = topRight = true; break;
+    case MenuShape::SubmenuLeft: topLeft = true; break;
+    case MenuShape::SubmenuRight: topRight = true; break;
+    case MenuShape::Pulldown:
+    case MenuShape::Results: break;
+    }
+    const double x0 = r.x, y0 = r.y, x1 = r.right(), y1 = r.bottom();
+    cairo_save(cr);
+    cairo_new_path(cr);
+    if (topLeft)
+        cairo_arc(cr, x0 + radius, y0 + radius, radius, M_PI, 1.5 * M_PI);
     else
-        draw(cr, e, r);
+        cairo_move_to(cr, x0, y0);
+    if (topRight)
+        cairo_arc(cr, x1 - radius, y0 + radius, radius, 1.5 * M_PI, 2 * M_PI);
+    else
+        cairo_line_to(cr, x1, y0);
+    // the bottom corners always round
+    cairo_arc(cr, x1 - radius, y1 - radius, radius, 0, 0.5 * M_PI);
+    cairo_arc(cr, x0 + radius, y1 - radius, radius, 0.5 * M_PI, M_PI);
+    cairo_close_path(cr);
+    cairo_clip(cr);
+    AK::fill(cr, r, color(MenuFill));
+    if (shape == MenuShape::Results) {
+        // the results' side darkened (0xE3) from the column, a line of 0xE2 one point before it
+        const double column = resultsColumn != 0 ? resultsColumn : 128;   // 0x3f110
+        AK::fill(cr, Rect{r.x + column, r.y, r.w - column, r.h}, color(MenuFill2));
+        AK::fill(cr, Rect{r.x + column - 1, r.y, 1, r.h}, color(MenuSeparator));
+    }
+    cairo_restore(cr);
 }
 
 void menuSelection(cairo_t *cr, const Rect &r)

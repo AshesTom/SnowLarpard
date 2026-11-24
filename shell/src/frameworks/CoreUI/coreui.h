@@ -122,8 +122,14 @@ void stepper(cairo_t *cr, const Rect &r, const State &s, int pressed);
 // NSTableHeaderView's cells
 void listHeader(cairo_t *cr, const Rect &r, const State &s);
 
-// Menus: the background (allround for popups and contextual menus) and the selection
-void menuBackground(cairo_t *cr, const Rect &r, bool fromMenuBar = false);
+// Menus: the background and the selection. CUIRenderer::DrawMenu (0x8df4) by kCUIVariantKey:
+// Pulldown (kCUIVariantMenuPulldown 0xCC, a menu bar's menu) square at the top; Popup (0xCB) round
+// all round; a submenu (kCUIVariantMenuHierarchical 0xC7) square at its top corner on the parent's
+// side, by its `direction` (left 0x40: opened to the parent's left); search and help results (0xCD,
+// 0xC6) as Pulldown with their results' column from `resultsColumn` (0: 128) darkened by 0xE3 and
+// a line of 0xE2 before it
+enum class MenuShape { Pulldown, Popup, SubmenuRight, SubmenuLeft, Results };
+void menuBackground(cairo_t *cr, const Rect &r, MenuShape shape, double resultsColumn = 0);
 void menuSelection(cairo_t *cr, const Rect &r);
 
 } // namespace CoreUI

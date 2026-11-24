@@ -128,7 +128,7 @@ private:
         SpotlightWindow *s;
         void draw(cairo_t *cr) override
         {
-            CoreUI::menuBackground(cr, bounds(), true);
+            CoreUI::menuBackground(cr, bounds(), CoreUI::MenuShape::Pulldown);
             // the left column (MDMenu_LeftPattern) under the groups' names
             static const Image left = Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/MDMenu_LeftPattern.tiff"));
             const Rect col{0, FieldRow, Column, frame().h - FieldRow - 4};

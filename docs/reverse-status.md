@@ -82,10 +82,11 @@ Reader: `CUISharedArtReader::Setup` (0x35758), `GetImageHeader` (0x35890),
 | Item | Source | Status |
 |---|---|---|
 | Selected item: art 20114 (Graphite: 20115) stretched over the item | `CUIRenderer::DrawMenuItem` (0x1b942), state 0xA8 | Done (Blue only) |
-| Item kinds 200 / 0xCA: two fills (colours 0xE1, 0xE3) and a separator line (0xE2) at x + 128 (or the descriptor's value) | `DrawMenuItem` | Missing: CoreUI's colour table not read yet |
-| Kind 0xC9: art 10050 in one or three pieces | `DrawMenuItem` | Missing |
+| kCUIVariantMenuItemHelpResults (0xC8) and MenuItemSearchResults (0xCA), Help's search results: the item filled with 0xE1 (white at 0.95), then from x + the column (the descriptor's value, else 128) to its end with 0xE3 (black at 0.02) | `DrawMenuItem` | Read (CoreUI's constants table: `_kCUIConstantKeys` / `_kCUIConstantIDs`, 0x14d pairs); the shell has no Help menu search to draw yet |
+| kCUIVariantMenuItemSearch (0xC9), the Help menu's search field item: art 10050 in one piece (three across at scale 1) | `DrawMenuItem` | Read; not used yet (no Help menu search) |
 | The Dock's menus: see section 4 | `CUIRenderer::DrawDockMenu` (0x8610) | Done |
-| The menus' background | `CUIRenderer::DrawMenu` (0x8df4) | Missing |
+| The menus' background: no art, a path with 5 point corners (0x3f0f0), round or square by kCUIVariantKey: Pulldown (0xCC, the menu bar's) square at the top, Popup (0xCB) round all round, Hierarchical (0xC7, submenus) square at the top corner on its parent's side (`direction` left 0x40: the top right one), Help and search results (0xC6, 0xCD) as Pulldown with the results' side from x + 128 filled with 0xE3 and a line of 0xE2 a point before it; a popup's callout (`direction` down 0x3E, left, right 0x42, up 0x43) a 13.5 point point at the descriptor's offset, the corners beside it square under 37 points; clipped and filled with 0xE1 | `CUIRenderer::DrawMenu` (0x8df4) | Done ([`coreui.cpp`](../shell/src/frameworks/CoreUI/coreui.cpp) `menuBackground`, the callouts aside: nothing asks for them) |
+| An item not selected: the `menu` art's middle piece (`CUIElement::Load` widget 0x11F, image 4) | `DrawMenuItem` | Done (the fill it gives) |
 
 ## 4. The Dock
 
@@ -767,8 +768,7 @@ applications alike), each under the freedesktop names for its job.
 ## Next
 
 - `_CUIGetTheme` and the Graphite appearance (AppleAquaColorVariant).
-- CoreUI's colour table (`_CUIColorSetFill` indices 0xE1–0xE3) for the menus' backgrounds.
-- `DrawMenu`: the menus' shape and shadow.
+- The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
 - The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17).

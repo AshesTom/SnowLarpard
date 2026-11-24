@@ -341,7 +341,16 @@ public:
     }
     void draw(cairo_t *cr) override
     {
-        CoreUI::menuBackground(cr, bounds(), fromMenuBar && !parentMenu);
+        // HIToolbox's variant: a menu bar's menu pulls down, a submenu is hierarchical (its
+        // direction: the side of its parent it opened on), the others pop up
+        CoreUI::MenuShape shape = fromMenuBar ? CoreUI::MenuShape::Pulldown : CoreUI::MenuShape::Popup;
+        if (parentMenu) {
+            shape = CoreUI::MenuShape::SubmenuRight;
+            if (window() && parentMenu->window()
+                && window()->toScreen({0, 0}).x < parentMenu->window()->toScreen({0, 0}).x)
+                shape = CoreUI::MenuShape::SubmenuLeft;
+        }
+        CoreUI::menuBackground(cr, bounds(), shape);
         for (size_t i = 0; i < items.size(); ++i) {
             const double top = Menu::itemTop(items, int(i));
             if (items[i].separator) {
