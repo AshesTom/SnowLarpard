@@ -819,6 +819,22 @@ AquaKit bundle SystemUIServer loads.
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
-- The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17).
+- The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject:
+  section 25). Left: TextInput (its words and nib in Contents/SharedSupport/TIMCore.bundle;
+  `TIMPrivate -recreateMenu` builds the sources (icon, name, `activate:`), then Show / Hide Input
+  Source Name (ModeNameVisible in com.apple.menuextra.textinput, tag -3), Open Keyboard… (tag -2,
+  with a palette), Open Language & Text… (tag -2); the layouts' icons are packed in
+  AppleKeyboardLayouts-L.dat, a format to read first), User (fast user switching), Displays, Spaces,
+  Time Machine, Universal Access, Script Menu, PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
+  Fax, HomeSync, Sync, Remote Desktop.
+- SystemUIServer: the other can-load methods (`_userCanLoad`, `_textInputCanLoad`...), Command-drag's
+  insertion animation and poof, Control-F8 (section 19).
+- The protected daemons, decrypted now: backupd (Time Machine's backups), mds (Spotlight's index:
+  its MIG interface, for Spotlight's menu beyond the applications).
+- CoreUI's gamma (CUIGamma) on the art, the menu bar variant 0xC5, Help menu search's items
+  (kCUIVariantMenuItemSearch and the results' variants: read, section 3).
+- AquaKit's text selection in AppleHighlightColor (CoreUI's colour 0xE0), WindowServer's title bars
+  redrawn as soon as the appearance changes.
+- Sheets and the genie effect (section 5); the global menu over GTK 4 and GMenuModel (section 6).
 - TextEdit's zoom popup (ScalingScrollView) and Page Setup; the ruler's tab wells and NSTextRulerOptions' panels (Spacing's Other…, Styles, Lists).
 - The applications not ported yet: Chess, Dictionary, Font Book, Image Capture, iSync, QuickTime Player X, Front Row, Time Machine; the Utilities.
