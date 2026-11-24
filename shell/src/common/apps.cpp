@@ -256,7 +256,7 @@ const QStringList &ownBundles()
                                      "/Applications/Mail.app", "/Applications/Photo Booth.app",
                                      "/Applications/Calculator.app", "/Applications/Stickies.app", "/Applications/iTunes.app",
                                      "/Applications/TextEdit.app", "/Applications/Utilities/Grab.app",
-                                     "/Applications/Utilities/Activity Monitor.app",
+                                     "/Applications/Utilities/Activity Monitor.app", "/Applications/Time Machine.app",
                                      "/System/Library/CoreServices/Software Update.app"};
     return list;
 }

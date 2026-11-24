@@ -346,7 +346,8 @@ private:
         refreshUI();
     }
 
-    // com.apple.peabody.show / browseOtherDisks: Time Machine's own application (not ported yet)
+    // com.apple.peabody.show / browseOtherDisks: the Finder (the host) receives them on the Mac; here
+    // Time Machine.app (src/timemachine) is the browser and its host, started directly
     static void enterTimeMachine(bool browseOther)
     {
         const std::string apps = dirName(dirName(dirName(dirName(executablePath()))));

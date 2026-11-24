@@ -1150,6 +1150,12 @@ public:
         const std::vector<Item> sel = selectedItems();
         if (!sel.empty())
             out += "L " + std::to_string(Labels::get(sel.front().path)) + "\n";
+        // for Time Machine (windowForTimeMachineWithDefaultTarget:, docs/timemachine-host.md section 3):
+        // the front window's folder, its size and its selection
+        out += "F " + m_folder + "\n";
+        out += "W " + std::to_string(int(m_window->size().w)) + " " + std::to_string(int(m_window->size().h)) + "\n";
+        for (const Item &i : sel)
+            out += "I " + i.path + "\n";
         const std::string file = stateFile();
         const std::string temp = file + ".new";
         if (FILE *f = std::fopen(temp.c_str(), "w")) {
