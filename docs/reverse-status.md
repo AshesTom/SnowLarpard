@@ -915,7 +915,7 @@ SystemUIServer loads.
 | TMExtraView `-drawRect:`: indicator 0 and 1 TMRotatingArrow.pdf with the hands, 2 TMWarning.pdf, 3 TMError.pdf, as templates in an image cell, disabled (dimmed) with automatic backups off | `drawRect:` 0x5739, `_drawImageAsTemplate:` 0x584b | Done (disabled at half alpha, as the Spaces extra) |
 | `-_drawClockHands`: centred at floor(size / 2) + 0.5; a dot (oval −0.5, −0.5, 1, 1), the hour hand 25/7 long, 1 wide, turned minute × 0.5 + (hour mod 12) × 30 degrees; the minute hand 50/11 long, 0.75 wide, minute × 6 degrees; black, white on the highlight, at 0.5 with automatic backups off | `_drawClockHands` 0x5ec3 (constants at 0xcd48…0xcd60) | Done |
 | The animation: 30 pictures of the arrow 12 degrees apart (`-_startAnimation`), 15 frames a second; each frame the minute hand 10/15 minute back (the hour back past 0), the arrow 180/15 degrees on; four o'clock at first | `_startAnimation` 0x5a5e, `_animationTimerDidFire:` 0x55da, `initWithFrame:menuExtra:` 0x5d4a | Done (checked in Xvfb: the arrow turns anticlockwise, the menu's "Backing Up: 1.23 GB of 3.46 GB") |
-| Back Up Now (`CSBackupServerProxyBackupNow`), Stop Backing Up (the server's 'canc' message), Enter Time Machine (`com.apple.peabody.show`), Browse Other Time Machine Disks (`com.apple.peabody.browseOtherDisks`), Open Time Machine Preferences… (TimeMachine.prefPane) | `backupNow:` 0x18b0, `stopBackingUp:` 0x1878, `showTimeMachine:` 0x2132, `browseOtherTimeMachineDisks:` 0x210f | Done for the backups: the settings in timemachine.conf (AutoBackup, BackupPath for BackupAlias), the results in TimeMachine.Results.conf, the session's status in backupd.status.conf (the keys above, and backupd's pid), read every second; Back Up Now starts the shell's backupd (section 37), Stop sends it SIGTERM (checked in Xvfb: Back Up Now, then "Latest Backup: Today, 6:36 PM"). Enter Time Machine and Browse Other Time Machine Disks: the Time Machine application isn't ported |
+| Back Up Now (`CSBackupServerProxyBackupNow`), Stop Backing Up (the server's 'canc' message), Enter Time Machine (`com.apple.peabody.show`), Browse Other Time Machine Disks (`com.apple.peabody.browseOtherDisks`), Open Time Machine Preferences… (TimeMachine.prefPane) | `backupNow:` 0x18b0, `stopBackingUp:` 0x1878, `showTimeMachine:` 0x2132, `browseOtherTimeMachineDisks:` 0x210f | Done for the backups: the settings in timemachine.conf (AutoBackup, BackupPath for BackupAlias), the results in TimeMachine.Results.conf, the session's status in backupd.status.conf (the keys above, and backupd's pid), read every second; Back Up Now starts the shell's backupd (section 37), Stop sends it SIGTERM (checked in Xvfb: Back Up Now, then "Latest Backup: Today, 6:36 PM"). Enter Time Machine: done, it starts Time Machine.app, the browser (section 39; checked in Xvfb from the menu). Browse Other Time Machine Disks starts it on the default disk: the chooser isn't ported |
 
 ## 32. The Universal Access menu extra, SystemUIPlugin's text animation
 
@@ -997,7 +997,7 @@ thinning.cpp), built as apps/backupd.bundle/Contents/Resources/backupd; the sess
 
 | What | Where | Status |
 |---|---|---|
-| The backup database: <disk>/Backups.backupdb/<computer>/; each snapshot made in a container `<date>.inProgress` holding a snapshot named by a UUID (`-createNewSnapshot`), promoted when complete to the folder named by its completion date, `%Y-%m-%d-%H%M%S`, "%@-%d" from 2 while the name is taken (`-promoteCompletedSnapshotFromContainer:`); "Latest" a symbolic link to it (`kCSBackupLatestSnapshotSymlinkName`, `-updateLatestSnapshotSymlinkForSnapshot:`); an interrupted container removed (`-removeInProgressContainer`); a snapshot holds each volume by its name | SnapshotStorage 0x10002d4df, 0x10002d84a, 0x10002ba1f; SnapshotInProgressContainer 0x10002ab93 | Done (the user's home, under its volume's label, else "Macintosh HD": a session's backupd isn't root) |
+| The backup database: <disk>/Backups.backupdb/<computer>/; each snapshot made in a container `<date>.inProgress` holding a snapshot named by a UUID (`-createNewSnapshot`), promoted when complete to the folder named by its completion date, `%Y-%m-%d-%H%M%S`, "%@-%d" from 2 while the name is taken (`-promoteCompletedSnapshotFromContainer:`); "Latest" a symbolic link to it (`kCSBackupLatestSnapshotSymlinkName`, `-updateLatestSnapshotSymlinkForSnapshot:`); an interrupted container removed (`-removeInProgressContainer`); a snapshot holds each volume by its name | SnapshotStorage 0x10002d4df, 0x10002d84a, 0x10002ba1f; SnapshotInProgressContainer 0x10002ab93 | Done (the user's home, under its volume's label, else "Macintosh HD": a session's backupd isn't root), as the Finder's side reads it (docs/timemachine-host.md section 16): the path relative to the volume's mount point, the attributes SnapshotStartDate / SnapshotCompletionDate (decimal µs) on the snapshot and SnapshotVolumeUUID on the volume folder, in the user. namespace; names of 17 characters only (CarbonCore's rule: the next second is waited for instead of "-2"); the older layout (the absolute path) still linked to and read |
 | Each snapshot whole: unchanged items linked to the latest snapshot's ("Linked source.", fileLinksCreatedInCurrentCopy), the others copied ("Copied %lld files (%@) from volume %@.") | BackupCopier | Done: hard links of files (Linux has no directory hard links: the folders are made again in each snapshot); unchanged is the same size and modification time (backupd asks FSEvents' history) |
 | The exclusions: StdExclusions.plist's PathsExcluded, ContentsExcluded, FileContentsExcluded, UserPathsExcluded (Library/Caches, Library/Logs, Library/Mirrors… in each home); com.apple.TimeMachine's ExcludeByPath and SkipPaths; the backup disk | BackupRulesEngine `-pathInExclusionList:`, ExclusionsCache | Done for a home's (with their Linux counterparts: ~/.cache, the trash, thumbnails); sockets, pipes and devices left out |
 | The phases (kCSBackupPhase*): Starting, MountingBackupVol, CalculatingChanges, ThinningPreBackup, Copying (Percent, bytes, totalBytes), Finishing, ThinningPostBackup; Running, Stopping; the results (RESULT, BACKUP_COMPLETED_DATE in .TimeMachine.Results.plist): 0, 2 (the folder not made), 7 (too large), 11 (copy failed), 17 (no backup disk), 18 (not found), 22 (canceled) | backupd's status dictionary; CarbonCore's constants (section 31); Localizable.strings' RESULTCODE_*_MESSAGE | Done (backupd.status.conf, TimeMachine.Results.conf: what the menu extra reads) |
@@ -1019,6 +1019,34 @@ Port: [`spotlight.cpp`](../shell/src/systemuiserver/spotlight.cpp) (SystemUIServ
 | MDMenuView: `-_calculateMaxGroupWidth` (0x12c5f): the widest group title and "Top Hit" in the menu bar font of 11, floored; `-sizeToFit:` (0x12f30): the menu that + 230 wide (180 + 8 + 8 + 16 + 5 + 13), the icons that + 8 + 13 in, the names 16 + 5 further; the titles right-aligned in grey, the items in the menu bar font of 12 (`-_updateDrawingAttributes` 0xddc9) | MDMenuView | Done (checked in Xvfb: "dis" gives Disk Utility as the top hit, then the panes) |
 | The calculator and dictionary rows, the indexing messages (MDMenuIndexingMessage.nib), Show All's window (Finder's search) | MDCalculationQuery, MDDictionaryLookup | Missing |
 
+## 39. Time Machine's browser (Enter Time Machine)
+
+Backup.framework 1.1's scene (docs/timemachine-reverse.md) and the Finder's part of it
+(docs/timemachine-host.md), in one full-screen Qt program on legacy OpenGL 2.1: [Time
+Machine.app](../shell/src/timemachine) (main.cpp the launcher and the scene, starfield.cpp MPStarField
+and VortexGL, snapshots.cpp the backup database and the window pictures). extract.py takes
+Backup.framework's Resources (BaseSystem). Checked in Xvfb (GLX, llvmpipe) with backupd's snapshots
+of a scratch home: entering from the menu extra over the Finder's window, the flights, the timeline's
+hover, Restore with a conflict (Keep Both: "notes (original).txt"), Restore All with Apply to All, Escape.
+
+| What | Where (docs/timemachine-reverse.md, -host.md) | Status |
+|---|---|---|
+| The launcher: none or 0 enters, 1 Time Machine's preferences, 2 Back Up Now (backupd --now), 3 Stop Backing Up (SIGTERM to backupd), 4 Browse Other Disks | host 1 | Done (4: the default disk, the chooser of host 13 missing) |
+| PreflightShowBackup: no backup disk: BU1 / BU2, Set Up Time Machine opens the pane | host 3 | Done (the other preflights: Simple Finder, a modal window, the mount task: Missing) |
+| The target: the Finder's front browser window (FinderWindows' state file: folder, size, view, selection), else the Desktop; its size shrunk to the screen less 480 x 370, centred on its frame | host 3 | Done (the window's place from X11; not on Wayland) |
+| CarbonCore's mapping: the volume folder by SnapshotVolumeUUID, else by name, then the path relative to the mount point; the older layout too; the snapshots' dates from SnapshotCompletionDate, else the name | host 6 | Done |
+| The backdrop: the stars (4 × 300, the axis kept clear, their drift and wrap, fog 4.81–5.01, the vanishing point following the galaxy), the background stars (4 × 850, radial drift every 0.2 s, faster to the edges in flight, life), the gas and the sun on the plane 4.8, 35° field of view | reverse 3 | Done |
+| VortexGL: 100 Cloud.png puffs on the interpolators A, W, Z, X, Y, I1, I2 (natural splines, the tension warp), their Park–Miller targets, into a 512 buffer; the twirl's remap texture computed once; RemapVortex.vert/.frag read from the framework; vortex.png when the shaders don't compile | reverse 4 | Done (framebuffer objects for the pbuffers; the gas comes out fainter than vortex.png's picture) |
+| The stack: ten slots on the spacing curve, the farthest 80 wide on the horizon 140 above the screen, the shading colours, the slots beyond at opacity 0; an unavailable snapshot as Invalid*.png's frame | reverse 5 | Done (the newer layers leave forward, larger and fading: an extrapolation) |
+| The windows' pictures: the Finder's window showing the folder in that snapshot, same size and view | host 5 | Partial: drawn by the program in the Finder's look (title bar from frame.cpp, sidebar, list or icon view, status bar), not FinderWindows' own views; the front window is a picture too (select by clicking, ⌘-click, the arrow keys; a double click on a folder retargets, BUChangeTimeMachineTarget), not a live Finder window |
+| Flights: n = min(\|Δ\|, 10), 0.5·(log2 n + 1) s on (0.4, 0, 0.6, 1), the stars' z offset ±n/2 (0.42, 0, 0.58, 1), the galaxy to the farthest window's top, requests during a flight served after it | reverse 6 | Done (the restored items' flying icons: Missing) |
+| Entry and exit: the desktop's picture sliding down / up, the window layer between its place and the front slot, the stack from its collapsed place, the galaxy rising / setting, 1.5 s; Shift × 6 | reverse 7 | Done (the desktop's picture is the whole screen, the Finder window painted over with the desktop picture; the other displays' fade, SetSystemUIMode: Missing) |
+| The toolbar: Cancel, the date, Restore All, Restore from Left/Center/Right.png, the slanted dividers, the labels in HelveticaNeue-Bold scaled 1.75 × 1.18, warped along the bar's slant, the faint copy 5 up; the date's five formats, "Today (Now)"; the enabled states | reverse 8 | Done (the dividers' four strokes and the text warp approximated) |
+| The arrows beside the front window, smart Previous / Next (the next snapshot where the folder changed; ⌘ the adjacent one), ⌘↑ / ⌘↓, the scroll wheel | reverse 8, 10 | Done (smart by the folder's items, not the selected item's) |
+| The timeline: placeholders, months (the year when it changes), Yesterday, Today, the snapshots, Now; the column inset 30, 16 apart at most; the magnification (225 ms, the length and thickness curves, TickCap / TickFill, the item under the mouse kept in place); alphas; the hovered date; a click goes there | reverse 9 | Done (clusters, auto-scroll and the scroll of the column: Missing; the placeholders unlabelled) |
+| Restore / Restore All: the flight to Now, the exit, then the copy into the original folder; the enclosing folder recreated (BU37 / BU40); conflicts: Keep Original, Keep Both (" (original)", the one in place renamed), Replace, Apply to All | host 9 | Done (cp -a; Choose Location…, Restore to…, the Finder's progress window: Missing) |
+| Spotlight in Time Machine, Get Info and Quick Look, Delete Backup, Browse Other Disks' chooser, the hot spot, Highlight Changes, the Dock's docklet menu (Menu.plist) | host 8, 10, 13; reverse 7, 8 | Missing |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
@@ -1035,8 +1063,7 @@ Port: [`spotlight.cpp`](../shell/src/systemuiserver/spotlight.cpp) (SystemUIServ
 - SystemUIServer: Command-drag's insertion animation and poof, Control-F8 (section 19).
 - mds (protected, decrypted): Spotlight's index stays the desktop's (Baloo, else plocate; section
   38), its MIG interface not needed; Spotlight's calculator and dictionary rows, the indexing messages
-  and Show All's window are left (section 38). The Time Machine application (the browser) isn't ported:
-  backupd is (section 37).
+  and Show All's window are left (section 38).
 - CoreUI's gamma (CUIGamma) on the art, the menu bar variant 0xC5, Help menu search's items
   (kCUIVariantMenuItemSearch and the results' variants: read, section 3).
 - AquaKit's text selection in AppleHighlightColor (CoreUI's colour 0xE0), WindowServer's title bars
@@ -1045,4 +1072,9 @@ Port: [`spotlight.cpp`](../shell/src/systemuiserver/spotlight.cpp) (SystemUIServ
 - Accounts' Login Options (MultipleSessionEnabled, userMenuExtraStyle: the User extra's settings).
 - Sheets and the genie effect (section 5); the global menu over GTK 4 and GMenuModel (section 6).
 - TextEdit's zoom popup (ScalingScrollView) and Page Setup; the ruler's tab wells and NSTextRulerOptions' panels (Spacing's Other…, Styles, Lists).
-- The applications not ported yet: Chess, Dictionary, Font Book, Image Capture, iSync, QuickTime Player X, Front Row, Time Machine; the Utilities.
+- The applications not ported yet: Chess, Dictionary, Font Book, Image Capture, iSync, QuickTime Player X, Front Row; the Utilities.
+- Time Machine (section 39): the front window as a live FinderWindows window (the Finder's views
+  rendered offscreen for the pictures, TBackupSnapshotWindowController), Browse Other Time Machine
+  Disks' chooser, Spotlight inside Time Machine, the restored items' flying icons, the timeline's
+  clusters and auto-scroll, the Dock's Time Machine menu (Menu.plist), Wayland (the window's place,
+  the desktop's picture).

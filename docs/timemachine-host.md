@@ -545,6 +545,10 @@ as an absolute path>/…`, made as `<date>.inProgress/<UUID>` then renamed, "Lat
 | "Latest" | written | unused by the Finder (the framework's snapshot list decides) |
 | the restore = a Finder copy from the snapshot to the original folder | snapshots are plain folders with hard-linked files | a Linux copy works; restored files are new inodes (not links) |
 
+Since done in the port (docs/reverse-status.md sections 37 and 39): backupd writes the Mac's layout
+(the path relative to the mount point), 17-character names only, and the three attributes as
+`user.com.apple.backupd.*`; Time Machine.app reads the BackupPath store and both layouts.
+
 ## 17. Not resolved
 
 - What `FUN_100045820` tests exactly (node flags 0x40004, 0x40000, 0x8c1000000 and a parent's

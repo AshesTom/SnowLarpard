@@ -2,8 +2,9 @@
 
 What "Enter Time Machine" shows (the star field and galaxy, the desktop sliding away, the stack of
 windows receding in time, the flights between snapshots, the timeline, the toolbar) is drawn by the
-private Backup.framework, loaded into the Finder (the host). Nothing is ported yet: every Status below
-is "Read". No Apple file is in the repository: the port reads the framework's Resources from the DVD at
+private Backup.framework, loaded into the Finder (the host). The port is `shell/src/timemachine`
+(docs/reverse-status.md section 39 says what of each row is Done); the Status column below records
+the reading. No Apple file is in the repository: the port reads the framework's Resources from the DVD at
 run time like the rest of the project (`tools/extract.py`); the shaders and pictures are described
 here, not copied.
 
