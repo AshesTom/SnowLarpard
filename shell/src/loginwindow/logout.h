@@ -12,10 +12,14 @@
 namespace LoginWindow {
 
 int logOut(bool askFirst);
-// The Apple menu's Restart… and Shut Down…: the same panel (LogOutAlert), then the applications asked
-// to quit, the computer restarted or shut down (SNOWLEOPARD_POWER=1), the session ended
-//   loginwindow --restart | --shutdown
-int restart(bool shutDown);
+// ShutDownAlert (ShutDownAlert.nib): the Apple menu's Shut Down… (type 1) and Restart… (2), the power
+// key's (0: Restart, Sleep, Cancel, Shut Down), the scheduled ones (3 shut down, 4 sleep, 5 restart);
+// then the applications asked to quit, the computer restarted or shut down (SNOWLEOPARD_POWER=1), the
+// session ended. Reversed from loginwindow 6.0's x86_64 slice, decrypted: -[ShutDownAlert showPanel]
+// (0x1000354a3), -renameDefaultButtonAndResetUI: (0x100035fe4), -sizeWindowToFit (0x100035dee),
+// -loadBaseFormatString (0x100035038), -doDefaultAction: (0x1000353b6)
+//   loginwindow --restart | --shutdown | --power
+int restart(int type);
 // Force Quit Applications (ProcessPanel.nib)
 //   loginwindow --force-quit
 int forceQuit();

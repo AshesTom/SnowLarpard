@@ -312,7 +312,22 @@ Port: [`logout.cpp`](../shell/src/loginwindow/logout.cpp), `loginwindow --logout
 | The countdown: 60 seconds (DAT_1000903e8), every second (`countDownToLogout:`), `WILL_LOGOUT_INFO` with `TIME_FORMAT_<min(m,2)><min(s,2)>`; at 0, `logout:` | 0x10001993e, 0x100019cff, 0x100036934 | Done |
 | `logout:`: the panel closed, ApplicationManager's 'rlgo': the applications' windows closed, their processes (and AquaKit's windowless ones) quit, then the session (SystemUIServer of this display) | 0x10001a43f | Partial: an application still there after 30 s keeps the session with `TIMED_OUT_ALERT_MESSAGE` (AquaKit's alert, not `TimedOut.nib`); 10.6's own delay not read |
 | `cancel:`: the panel closed, the session goes on | 0x1000369d5 | Done |
-| Restart and Shut Down: `ShutDownAlert` (`ShutDownAlert.nib`) | 0x100034bac... | Missing (still a plain question) |
+
+### Restart, Shut Down and the power key (loginwindow's `ShutDownAlert`)
+
+Port: [`logout.cpp`](../shell/src/loginwindow/logout.cpp), `loginwindow --shutdown`, `--restart` (the Apple
+menu) and `--power`. Read on loginwindow 6.0's x86_64 slice, decrypted with `tools/deprotect.py`.
+
+| Item | Source | Status |
+|---|---|---|
+| The Apple menu's Shut Down… and Restart… (`'rsdn'`, `'rrst'`): ApplicationManager's `-postShutdownDialogRequest` / `-postRestartDialogRequest` pause the scheduler and show the shared alerts of type 1 and 2 (not LogOutAlert's panel); the power key's (`-sharedPowerAlert`) is type 0; Energy Saver's schedule types 3, 4, 5 with `-setTimerLength:` | 0x100033506, 0x1000335a2, the `shared*Alert` 0x10003518c… | Done (types 0, 1, 2; the scheduled ones drawn but nothing schedules them) |
+| The panel: ShutDownAlert.nib's `shutdownPanel`, its picture (ShutDown.png; `imageNamed:` Restart.tif for 2 and 5, Sleep.tif for 4), the message, the guest's message, the countdown, Restart, Sleep, Cancel and the default button; at `CGWindowLevelForKey(13)` logged in (11 at the login window), centred, key | `-showPanel` 0x1000354a3 (its jump table at 0x100035648) | Done |
+| By type: 1, 3 without Sleep and Restart, "Shut Down"; 2, 5 without them, "Restart"; 4 "Sleep"; 0 all four buttons (Restart gone with the managed `RestartDisabledWhileLoggedIn`, Shut Down with `ShutDownDisabledWhileLoggedIn`), the countdown empty and hidden, no timer | `-showPanel`, `-removeRestartButton`, `-removeSleepButton`, `-removeShutdownButton` | Done |
+| `-renameDefaultButtonAndResetUI:`: a user's account: the guest's message hidden, SHUTDOWN_MESSAGE / RESTART_MESSAGE / SCHEDULED_*_MESSAGE; the default button retitled and `-sizeToFit`, its right edge kept (`NSOffsetRect`), Cancel moved to keep the space between them | 0x100035fe4 | Done (the button's width changed by its title's: AppKit's `-sizeToFit` not read) |
+| `-sizeWindowToFit`: the panel's height by the countdown's `cellSizeForBounds:` less its field's, less the guest's message and the space over it (DAT_100090798) | 0x100035dee | Done |
+| The countdown: 60 seconds (DAT_1000903d8), `countDownToAction:` every second (0x100067b20: 1.0); `-loadBaseFormatString` by type (WILL_SHUTDOWN_INFO for 0, 1; WILL_RESTART_INFO; WILL_SCHEDULED_SHUTDOWN / SLEEP / RESTART_INFO), TIME_FORMAT_ as LogOutAlert's; at 0 `-doDefaultAction:` | 0x100034d33, 0x100035038, 0x100034f47, 0x100034d69 | Done |
+| `-doDefaultAction:`: 2, 5 `restart:` ('rest'), 4 `sleep:` (`Sleep()`), the others the panel closed then ApplicationManager's 'shut'; `cancel:` the timers invalidated, `com.apple.logoutCancelled`, the scheduler going again | 0x1000353b6, 0x100035303, 0x100035d46, 0x100035ca7 | Done: the applications asked to quit then `systemctl poweroff` / `reboot` / `suspend` with SNOWLEOPARD_POWER=1 |
+| The guest account's messages and buttons (GUEST_ACCOUNT_*), Talking Alerts | | Not ported (no guest account on Linux) |
 
 ## 13. The Finder: what can be read
 

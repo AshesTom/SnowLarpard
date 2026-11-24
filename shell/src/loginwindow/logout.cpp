@@ -234,15 +234,24 @@ void endSession()
         std::fprintf(stderr, "loginwindow: no SystemUIServer on this display: no session to end\n");
 }
 
-// ---- -[LogOutAlert showLogoutPanel]
+// displayCurrentCountdownTime's switch on the TIME_FORMAT_ index: the seconds (2, 12), the minutes
+// (20, 21), both (22), none (the others: "1 minute", "0 seconds"...)
+std::string countdownTime(long index, const std::string &format_, long countdown)
+{
+    switch (index) {
+    case 2:
+    case 12: return format(format_, countdown % 60);
+    case 20:
+    case 21: return format(format_, countdown / 60);
+    case 22: return format(format_, countdown / 60, countdown % 60);
+    default: return format_;
+    }
+}
 
-// LogOutAlert's three commands: Log Out, and the Apple menu's Restart… and Shut Down… ('rrst', 'rsdn'),
-// the same panel with their strings
-enum class Command { LogOut, Restart, ShutDown };
+// ---- -[LogOutAlert showLogoutPanel]
 
 class LogOutAlert {
 public:
-    explicit LogOutAlert(Command command = Command::LogOut) : m_command(command) {}
     bool load()
     {
         const std::string res = Assets::path(std::string(Bundle) + "/Contents/Resources");
@@ -266,14 +275,7 @@ public:
         m_done = std::move(done);
         // the space between the message and the guest's message (DAT_1000907f0), kept under the message
         m_gap = m_guest->frame().y - m_message->frame().bottom();
-        if (m_command == Command::LogOut) {
-            m_message->setText(tr("LOGOUT_MESSAGE", m_message->text()));
-        } else {
-            const bool restart = m_command == Command::Restart;
-            m_message->setText(restart ? tr("RESTART_MESSAGE", "Are you sure you want to restart your computer now?")
-                                       : tr("SHUTDOWN_MESSAGE", "Are you sure you want to shut down your computer now?"));
-            m_default->title = restart ? tr("RESTART_BUTTON", "Restart") : tr("SHUTDOWN_BUTTON", "Shut Down");
-        }
+        m_message->setText(tr("LOGOUT_MESSAGE", m_message->text()));
         displayCurrentCountdownTime();
         m_guest->setHidden(true);
         sizeWindowToFit();
@@ -319,20 +321,9 @@ private:
     void displayCurrentCountdownTime()
     {
         if (m_base.empty())   // loadBaseFormatString
-            m_base = m_command == Command::Restart    ? tr("WILL_RESTART_INFO", "If you do nothing, the computer will restart automatically in %@.")
-                     : m_command == Command::ShutDown ? tr("WILL_SHUTDOWN_INFO", "If you do nothing, the computer will shut down automatically in %@.")
-                                                      : tr("WILL_LOGOUT_INFO", "If you do nothing, you will be logged out automatically in %@.");
+            m_base = tr("WILL_LOGOUT_INFO", "If you do nothing, you will be logged out automatically in %@.");
         updateTimeFormatString();
-        std::string time;
-        switch (m_formatIndex) {
-        case 2:
-        case 12: time = format(m_timeFormat, m_countdown % 60); break;
-        case 20:
-        case 21: time = format(m_timeFormat, m_countdown / 60); break;
-        case 22: time = format(m_timeFormat, m_countdown / 60, m_countdown % 60); break;
-        default: time = m_timeFormat; break;
-        }
-        m_timedOut->setText(replaceAll(m_base, "%@", time));
+        m_timedOut->setText(replaceAll(m_base, "%@", countdownTime(m_formatIndex, m_timeFormat, m_countdown)));
     }
 
     // -[LogOutAlert sizeWindowToFit], a user's account: the panel's height less the guest's message and
@@ -368,7 +359,6 @@ private:
             m_done(logOut);
     }
 
-    Command m_command;
     Nib m_nib;
     View *m_content = nullptr;
     Size m_size;
@@ -382,6 +372,236 @@ private:
     long m_formatIndex = -1;
     std::string m_base, m_timeFormat;
     std::function<void(bool)> m_done;
+    bool m_finished = false;
+};
+
+// ---- -[ShutDownAlert showPanel] (0x1000354a3): ShutDownAlert.nib, the Apple menu's Shut Down… and
+// Restart… (ApplicationManager -postShutdownDialogRequest, -postRestartDialogRequest: the shared
+// alerts of type 1 and 2) and the power key's (-sharedPowerAlert, type 0); the scheduled ones (3 shut
+// down, 4 sleep, 5 restart: Energy Saver's schedule) are the same panel with their strings
+
+enum class PowerAction { Cancel, ShutDown, Restart, Sleep };
+
+class ShutDownAlert {
+public:
+    enum Type { Power = 0, ShutDown = 1, Restart = 2, ScheduledShutDown = 3, ScheduledSleep = 4, ScheduledRestart = 5 };
+    explicit ShutDownAlert(Type type) : m_type(type) {}
+
+    bool load()
+    {
+        const std::string res = Assets::path(std::string(Bundle) + "/Contents/Resources");
+        if (!m_nib.load(res + "/English.lproj/ShutDownAlert.nib/keyedobjects.nib", res))
+            return false;
+        m_content = m_nib.instantiate("shutdownPanel");
+        if (!m_content)
+            return false;
+        m_size = m_nib.size();
+        m_image = m_nib.outlet<ImageView>("_alertImageView");
+        m_info = m_nib.outlet<Label>("_infoText");
+        m_timedOut = m_nib.outlet<Label>("_timedOutField");
+        m_guest = m_nib.outlet<Label>("_guestAccountMessageField");
+        m_default = m_nib.outlet<Button>("_defaultButton");
+        m_cancel = m_nib.outlet<Button>("_cancelButton");
+        m_restart = m_nib.outlet<Button>("_restartButton");
+        m_sleep = m_nib.outlet<Button>("_sleepButton");
+        return m_info && m_timedOut && m_guest && m_default && m_cancel;
+    }
+
+    void show(App &app, std::function<void(PowerAction)> done)
+    {
+        m_done = std::move(done);
+        m_app = &app;
+        // the space between the message and the guest's message (DAT_100090798)
+        m_gap = m_guest->frame().y - m_info->frame().bottom();
+        const std::string res = Assets::path(std::string(Bundle) + "/Contents/Resources/");
+        std::string button;
+        switch (m_type) {
+        case Power:
+            // the managed preferences RestartDisabledWhileLoggedIn and ShutDownDisabledWhileLoggedIn
+            // (none here) would take the Restart and Shut Down buttons away; no countdown
+            m_timedOut->setText("");
+            m_timedOut->setHidden(true);
+            button = tr("SHUTDOWN_BUTTON", "Shut Down");
+            break;
+        case ShutDown:
+        case ScheduledShutDown:
+            removeButton(m_sleep);
+            removeButton(m_restart);
+            button = tr("SHUTDOWN_BUTTON", "Shut Down");   // the nib's ShutDown picture kept
+            break;
+        case Restart:
+        case ScheduledRestart:
+            removeButton(m_sleep);
+            removeButton(m_restart);
+            setImage(res + "Restart.tif");
+            button = tr("RESTART_BUTTON", "Restart");
+            break;
+        case ScheduledSleep:
+            removeButton(m_sleep);
+            removeButton(m_restart);
+            setImage(res + "Sleep.tif");
+            button = tr("SLEEP_BUTTON", "Sleep");
+            break;
+        }
+        renameDefaultButtonAndResetUI(button);
+        sizeWindowToFit();
+        if (m_type != Power)
+            displayCurrentCountdownTime();
+
+        // the nib's panel, at CGWindowLevelForKey(13) while logged in, centred, key
+        m_window = std::make_unique<Window>(m_size, "");
+        m_window->contentView()->addSubview(m_content);
+        m_window->setStyleMask(129);
+        m_window->setFloatingPanel(false);
+        m_window->onClose = [this] { finish(PowerAction::Cancel); };
+        m_window->onUnhandledKey = [this](Event &e) {
+            if (e.keysym == XKB_KEY_Return || e.keysym == XKB_KEY_KP_Enter)
+                doDefaultAction();
+            else if (e.keysym == XKB_KEY_Escape)
+                finish(PowerAction::Cancel);
+        };
+        m_default->action = [this] { doDefaultAction(); };
+        m_cancel->action = [this] { finish(PowerAction::Cancel); };
+        if (m_restart)
+            m_restart->action = [this] { finish(PowerAction::Restart); };   // restart: ('rest')
+        if (m_sleep)
+            m_sleep->action = [this] { finish(PowerAction::Sleep); };       // sleep: (Sleep())
+        m_window->show();
+        // countDownToAction:, every second (0x100067b20: 1.0), but for the power key's
+        if (m_type != Power)
+            m_timer = app.addTimer(1.0, true, [this] {
+                if (--m_countdown < 1)
+                    doDefaultAction();
+                else
+                    displayCurrentCountdownTime();
+            });
+    }
+
+private:
+    void removeButton(Button *&b)
+    {
+        if (!b)
+            return;
+        b->setHidden(true);   // -removeFromSuperview
+        b = nullptr;
+    }
+
+    void setImage(const std::string &path)
+    {
+        const Image img = Image::load(path);
+        if (m_image && !img.isNull()) {
+            m_image->image = img;
+            m_image->setNeedsDisplay();
+        }
+    }
+
+    // -renameDefaultButtonAndResetUI: (0x100035fe4), a user's account (not the guest's): the guest's
+    // message hidden; the message for the type (SHUTDOWN_MESSAGE, RESTART_MESSAGE, the scheduled
+    // ones); the default button retitled and sized to fit, its right edge kept, Cancel moved to keep
+    // the space between them
+    void renameDefaultButtonAndResetUI(const std::string &title)
+    {
+        m_guest->setHidden(true);
+        std::string message;
+        switch (m_type) {
+        case Restart: message = tr("RESTART_MESSAGE", "Are you sure you want to restart your computer now?"); break;
+        case ScheduledShutDown: message = tr("SCHEDULED_SHUTDOWN_MESSAGE", "This computer has been scheduled to shut down automatically."); break;
+        case ScheduledSleep: message = tr("SCHEDULED_SLEEP_MESSAGE", "This computer has been scheduled to go to sleep automatically."); break;
+        case ScheduledRestart: message = tr("SCHEDULED_RESTART_MESSAGE", "This computer has been scheduled to restart automatically."); break;
+        default: message = tr("SHUTDOWN_MESSAGE", "Are you sure you want to shut down your computer now?"); break;
+        }
+        m_info->setText(message);
+        const Rect before = m_default->frame(), cancel = m_cancel->frame();
+        // -sizeToFit: the title's width changes the button's by as much (the nib's own padding kept)
+        const double grow = std::ceil(textWidth(title, m_default->font)) - std::ceil(textWidth(m_default->title, m_default->font));
+        m_default->title = title;
+        Rect after{before.x - grow, before.y, before.w + grow, before.h};   // NSOffsetRect: the same right edge
+        m_default->setFrame(after);
+        const double space = before.x - cancel.right();
+        m_cancel->setFrame({after.x - space - cancel.w, cancel.y, cancel.w, cancel.h});
+    }
+
+    // -sizeWindowToFit (0x100035dee), a user's account: the panel's height changes by the countdown's
+    // text height ([NSCell cellSizeForBounds:]) less its field's, less the guest's message and the
+    // space over it; what is under the message (the countdown, the buttons) held at the bottom
+    void sizeWindowToFit()
+    {
+        const Rect timed = m_timedOut->frame();
+        const std::string text = m_timedOut->text();
+        // (an empty string's cell is still a line high: the power key's panel)
+        const double h = std::ceil(wrappedHeight(text.empty() ? std::string(" ") : text, timed.w - 4, m_timedOut->style.font));
+        const double change = (h - timed.h) - (m_guest->frame().h + m_gap);
+        m_size.h += change;
+        m_content->setFrame({0, 0, m_size.w, m_size.h});
+        const double below = m_info->frame().bottom();
+        for (View *v : m_content->subviews()) {
+            if (v == m_info || v == m_guest || v->frame().y < below)
+                continue;
+            const Rect f = v->frame();
+            v->setFrame({f.x, f.y + change, f.w, f.h});
+        }
+    }
+
+    // -loadBaseFormatString (0x100035038) by type, -updateTimeFormatString, -displayCurrentCountdownTime
+    void displayCurrentCountdownTime()
+    {
+        if (m_base.empty()) {
+            switch (m_type) {
+            case Restart: m_base = tr("WILL_RESTART_INFO", "If you do nothing, the computer will restart automatically in %@."); break;
+            case ScheduledShutDown: m_base = tr("WILL_SCHEDULED_SHUTDOWN_INFO", "If you do nothing, the computer will shut down automatically in %@."); break;
+            case ScheduledSleep: m_base = tr("WILL_SCHEDULED_SLEEP_INFO", "If you do nothing, the computer will go to sleep automatically in %@."); break;
+            case ScheduledRestart: m_base = tr("WILL_SCHEDULED_RESTART_INFO", "If you do nothing, the computer will restart automatically in %@."); break;
+            default: m_base = tr("WILL_SHUTDOWN_INFO", "If you do nothing, the computer will shut down automatically in %@."); break;
+            }
+        }
+        const long index = std::min(m_countdown / 60, 2L) * 10 + std::min(m_countdown % 60, 2L);
+        if (index != m_formatIndex) {
+            m_timeFormat = tr("TIME_FORMAT_" + std::to_string(index), "%d seconds");
+            m_formatIndex = index;
+        }
+        m_timedOut->setText(replaceAll(m_base, "%@", countdownTime(m_formatIndex, m_timeFormat, m_countdown)));
+    }
+
+    // -doDefaultAction: (0x1000353b6): types 2 and 5 restart:, 4 sleep:, the others shut down (the
+    // panel closed, ApplicationManager's 'shut')
+    void doDefaultAction()
+    {
+        finish(m_type == Restart || m_type == ScheduledRestart ? PowerAction::Restart
+               : m_type == ScheduledSleep                      ? PowerAction::Sleep
+                                                               : PowerAction::ShutDown);
+    }
+
+    void finish(PowerAction action)
+    {
+        if (m_finished)
+            return;
+        m_finished = true;
+        if (m_app && m_timer)
+            m_app->removeTimer(m_timer);   // -invalidateTimers
+        m_timer = 0;
+        if (m_window) {
+            m_window->onClose = nullptr;
+            m_window->close();
+        }
+        if (m_done)
+            m_done(action);
+    }
+
+    Type m_type;
+    Nib m_nib;
+    View *m_content = nullptr;
+    Size m_size;
+    ImageView *m_image = nullptr;
+    Label *m_info = nullptr, *m_timedOut = nullptr, *m_guest = nullptr;
+    Button *m_default = nullptr, *m_cancel = nullptr, *m_restart = nullptr, *m_sleep = nullptr;
+    std::unique_ptr<Window> m_window;
+    App *m_app = nullptr;
+    int m_timer = 0;
+    double m_gap = 8;
+    long m_countdown = 60;   // DAT_1000903d8's 60 seconds (-setTimerLength: for the scheduled ones)
+    long m_formatIndex = -1;
+    std::string m_base, m_timeFormat;
+    std::function<void(PowerAction)> m_done;
     bool m_finished = false;
 };
 
@@ -490,7 +710,23 @@ private:
 
 } // namespace
 
-int restart(bool shutDown)
+namespace {
+
+// The computer's own Restart, Shut Down and Sleep (a whole session only: SNOWLEOPARD_POWER=1, not a
+// window of another desktop)
+void power(const char *what)
+{
+    const char *on = std::getenv("SNOWLEOPARD_POWER");
+    if (!on || std::string(on) != "1")
+        return;
+    const char *const argv[] = {"systemctl", what, nullptr};
+    pid_t pid;
+    posix_spawnp(&pid, argv[0], nullptr, nullptr, const_cast<char *const *>(argv), environ);
+}
+
+} // namespace
+
+int restart(int type)
 {
     App &app = App::shared();
     if (!app.open()) {
@@ -498,27 +734,29 @@ int restart(bool shutDown)
         return 1;
     }
     FontManager::registerSystemFonts();
-    const char *power = std::getenv("SNOWLEOPARD_POWER");
-    const bool real = power && std::string(power) == "1";
     LogOut logout(app);
-    logout.beforeEnd = [shutDown, real] {
-        if (real) {
-            const char *const argv[] = {"systemctl", shutDown ? "poweroff" : "reboot", nullptr};
-            pid_t pid;
-            posix_spawnp(&pid, argv[0], nullptr, nullptr, const_cast<char *const *>(argv), environ);
-        }
-    };
-    LogOutAlert alert(shutDown ? Command::ShutDown : Command::Restart);
+    ShutDownAlert alert{ShutDownAlert::Type(type)};
     if (!alert.load()) {
-        std::fprintf(stderr, "loginwindow: LogOut.nib not found (extract the DVD's files: tools/extract.py)\n");
+        std::fprintf(stderr, "loginwindow: ShutDownAlert.nib not found (extract the DVD's files: tools/extract.py)\n");
         return 1;
     }
-    alert.show(app, [&](bool yes) {
-        // (in a window of another desktop the computer isn't the session's: the session ends alone)
-        if (yes)
+    alert.show(app, [&](PowerAction action) {
+        switch (action) {
+        case PowerAction::Cancel:
+            app.quit(1);   // cancel: (the session goes on)
+            break;
+        case PowerAction::Sleep:
+            power("suspend");   // sleep: Sleep(), the session goes on
+            app.quit(0);
+            break;
+        case PowerAction::ShutDown:
+        case PowerAction::Restart:
+            // ApplicationManager's 'shut' and 'rest': the applications asked to quit, then the computer
+            // (in a window of another desktop the computer isn't the session's: the session ends alone)
+            logout.beforeEnd = [action] { power(action == PowerAction::ShutDown ? "poweroff" : "reboot"); };
             logout.start();
-        else
-            app.quit(1);
+            break;
+        }
     });
     return app.run();
 }
