@@ -223,6 +223,7 @@ WANTED = {
         "./System/Library/CoreServices/backupd.bundle/Contents/Resources/English.lproj/MDDateFormatter.strings",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.png",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.tif*",
+        "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.icns",   # Script Menu's kinds
         # their Info.plist (NSMenuExtraWidth, NSPrincipalClass) and their strings (the Clock's menu)
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Info.plist",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/English.lproj/*.strings",

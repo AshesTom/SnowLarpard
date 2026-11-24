@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29), TimeMachine (section 31), UniversalAccess (section 32); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29), TimeMachine (section 31), UniversalAccess (section 32), Script Menu (section 33); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | NSMenuExtra, NSMenuExtraView (section 19), NSMenuExtraAnimationView's text (section 32); DockExtra and the image animation to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -932,13 +932,26 @@ bundle SystemUIServer loads; [`systemuiplugin.cpp`](../shell/src/systemuiplugin/
 | Its drawing: the menu's background, the image centred in the first frame; while widening or scrolling, the text (`_imageFromText:highlighted:`: the system font of 12, black or white by the highlight, its picture the text + 10 wide, no font smoothing) from the scroll's offset 5 points after the first frame, a point over the middle, then again after its end; not highlighted, its first and last three columns kept at 0.4, 0.6, 0.8 (white through NSCompositeDestinationIn) | `drawRect:` 0x395b, `_textAttributes:` 0x31d0 | Done (font smoothing left as it is) |
 | The image animation (`setImages:`, `setImageFrameRate:`, `startImageAnimation`) and DockExtra | 0x3050, 0x316b; DockExtra | Missing (no extra ported uses them yet) |
 
+## 33. The Script Menu
+
+Script Menu.menu 1.2.4 (AppleOSAScriptMenu, PerFile), x86_64, read with REA. Port:
+[`scriptmenu.cpp`](../shell/src/menuextras/ScriptMenu/scriptmenu.cpp), an AquaKit bundle SystemUIServer loads.
+
+| What | Where | Status |
+|---|---|---|
+| `-initWithBundle:`: Scripts.pdf as a template; com.apple.scriptmenu's ShowLibraryScripts (on) and PutAppScriptsFirst (off); the `update` notification | `initWithBundle:` 0x2d74, `getMenuImage:` 0x2268 | Done (scriptmenu.conf, read as the menu opens) |
+| `-menu`, made each time: Open Scripts Folder ▸ (Open %@ Scripts Folder for the application in front, Open User Scripts Folder, Open Computer Scripts Folder, Open Network Scripts Folder when it has items); Open %@ (the default script editor: `LSGetApplicationForInfo('osas', 'scpt')`, else "Default Script Editor"); then after a line each: the application's scripts ("%@ Scripts" disabled, first with PutAppScriptsFirst), the computer's (with ShowLibraryScripts), "Network Scripts" ▸, the user's, the application's (last otherwise) | `menu` 0x26ac, `addAppScripts:` 0x1b14, `makeOpenScriptsFolderItem:domain:` 0x1d3d, `makeLaunchPrefsItem` 0x252c, `launchPrefsHandler:` 0x231b | Done (the script editor TextEdit) |
+| The trees (FUN_000049f3): each domain's Scripts folder (kUserDomain, kLocalDomain, kNetworkDomain; the application's: the user's Scripts/Applications/<name>); no "." names, no invisible items, not the Folder Action Scripts folder nor the user's Applications folder; aliases resolved; folders are submenus; sorted as the Finder sorts (`UCCompareTextDefault` 0x38006, FUN_000020b6) | FUN_000049f3, `addMenuItems:f:` 0x1df9, `addMenuItemsToArray:f:` 0x1ec8 | Done (~/Library/Scripts, /Library/Scripts, /Network/Library/Scripts; symbolic links followed) |
+| The kinds (`PerFile::IPerFile`): folder 0, Perl 3 and shell 4 (FUN_00003917: "#!/usr/bin/perl" or "#! /usr/bin/perl", other "#!" lines), .applescript 5, .scpt / .scptd 6, droplet 7 ('dplt'), applet 8 ('aplt'), application 9, .workflow 10, executable 11 (an x bit), document 12; the extension hidden for 5, 6, 8 to 10; the bundle's icns for each | `IPerFile` 0x3c52, `SetIconRef` 0x387e | Done (extract.py takes the icns) |
+| `_executeFromFile`: Shift reveals it in the Finder (`misc` `slct`); Option opens it (3 to 5, 10 to 12 as the Finder, 6 to 8 in the script editor); otherwise folders shown, 3 and 4 run as tools (FUN_000031f3: fork, `execl`; its failure "Error:  Couldn't execute the tool %s; errno is %d (%s)." through displayalert.sh), 6 sent to AppleScriptRunner ('misc' 'dosc'), the others opened; "Unable to open that file.", "Unable to resolve that alias…" | `_executeFromFile` 0x41b9, `scriptHandler:` 0x21b7 | Done (checked in Xvfb: a shell script run from the menu); Linux has no AppleScript: compiled scripts say "Unable to execute that file."; Shift opens the item's folder (the Finder's selection not set) |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
 - The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject,
-  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess: sections 25 to 29, 31, 32). Left: Script Menu, PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
+  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu: sections 25 to 29, 31 to 33). Left: PPP, PPPoE, VPN, WWAN, ExpressCard, iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
 - SystemUIServer: Command-drag's insertion animation and poof, Control-F8 (section 19).
 - The protected daemons, decrypted now: backupd (Time Machine's backups), mds (Spotlight's index:

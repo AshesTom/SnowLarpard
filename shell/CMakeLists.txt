@@ -374,6 +374,11 @@ menu_extra(UniversalAccess src/menuextras/UniversalAccess/universalaccess.cpp)
 # Universal Access reads the X server's AccessX controls (XKB) on a connection of its own
 pkg_check_modules(XCB_XKB REQUIRED IMPORTED_TARGET xcb-xkb)
 target_link_libraries(UniversalAccessMenu PRIVATE PkgConfig::XCB_XKB)
+# Script Menu.menu: its bundle and library named with a space
+menu_extra(ScriptMenu src/menuextras/ScriptMenu/scriptmenu.cpp)
+target_link_libraries(ScriptMenuMenu PRIVATE "$<COMPILE_ONLY:CoreServices>")
+set_target_properties(ScriptMenuMenu PROPERTIES OUTPUT_NAME "Script Menu"
+                      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Menu Extras/Script Menu.menu/Contents/MacOS")
 
 # Apple80211.framework's ClientDialogs.bundle: AirPort's panels from its nibs, on AquaKit; the AirPort
 # menu extra starts it
@@ -485,6 +490,7 @@ endforeach()
 foreach(extra IN ITEMS Clock Battery Volume AirPort Bluetooth Eject User Displays TextInput Spaces TimeMachine UniversalAccess)
     component_info(menuextras/${extra} "Menu Extras/${extra}.menu/Contents")
 endforeach()
+component_info(menuextras/ScriptMenu "Menu Extras/Script Menu.menu/Contents")
 component_info(systemuiplugin "PrivateFrameworks/SystemUIPlugin.framework/Resources")
 component_info(privateframeworks/Apple80211 "PrivateFrameworks/Apple80211.framework/Resources/ClientDialogs.bundle/Contents")
 foreach(framework IN ITEMS Foundation AppKit CoreGraphics CoreText)
