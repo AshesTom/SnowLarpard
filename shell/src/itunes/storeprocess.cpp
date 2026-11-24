@@ -15,7 +15,8 @@
 //   does this process, for the store's pages only.
 //
 //   iTunesStore <frame file>
-// Standard input, a command a line: "size W H", "load URL", "home", "back", "forward", "reload",
+// Standard input, a command a line: "size W H", "load URL", "search TERM" (hex: the bag's "search"
+// page, as iTunes 8.2.1's FUN_00232dd8 asks it: term, submit=edit), "home", "back", "forward", "reload",
 // "mouse down|up|move X Y BUTTON CLICKS MODS", "wheel X Y DX DY", "key down|up KEYSYM MODS TEXT",
 // "focus 0|1", "ack" (the last frame taken). Standard output: "frame W H" (the picture in the frame
 // file, ARGB32 premultiplied, W × H × 4 bytes), "nav BACK FORWARD", "url URL", "loading 0|1",
@@ -492,6 +493,8 @@ private:
         m_home = m_bag.value("storeFront").toString();
         if (m_home.isEmpty())
             m_home = "https://itunes.apple.com/us/store";
+        if (!m_pendingTerm.isEmpty())
+            m_pending = searchURL(m_pendingTerm).toString();
         m_page->load(m_pending.isEmpty() ? QUrl(m_home) : QUrl(m_pending));
         m_started = true;
     }
@@ -515,6 +518,20 @@ private:
         } else if (m.contains("spinner")) {
             say(QString("loading %1").arg(m.value("spinner").toInt()));
         }
+    }
+
+    // The bag's "search" with the term and submit=edit (FUN_00232dd8 adds them to the page's request)
+    QUrl searchURL(const QString &term) const
+    {
+        QString base = m_bag.value("search").toString();
+        if (base.isEmpty())
+            base = "https://search.itunes.apple.com/WebObjects/MZStore.woa/wa/search";
+        QUrl u(base);
+        QUrlQuery q(u);
+        q.addQueryItem("term", QString::fromUtf8(QUrl::toPercentEncoding(term)));
+        q.addQueryItem("submit", "edit");
+        u.setQuery(q);
+        return u;
     }
 
     void load(const QString &url)
@@ -603,6 +620,12 @@ private:
             m_last = QImage();
         } else if (c == "load" && w.size() >= 2) {
             load(w[1]);
+        } else if (c == "search" && w.size() >= 2) {
+            const QString term = QString::fromUtf8(QByteArray::fromHex(w[1].toLatin1()));
+            if (!m_started)
+                m_pendingTerm = term;
+            else
+                m_page->load(searchURL(term));
         } else if (c == "home") {
             load(m_home);
         } else if (c == "back") {
@@ -674,7 +697,7 @@ private:
         return Qt::Key_unknown;
     }
 
-    QString m_frameFile, m_home, m_pending;
+    QString m_frameFile, m_home, m_pending, m_pendingTerm;
     QWebEngineProfile *m_profile = nullptr;
     StorePage *m_page = nullptr;
     QWebEngineView *m_view = nullptr;

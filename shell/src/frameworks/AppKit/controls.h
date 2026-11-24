@@ -224,6 +224,9 @@ public:
     std::function<void()> onEnter;   // Return: the field's action
     std::function<void()> onCancel;  // Escape, when set (the Finder's renaming)
     std::function<bool(Event &)> onKey;   // a key before the field's own handling: true when taken (Tab completing)
+    // NSSearchField's searchMenuTemplate: the magnifier with its arrow, a click on it calling this
+    // (the point under the field's left, in the field's coordinates)
+    std::function<void(Point)> onSearchMenu;
     bool acceptsFirstResponder() const override { return editable && isEnabled(); }
     const char *cursor() const override { return editable && isEnabled() ? "text" : nullptr; }   // NSTextView's I-beam
     // the selection (NSText's selectedRange), in bytes; typing replaces it
@@ -240,6 +243,7 @@ protected:
     std::string shown() const;
 private:
     size_t m_caret = 0, m_anchor = 0;
+    double m_scroll = 0;            // the text moved left to keep the caret in view (NSClipView's)
     bool m_keepSelection = false;   // selectRange before the field had the keyboard
     void deleteSelection();
     int m_blink = 0;

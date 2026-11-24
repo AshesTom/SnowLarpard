@@ -30,6 +30,7 @@ public:
     void start();   // the process, the bag's store front first
     void load(const std::string &url);
     void command(const std::string &line);   // "back", "forward", "home", "reload"
+    void search(const std::string &term);    // the bag's "search" page for the term (FUN_00232dd8)
     bool canGoBack() const { return m_back; }
     bool canGoForward() const { return m_forward; }
     bool loading() const { return m_loading; }

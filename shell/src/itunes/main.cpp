@@ -1582,7 +1582,13 @@ private:
         }
         m_search = m_top->add<SearchField>();
         m_search->placeholder = tr("kSearchFieldPrompt") == "kSearchFieldPrompt" ? "Search" : tr("kSearchFieldPrompt");
+        // filtered as typed; in the Store, Return searches it (FUN_00232dd8: the bag's "search", term)
         m_search->onChange = [this](const std::string &) { loadSource(); };
+        m_search->onEnter = [this] {
+            if (m_store && storeShown() && !m_search->text.empty())
+                m_store->search(m_search->text);
+        };
+        searchForStore(false);
 
         m_sourceScroll = c->add<ScrollView>();
         m_sources = m_sourceScroll->document()->add<SourceList>();
@@ -1919,6 +1925,7 @@ private:
         if (!m_nav)
             return;
         m_nav->store = on;
+        searchForStore(on);
         m_store->setHidden(!on);
         for (View *v : {static_cast<View *>(m_sourceScroll), m_divider, static_cast<View *>(m_list)})
             v->setHidden(on);
@@ -2381,6 +2388,7 @@ private:
             const bool store = sel >= 0 && size_t(sel) < m_sources->rows.size() && m_sources->rows[size_t(sel)].tag == -2;
             if (store != m_store8) {
                 m_store8 = store;
+                searchForStore(store);
                 layout();
                 if (store) {
                     m_store->start();
@@ -2404,13 +2412,13 @@ private:
         else
             for (const auto &[id, t] : m_library.tracks())
                 ids.push_back(id);
-        const std::string q = lower(m_search ? m_search->text : std::string());
+        const std::vector<std::string> words = searchWords(m_search ? m_search->text : std::string());
         std::vector<int> shown;
         for (int id : ids) {
             const Track *t = m_library.track(id);
             if (!t)
                 continue;
-            if (!q.empty() && lower(t->name + " " + t->artist + " " + t->album + " " + t->genre).find(q) == std::string::npos)
+            if (!words.empty() && !searchMatches(*t, words))
                 continue;
             shown.push_back(id);
         }
@@ -2479,6 +2487,148 @@ private:
         }
         m_bottom->totals = totals(shown.size(), ms, bytes);
         m_bottom->setNeedsDisplay();
+    }
+
+    // ---- The search field (FUN_00105e24; docs/itunes-reverse.md, section 28)
+    //   The text cut into words at the spaces (character class 8), the leading ones dropped; a rule
+    //   list matching all (FUN_0037b110(0)) of one list per word matching any (FUN_0037b110(1)) of
+    //   "contains" (0x01000002) on the scope's fields: All ('All ') Name, Album, Artist, Album Artist,
+    //   Composer (2, 3, 4, 0x47, 0x12, and their sort fields 0x4E–0x52, which the library doesn't keep),
+    //   Genre 8, Kind 9, Grouping 0x27 and Comments 0x0E when their columns are shown, and a word all
+    //   stars the rating of that many stars (FUN_0037cb1c(0x20, 0x19, n × 20)); Artist ('Art ',
+    //   'Auth') Artist and Album Artist; Album ('Alb ') Album; Composer ('Comp') Composer; Song ('Song',
+    //   'Name', 'Titl') Name. Case ignored.
+    static std::vector<std::string> searchWords(const std::string &text)
+    {
+        std::vector<std::string> words;
+        std::string w;
+        for (char c : text + " ") {
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                if (!w.empty())
+                    words.push_back(fold(w));
+                w.clear();
+            } else
+                w += c;
+        }
+        return words;
+    }
+
+    // Case folded (ASCII, Latin-1 and Latin Extended-A's capitals), as the words are compared
+    static std::string fold(const std::string &s)
+    {
+        std::string out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size();) {
+            const unsigned char c = static_cast<unsigned char>(s[i]);
+            if (c < 0x80) {
+                out += char(std::tolower(c));
+                ++i;
+            } else if ((c & 0xE0) == 0xC0 && i + 1 < s.size()) {
+                unsigned cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+                // Latin Extended-A: capitals even, then odd from Ĺ to Ň and Ź to Ž; Ÿ is ÿ's
+                if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7)
+                    cp += 0x20;
+                else if (((cp >= 0x100 && cp <= 0x137) || (cp >= 0x14A && cp <= 0x177)) && cp % 2 == 0 && cp != 0x130)
+                    cp += 1;
+                else if (((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17E)) && cp % 2 == 1)
+                    cp += 1;
+                else if (cp == 0x178)
+                    cp = 0xFF;
+                out += char(0xC0 | (cp >> 6));
+                out += char(0x80 | (cp & 0x3F));
+                i += 2;
+            } else {
+                out += s[i++];
+            }
+        }
+        return out;
+    }
+
+    bool searchMatches(const Track &t, const std::vector<std::string> &words) const
+    {
+        const std::string &scope = m_searchScope;
+        std::vector<const std::string *> fields;
+        if (scope == "Art " || scope == "Auth")
+            fields = {&t.artist, &t.albumArtist};
+        else if (scope == "Alb ")
+            fields = {&t.album};
+        else if (scope == "Comp")
+            fields = {&t.composer};
+        else if (scope == "Song" || scope == "Name" || scope == "Titl")
+            fields = {&t.name};
+        else {
+            fields = {&t.name, &t.album, &t.artist, &t.albumArtist, &t.composer};
+            auto shown = [&](int f) { return std::find(m_columnFields.begin(), m_columnFields.end(), f) != m_columnFields.end(); };
+            if (shown(8))
+                fields.push_back(&t.genre);
+            if (shown(9))
+                fields.push_back(&t.kind);
+            if (shown(0x27))
+                fields.push_back(&t.grouping);
+            if (shown(0x0e))
+                fields.push_back(&t.comments);
+        }
+        std::vector<std::string> folded;
+        for (const std::string *f : fields)
+            folded.push_back(fold(*f));
+        for (const std::string &w : words) {
+            bool any = false;
+            for (const std::string &f : folded)
+                if (f.find(w) != std::string::npos) {
+                    any = true;
+                    break;
+                }
+            if (!any && scope == "All " && w.find_first_not_of('*') == std::string::npos)
+                any = t.rating == int(w.size()) * 20;
+            if (!any)
+                return false;
+        }
+        return true;
+    }
+
+    // The search field going between the library and the Store: emptied (the library's filter is not
+    // the Store's search), the magnifier's menu the library's only
+    void searchForStore(bool store)
+    {
+        if (!m_search)
+            return;
+        if (!m_search->text.empty())
+            m_search->setText(std::string());
+        if (store)
+            m_search->onSearchMenu = nullptr;
+        else
+            m_search->onSearchMenu = [this](Point at) { searchMenu(at); };
+        m_search->setNeedsDisplay();
+    }
+
+    // The magnifier's menu (xMNU 515, FUN_00145dc0): by the source's distinguished kind, Music's (4)
+    // All, Artist, Album, Composer, Song; the other sources' All, Artist, Album, Name (STR# 210); the
+    // scope chosen checked (the first when it is not among them: it stays the window's)
+    void searchMenu(Point at)
+    {
+        if (storeShown())
+            return;   // the Store's field has none (FUN_00145dc0 builds it for the library only)
+        const int sel = m_sources->selected();
+        const bool music = sel >= 0 && size_t(sel) < m_sources->rows.size() && m_sources->rows[size_t(sel)].tag == -1;
+        std::vector<std::pair<std::string, std::string>> scopes{{"All ", tr("kSearchMenuItemAll")}, {"Art ", tr("210.008")}, {"Alb ", tr("210.009")}};
+        if (music) {
+            scopes.push_back({"Comp", tr("210.010")});
+            scopes.push_back({"Song", tr("210.011")});
+        } else
+            scopes.push_back({"Name", tr("210.022")});
+        std::vector<MenuItem> items;
+        int checked = 0;
+        for (size_t i = 0; i < scopes.size(); ++i)
+            if (scopes[i].first == m_searchScope)
+                checked = int(i);
+        for (size_t i = 0; i < scopes.size(); ++i)
+            items.emplace_back(scopes[i].second, false, true, int(i) == checked);
+        Menu::popUp(m_window.get(), m_search->toWindow(at), items, 0, Font::system(13), [this, scopes](int c) {
+            if (c < 0 || size_t(c) >= scopes.size())
+                return;
+            m_searchScope = scopes[size_t(c)].first;
+            loadSource();
+        });
     }
 
     // The browser's columns from the songs, each filtered by the choices left of it; the songs that
@@ -3619,6 +3769,7 @@ private:
     VolumeSlider *m_volume = nullptr;
     LCD *m_lcd = nullptr;
     SearchField *m_search = nullptr;
+    std::string m_searchScope = "All ";   // the search menu's choice (+0x45c): 'All ', 'Art ', 'Alb ', 'Comp', 'Song', 'Name'
     ScrollView *m_sourceScroll = nullptr;
     SourceList *m_sources = nullptr;
     View *m_divider = nullptr;

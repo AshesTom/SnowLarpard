@@ -977,8 +977,11 @@ size_t nextChar(const std::string &s, size_t at)
 Rect TextField::textRect() const
 {
     // the search field: after the magnifier, before the cancel button; a square bezel: 3 points in
-    if (style == Search)
-        return {22, 0, frame().w - 22 - 20, frame().h - 1};
+    // (26 with the search menu's arrow beside the magnifier)
+    if (style == Search) {
+        const double left = onSearchMenu ? 26 : 22;
+        return {left, 0, frame().w - left - 20, frame().h - 1};
+    }
     if (style == Bezel)
         return {4, 0, frame().w - 8, frame().h};
     return {2, 0, frame().w - 4, frame().h};
@@ -1026,18 +1029,46 @@ void TextField::draw(cairo_t *cr)
     else if (style == Bezel)
         CoreUI::textField(cr, bounds(), s);
     const double mid = std::floor((frame().h - 1) / 2);
-    if (style == Search)
+    if (style == Search) {
         magnifier(cr, 7, mid - 6);
-    const Rect r = textRect();
+        if (onSearchMenu) {
+            // the search menu's arrow: a small triangle right of the glass, pointing down
+            Color::gray(70).set(cr);
+            cairo_move_to(cr, 19, mid + 1);
+            cairo_line_to(cr, 24, mid + 1);
+            cairo_line_to(cr, 21.5, mid + 4);
+            cairo_close_path(cr);
+            cairo_fill(cr);
+        }
+    }
+    const Rect r0 = textRect();
+    const std::string str = shown();
+    // the text moved left to keep the caret in view while the field has the keyboard (left aligned)
+    if (isFirstResponder() && align == Align::Left) {
+        std::string before = text.substr(0, m_caret);
+        if (secure) {
+            before.clear();
+            for (size_t at = 0; at < m_caret; at = nextChar(text, at))
+                before += "•";
+        }
+        const double cx = textWidth(before, font), all = textWidth(str, font);
+        if (cx - m_scroll > r0.w - 1)
+            m_scroll = cx - r0.w + 1;
+        if (cx - m_scroll < 0)
+            m_scroll = cx;
+        m_scroll = std::max(0.0, std::min(m_scroll, all - r0.w + 1));
+    } else {
+        m_scroll = 0;
+    }
+    const Rect r{r0.x - m_scroll, r0.y, r0.w + m_scroll, r0.h};
     TextStyle t;
     t.font = font;
     t.elide = false;
     t.align = align;
     t.color = textColor(isEnabled());
     cairo_save(cr);
-    cairo_rectangle(cr, r.x, 0, r.w, frame().h);
+    cairo_rectangle(cr, r0.x, 0, r0.w, frame().h);
     cairo_clip(cr);
-    const std::string str = shown();
     if (str.empty() && !placeholder.empty() && !isFirstResponder()) {
         TextStyle p = t;
         p.color = Color::gray(0, 0.4);
@@ -1092,14 +1123,19 @@ void TextField::draw(cairo_t *cr)
 
 void TextField::mouseDown(Event &e)
 {
+    if (style == Search && onSearchMenu && e.location.x < 25) {
+        onSearchMenu(Point{2, frame().h});
+        return;
+    }
     if (style == Search && !text.empty() && e.location.x > frame().w - 20) {
         text.clear();
         m_caret = m_anchor = 0;
         if (onChange)
             onChange(text);
     } else {
-        // the caret at the nearest character
-        const Rect r = textRect();
+        // the caret at the nearest character (the text as moved to show the caret)
+        Rect r = textRect();
+        r.x -= m_scroll;
         m_caret = 0;
         for (size_t at = 0; at <= text.size(); at = nextChar(text, at)) {
             if (r.x + textWidth(secure ? std::string() : text.substr(0, at), font) > e.location.x)

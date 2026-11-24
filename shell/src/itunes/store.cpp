@@ -212,6 +212,12 @@ void StoreView::load(const std::string &url)
 
 void StoreView::command(const std::string &c) { send(c); }
 
+void StoreView::search(const std::string &term)
+{
+    start();
+    send("search " + hex(term));
+}
+
 void StoreView::setFrame(const Rect &r)
 {
     const bool resized = r.w != frame().w || r.h != frame().h;
