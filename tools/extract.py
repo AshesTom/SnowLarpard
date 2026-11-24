@@ -65,6 +65,13 @@ WANTED = {
         "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle/Contents/Resources/*.icns",
         "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientDialogs.bundle/Contents/Resources/*.pdf",
         "./System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/ClientController.bundle/Contents/Resources/English.lproj/Localizable.strings",
+        # Time Machine's browser (shell/src/timemachine, docs/timemachine-reverse.md): Backup.framework's
+        # stars, sun, clouds, the static galaxy, the toolbar's, arrows' and timeline's art, the twirl's
+        # RemapVortex shaders and the BU strings
+        "./System/Library/PrivateFrameworks/Backup.framework/Versions/A/Resources/*.png",
+        "./System/Library/PrivateFrameworks/Backup.framework/Versions/A/Resources/*.tiff",
+        "./System/Library/PrivateFrameworks/Backup.framework/Versions/A/Resources/RemapVortex.*",
+        "./System/Library/PrivateFrameworks/Backup.framework/Versions/A/Resources/English.lproj/Localizable.strings",
         # the colour spaces ImageIO gives untagged icns data (Generic RGB, Generic Gray), for
         # matching them to the screen (_CGImagePluginInitICNS)
         "./System/Library/ColorSync/Profiles/Generic RGB Profile.icc",

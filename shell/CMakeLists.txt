@@ -472,6 +472,19 @@ target_link_libraries(backupd PRIVATE Foundation)
 target_compile_options(backupd PRIVATE -Wall -Wextra)
 set_target_properties(backupd PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/backupd.bundle/Contents/Resources")
 
+# /Applications/Time Machine.app: the launcher and the browser ("Enter Time Machine", Backup.framework's
+# scene and the Finder's part of it: docs/timemachine-reverse.md, docs/timemachine-host.md), on Qt and
+# legacy OpenGL; the menu extra and the Dock start it
+find_package(Qt6 6.4 REQUIRED COMPONENTS OpenGL)
+add_executable(TimeMachine src/timemachine/main.cpp src/timemachine/starfield.cpp src/timemachine/starfield.h
+               src/timemachine/snapshots.cpp src/timemachine/snapshots.h
+               src/windowserver/frame.cpp src/windowserver/frame.h)
+target_include_directories(TimeMachine PRIVATE src/windowserver)
+target_link_libraries(TimeMachine PRIVATE aquashell Qt6::OpenGL)
+target_compile_options(TimeMachine PRIVATE -Wall -Wextra)
+set_target_properties(TimeMachine PROPERTIES OUTPUT_NAME "Time Machine"
+                      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/Time Machine.app/Contents/MacOS")
+
 add_executable(screencapture src/screencapture/main.cpp)
 target_link_libraries(screencapture PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
 target_compile_options(screencapture PRIVATE -Wall -Wextra)
@@ -491,6 +504,7 @@ if(ITUNES_DEPS_FOUND)
     component_info(itunes "iTunes.app/Contents")
 endif()
 component_info(activitymonitor "Activity Monitor.app/Contents")
+component_info(timemachine "Time Machine.app/Contents")
 foreach(app IN ITEMS Preview Mail PhotoBooth)
     if(TARGET ${app})
         string(TOLOWER ${app} dir)

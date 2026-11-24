@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Time Machine's side of the Finder (docs/timemachine-host.md): the backup database the shell's
+// backupd writes, its snapshots and their dates, a folder mapped into a snapshot as CarbonCore's
+// _CSBackupFindMatchingSnapshotItemByPath does, and the pictures of the Finder's window showing that
+// folder in each snapshot (TBackupSnapshotWindowController's offscreen window, section 5).
+#pragma once
+
+#include <QDateTime>
+#include <QImage>
+#include <QRect>
+#include <QSet>
+#include <QString>
+#include <QVector>
+
+namespace TM {
+
+struct Snapshot {
+    QString name;        // "2009-10-22-153045"
+    QString path;        // the snapshot folder
+    QDateTime date;      // SnapshotCompletionDate, else the name's
+};
+
+// timemachine.conf's BackupPath: <disk>/Backups.backupdb/<computer> (_CSBackupSessionCopyBackupDirectory)
+QString machineFolder();
+// its snapshots, newest first (BUCopySnapshotArray's order is oldest first; the stack's newest first)
+QVector<Snapshot> snapshots(const QString &machine);
+// <snapshot>/<volume folder>/<path relative to the volume's mount point>, the volume folder found by
+// its SnapshotVolumeUUID attribute, else by name; the older layout (the absolute path) as well.
+// Empty when the snapshot doesn't hold it.
+QString folderInSnapshot(const QString &snapshot, const QString &original);
+
+struct Entry {
+    QString name;
+    bool dir = false;
+    qint64 size = 0;        // its physical size (blocks)
+    QDateTime modified;
+    QString kind;
+};
+QVector<Entry> listFolder(const QString &path);
+// a signature of the folder's items (names, sizes, dates): "smart" navigation's changes
+QString signature(const QVector<Entry> &entries);
+
+// The Finder's window in list or icon view, as a picture: title bar and unified toolbar, sidebar, the list,
+// the status bar
+struct WindowPicture {
+    QString title;
+    QVector<Entry> entries;
+    QSet<QString> selected;
+    qint64 available = -1;
+    QString home;           // for the sidebar
+    bool icons = false;     // icon view (else list view)
+};
+QImage paintWindow(const WindowPicture &w, QSize size);
+// the items in the picture (y down): item i's rectangle; -1 from itemAt outside them
+QRect itemRect(QSize size, int item, bool icons);
+int itemAt(QSize size, QPoint p, int count, bool icons);
+// An unavailable snapshot (invalidTargetImage): Invalid*.png's 9-slice frame filled with 0.149 grey at 0.85
+QImage invalidPicture(QSize size);
+
+QString displayName(const QString &path);
+
+} // namespace TM
