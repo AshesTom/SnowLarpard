@@ -3,9 +3,12 @@
 // backupd.bundle, its __TEXT protected and decrypted with tools/deprotect.py) with REA
 // (docs/reverse-status.md, section 37):
 //
-//   - the backup database: <disk>/Backups.backupdb/<computer name>/<yyyy-MM-dd-HHmmss>/<volume>/…,
-//     the snapshot made as "<date>.inProgress" (SnapshotInProgressContainer, -stampAsInProgress)
-//     and renamed when complete, "Latest" a symbolic link to the newest
+//   - the backup database: <disk>/Backups.backupdb/<computer name>/<yyyy-MM-dd-HHmmss>/<volume>/<path
+//     relative to the volume's mount point> (what CarbonCore's _CSBackupFindMatchingSnapshotItemByPath
+//     expects, docs/timemachine-host.md section 6), the snapshot made as "<date>.inProgress"
+//     (SnapshotInProgressContainer, -stampAsInProgress) and renamed when complete, its dates in the
+//     SnapshotStartDate / SnapshotCompletionDate attributes, the volume folder's
+//     SnapshotVolumeUUID, "Latest" a symbolic link to the newest
 //     (-updateLatestSnapshotSymlinkForSnapshot:);
 //   - each snapshot whole: what didn't change since the latest one linked to it (hard links: "Linked
 //     source."), what did copied ("Copied %lld files (%@) from volume %@.");
@@ -39,6 +42,7 @@
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #include <cctype>
@@ -156,6 +160,66 @@ std::string volumeName(const std::string &path)
     return "Macintosh HD";
 }
 
+// the mount point of the volume holding `path` (/proc/self/mountinfo: the longest mount point that
+// is a prefix of it), as CarbonCore's _BSDVolumePathLength
+std::string mountPoint(const std::string &path)
+{
+    std::ifstream in("/proc/self/mountinfo");
+    std::string line, best = "/";
+    while (std::getline(in, line)) {
+        // id parent major:minor root mountpoint …
+        size_t pos = 0;
+        for (int field = 0; field < 4 && pos != std::string::npos; ++field)
+            pos = line.find(' ', pos + 1);
+        if (pos == std::string::npos)
+            continue;
+        const size_t end = line.find(' ', pos + 1);
+        std::string raw = line.substr(pos + 1, end - pos - 1), mp;
+        for (size_t i = 0; i < raw.size(); ++i) {   // octal escapes: \040 for a space
+            if (raw[i] == '\\' && i + 3 < raw.size()) {
+                mp += char(std::stoi(raw.substr(i + 1, 3), nullptr, 8));
+                i += 3;
+            } else {
+                mp += raw[i];
+            }
+        }
+        if (mp.size() > best.size() && path.compare(0, mp.size(), mp) == 0 && (path.size() == mp.size() || path[mp.size()] == '/'))
+            best = mp;
+    }
+    return best;
+}
+
+// the volume's UUID (/dev/disk/by-uuid), uppercase as the Mac's: "" when it has none
+std::string volumeUUID(const std::string &path)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0)
+        return {};
+    std::string found;
+    if (DIR *d = opendir("/dev/disk/by-uuid")) {
+        while (dirent *e = readdir(d)) {
+            struct stat dev;
+            if (e->d_name[0] != '.' && stat((std::string("/dev/disk/by-uuid/") + e->d_name).c_str(), &dev) == 0 &&
+                dev.st_rdev == st.st_dev) {
+                found = e->d_name;
+                break;
+            }
+        }
+        closedir(d);
+    }
+    for (char &c : found)
+        c = char(std::toupper((unsigned char)c));
+    return found;
+}
+
+// -[Snapshot stampAsCompleteWithType:]'s dates: gettimeofday as decimal microseconds since 1970, the
+// NUL in the size; com.apple.backupd.* in Linux's user namespace
+void stampDate(const std::string &path, const char *key, const struct timeval &tv)
+{
+    const std::string v = std::to_string((long long)tv.tv_sec * 1000000LL + tv.tv_usec);
+    setxattr(path.c_str(), (std::string("user.com.apple.backupd.") + key).c_str(), v.c_str(), v.size() + 1, 0);
+}
+
 // StdExclusions.plist's UserPathsExcluded, in the home; and their Linux counterparts
 const char *const UserPathsExcluded[] = {"Library/Caches", "Library/Logs", "Library/Mirrors", ".cache", ".local/share/Trash",
                                          ".thumbnails", ".ccache", ".local/state/snowleopard"};
@@ -163,6 +227,7 @@ const char *const UserPathsExcluded[] = {"Library/Caches", "Library/Logs", "Libr
 struct Plan {
     std::string source;                 // the home
     std::string volume;                 // its volume's name
+    std::string relative;               // the home relative to its volume's mount point ("/thomas")
     std::set<std::string> excluded;     // absolute paths
 };
 
@@ -369,6 +434,11 @@ int backup()
     Plan plan;
     plan.source = home();
     plan.volume = volumeName(plan.source);
+    // CarbonCore's <snapshot>/<volume>/<path relative to the volume's mount point>
+    {
+        const std::string mp = mountPoint(plan.source);
+        plan.relative = mp == "/" ? plan.source : plan.source.substr(mp.size());
+    }
     for (const char *p : UserPathsExcluded)
         plan.excluded.insert(plan.source + "/" + p);
     for (const std::string &p : prefs.list("ExcludeByPath"))
@@ -391,7 +461,9 @@ int backup()
     // the latest snapshot: what unchanged files link to
     const std::vector<Snapshot> snapshots = Thinning::list(machine);
     const std::string latest = snapshots.empty() ? std::string() : machine + "/" + snapshots.back().name;
-    const std::string previous = latest.empty() ? std::string() : latest + "/" + plan.volume + plan.source;
+    std::string previous = latest.empty() ? std::string() : latest + "/" + plan.volume + plan.relative;
+    if (!latest.empty() && !isDir(previous))   // an older snapshot: the home's absolute path
+        previous = latest + "/" + plan.volume + plan.source;
 
     status.phase("CalculatingChanges");
     status.progress(0, 0, 0);
@@ -418,15 +490,22 @@ int backup()
 
     // the snapshot, in progress: SnapshotInProgressContainer "<date>.inProgress", the snapshot a
     // UUID inside it (-createNewSnapshot)
+    struct timeval started;
+    gettimeofday(&started, nullptr);
     const std::string container = machine + "/" + isoNow(std::time(nullptr)) + ".inProgress";
     const std::string snapshot = container + "/" + uuid();
-    const std::string target = snapshot + "/" + plan.volume + plan.source;
+    const std::string target = snapshot + "/" + plan.volume + plan.relative;
     makePath(target);
     if (!isDir(target)) {
         writeResult(FolderError, false);
         status.done();
         return FolderError;
     }
+    // the volume folder found by its UUID first (_FindChildFolderByMatchingXTAttr), else by name
+    const std::string volumeId = volumeUUID(plan.source);
+    if (!volumeId.empty())
+        setxattr((snapshot + "/" + plan.volume).c_str(), "user.com.apple.backupd.SnapshotVolumeUUID", volumeId.c_str(),
+                 volumeId.size() + 1, 0);
     status.phase("Copying");
     Copier copier{plan, status};
     copier.total = counts.bytesToCopy;
@@ -440,14 +519,21 @@ int backup()
     }
     status.progress(1, copier.copied, copier.total);
 
-    // -promoteCompletedSnapshotFromContainer: named by its completion date ("%Y-%m-%d-%H%M%S",
-    // "%@-%d" from 2 while the name is taken), then "Latest" to it
+    // -promoteCompletedSnapshotFromContainer: named by its completion date ("%Y-%m-%d-%H%M%S"),
+    // then "Latest" to it. backupd adds "-2", "-3"… while the name is taken, but CarbonCore's
+    // _CSBackupPathIsBackupItem only takes 17-character names for snapshots: the next second is
+    // waited for instead
     status.phase("Finishing");
-    const std::string date = isoNow(std::time(nullptr));
-    std::string name = date;
-    for (int n = 2; isDir(machine + "/" + name) && n < 1000; ++n)
-        name = date + "-" + std::to_string(n);
+    std::string name = isoNow(std::time(nullptr));
+    while (isDir(machine + "/" + name) && !g_cancel) {
+        usleep(200000);
+        name = isoNow(std::time(nullptr));
+    }
     const std::string done = machine + "/" + name;
+    struct timeval completed;
+    gettimeofday(&completed, nullptr);
+    stampDate(snapshot, "SnapshotStartDate", started);
+    stampDate(snapshot, "SnapshotCompletionDate", completed);
     if (rename(snapshot.c_str(), done.c_str()) != 0) {
         removeTree(container);
         writeResult(FolderError, false);
