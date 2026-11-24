@@ -27,6 +27,7 @@ public:
     void extraViewChanged(SystemUI::MenuExtra *extra, SystemUI::MenuExtraView *old) override;
     void popUpMenu(SystemUI::MenuExtra *extra, const std::vector<AK::MenuItem> &items, std::function<void()> closed) override;
     void commandDrag(SystemUI::MenuExtra *extra, Drag phase, AK::Point screen) override;
+    void unloadExtra(SystemUI::MenuExtra *extra) override;   // -[NSMenuExtra unload]: removed on the next turn
     // the extras' new order, or one removed (dragged off the bar): the list to write
     std::function<void(const std::vector<std::string> &order, const std::string &removed)> listChanged;
     SystemUI::MenuExtra *fixed = nullptr;   // Spotlight: at the edge, not moved

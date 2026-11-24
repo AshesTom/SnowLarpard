@@ -68,6 +68,18 @@ void MenuToolbar::removeItem(MenuExtra *extra)
         }
 }
 
+void MenuToolbar::unloadExtra(MenuExtra *extra)
+{
+    // not from inside the extra's own call: on the run loop's next turn, if it is still there
+    App::shared().addTimer(0, false, [this, extra] {
+        for (MenuExtra *e : m_items)
+            if (e == extra) {
+                removeItem(extra);
+                return;
+            }
+    });
+}
+
 void MenuToolbar::relayout()
 {
     // -relayout: from 4, each at its length + 8 (lengths rounded up, as the window server's offsets)

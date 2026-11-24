@@ -79,6 +79,12 @@ public:
     static bool onPath(const std::string &program);
     void popUpMenu();   // -popUpMenu:
     void setNeedsDisplay();
+    // -unload: the extra takes itself off the bar (SystemUIServer deletes it after the call returns)
+    void unload()
+    {
+        if (host)
+            host->unloadExtra(this);
+    }
 
     // NSMenuExtra's animation (-setSupportsAnimation:, before the view is made: an
     // NSMenuExtraAnimationView then): a text sliding out beside the image and scrolling
@@ -98,6 +104,7 @@ public:
         // Command-drag (NSMenuToolbarView): the extra moved along the bar, or off it to remove it
         enum class Drag { Begin, Move, End };
         virtual void commandDrag(MenuExtra *, Drag, AK::Point /*screen*/) {}
+        virtual void unloadExtra(MenuExtra *) {}
     };
     Host *host = nullptr;
 

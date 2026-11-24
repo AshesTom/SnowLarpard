@@ -35,7 +35,7 @@ DVD is in the clear.
 | Photo Booth (3.0, 115) | clear | reversed below (section 14) |
 | Stickies (7.0) | clear | reversed below and ported (section 16) |
 | TextEdit (1.6, 264) | clear; the same binary on 10.6 (10A432) and 10.6.8 (10K549) | reversed below and ported (section 18) |
-| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29), TimeMachine (section 31), UniversalAccess (section 32), Script Menu (section 33), PPP, PPPoE and VPN on NetworkMenusCommon (section 34); the others to do |
+| Menu Extras (Battery, Displays, Bluetooth, Spaces, TimeMachine, User, Eject, ...) | clear | AirPort and Bluetooth (10.6.8's) reversed (section 17), Eject (section 25), User (section 26), Displays (section 27), TextInput (section 28), Spaces (section 29), TimeMachine (section 31), UniversalAccess (section 32), Script Menu (section 33), PPP, PPPoE and VPN on NetworkMenusCommon (section 34), ExpressCard (section 35); the others to do |
 | SystemUIPlugin (the menu extras' base classes) | clear | NSMenuExtra, NSMenuExtraView (section 19), NSMenuExtraAnimationView's text (section 32); DockExtra and the image animation to do |
 | screencapture (10.6), Grab (1.5, 101), Activity Monitor (10.6, 212) | clear | reversed below (sections 21, 22) |
 | iTunes (8.2.1; ppc and i386 only, `iTunes.pkg`) | clear (stripped) | its `xMNU` menus, art formats, window, top and bottom bars and LCD ([itunes-reverse.md](itunes-reverse.md)); ported on AquaKit (`shell/src/itunes`: the library, playback by libmpv, the mini player, the browser, the ratings, Get Info, the Equalizer, the grid: its cells by eye, smart playlists, Cover Flow drawn by cairo, View Options, the Preferences from their DITLs, the iTunes Store under its Store bar, the Magnetosphere visualizer: its magnets, particles, forces and links as reversed, and full screen; Get Info's Video, Sorting and Options tabs from their DITLs; Show Duplicates and the Equalizer's Make Preset and Edit List, section 18; Open Audio Stream, section 19; the songs' multiple selection, section 20; Get Info with several songs, section 21; playlist folders, dragging playlists into them and their order, sections 22 to 24; deleting and renaming a playlist, sections 25 and 26; importing and exporting playlists, section 27; songs and playlists dropped on playlists and songs reordered, section 23) |
@@ -961,13 +961,27 @@ AppleNetworkMenuExtra (a private framework in the clear), x86_64, read with REA.
 | The actions: `-a_connectOrDisconnect:` (disconnected 0 connects, 1 and 2 disconnect: `SCNetworkConnectionStart` / `Stop`), `-a_showTimeInMenuBar:`, `-a_showStatusInMenuBar:`, `-a_showSpecificTimeInMenuBar:` (stored in com.apple.networkConnect, current user, any host; a missing value is on) | 0x53b3, 0x145e, 0x137c, 0x2f17, `storeValue:forKey:` 0x5108, `boolValueForKey:` 0x1af9 | Done (nmcli connection up / down; networkConnect.conf) |
 | The view: disconnected the first image; connecting or disconnecting the images in turn and, with the status shown, "Connecting…" / "Disconnecting…" (SCROLL_*) scrolling a point a frame 5 points after the image, 80 points wide, its ends faded (white at 0.95, 0.91), every 0.02 s (0.1 s without the status); connected the last image and the time "%2.2d:%2.2d:%2.2d" (system font 12, black or white) 5 points after it, the view widened to hold it | `drawRect:` 0x8f5c, `drawSelf` 0x8a67, `drawAnimated:` 0x9318, `drawConnectedView:` 0x9d7a, `getTimeImage:isMenuDown:` 0x8862, `startStateTimer` 0x8774, `showAnimatedView` 0x8e0c, `showConnectedView` 0x8bda | Done (checked in Xvfb: "00:00:05" after VPN4, "Connecting…" scrolling); the PPP phases' finer frames (dialing, authenticating) as connecting, the widening animation (`startSizeTimer:`, `changeFrameSize`) left out |
 
+## 35. The ExpressCard menu extra
+
+ExpressCard.menu 2.0 (AppleExpressCardExtra and its ExpressCardExtraLib.c), x86_64, read with REA.
+Port: [`expresscard.cpp`](../shell/src/menuextras/ExpressCard/expresscard.cpp), an AquaKit bundle
+SystemUIServer loads; `-[NSMenuExtra unload]` in [`systemuiplugin.h`](../shell/src/systemuiplugin/systemuiplugin.h)
+(SystemUIServer takes the extra off the bar on the run loop's next turn).
+
+| What | Where | Status |
+|---|---|---|
+| `-initWithBundle:`: no ExpressCard controller (`ExpressCardGetControllerCount`), no extra; ExpressCard.pdf as a template; "Power off Card", "Power on Card", "Unknown Card Type"; `ExpressCardRequestNotifications` (IOPCIDevice matching IOPCIEjectable: arrival FUN_00001e38, termination through IOGeneralInterest FUN_00001d78): the functions added or removed, the sockets made again, `unload` when none is left (FUN_0000103d) | `initWithBundle:` 0x12bb, `createStringTemplates` 0x10ad, `addFunctionEntry:` 0xee5, `removeFunctionEntry:` 0xf0e | Done (the PCI Express hot-plug slots holding a card, read every two seconds; the extra unloads without one: checked in Xvfb) |
+| `-createSocketNames`: each card's function 0 (FunctionNumber); its two lines from VersionOneInfo (manufacturer, product, trimmed), else the class code's description; a PCI-to-PCI bridge (class 0x0604xx) marked | `createSocketNames` 0x155c | Done (lspci's vendor and device names for VersionOneInfo's; the class from sysfs) |
+| `-getCardDescriptionWithClassCode:`: "ClassCode%02x%02x%02x", then "ClassCode%02x%02x", then "ClassCode%02x" in Localizable.strings, else "Unknown Card Type" | 0x1412 | Done |
+| `-menu`: each card (the bridges only if nothing else is there), a line between them: its two lines disabled, "Power off Card" (`_powerOffMenuHit:` → `ExpressCardPowerOffCard`) | `menu` 0x18a3, 0x1b50 | Done (the slot's power file, through pkexec when it needs root); not tried with a card here |
+
 ## Next
 
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
 - The menu extras, one by one, from their clear binaries (AirPort and Bluetooth: section 17; Eject,
-  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu, PPP, PPPoE, VPN: sections 25 to 29, 31 to 34). Left: WWAN, ExpressCard, iChat, Ink, IrDA,
+  User, Displays, TextInput, Spaces, TimeMachine, UniversalAccess, Script Menu, PPP, PPPoE, VPN, ExpressCard: sections 25 to 29, 31 to 35). Left: WWAN, iChat, Ink, IrDA,
   Fax, HomeSync, Sync, Remote Desktop.
 - SystemUIServer: Command-drag's insertion animation and poof, Control-F8 (section 19).
 - The protected daemons, decrypted now: backupd (Time Machine's backups), mds (Spotlight's index:
