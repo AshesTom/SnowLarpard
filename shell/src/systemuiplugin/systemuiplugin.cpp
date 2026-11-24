@@ -80,8 +80,33 @@ void MenuExtra::setView(MenuExtraView *view)
 MenuExtraView *MenuExtra::view()
 {
     if (!m_view)
-        m_view = new MenuExtraView(this);
+        m_view = m_supportsAnimation ? new MenuExtraAnimationView(this, m_length) : new MenuExtraView(this);
     return m_view;
+}
+
+// -setAnimationText: and the others: the animation view's, when the extra supports animation
+void MenuExtra::setAnimationText(const std::string &text)
+{
+    if (auto *v = dynamic_cast<MenuExtraAnimationView *>(view()))
+        v->setAnimationText(text);
+}
+
+void MenuExtra::setStaticText(const std::string &text)
+{
+    if (auto *v = dynamic_cast<MenuExtraAnimationView *>(view()))
+        v->setStaticText(text);
+}
+
+void MenuExtra::startTextAnimation()
+{
+    if (auto *v = dynamic_cast<MenuExtraAnimationView *>(view()))
+        v->startTextAnimation();
+}
+
+void MenuExtra::stopTextAnimation()
+{
+    if (auto *v = dynamic_cast<MenuExtraAnimationView *>(view()))
+        v->stopTextAnimation();
 }
 
 void MenuExtra::setNeedsDisplay()
@@ -139,6 +164,153 @@ void MenuExtraView::draw(cairo_t *cr)
     // centred, at its size (an image cell, NSImageScaleNone)
     const double x = std::floor((r.w - img.width()) / 2), y = std::floor((r.h - img.height()) / 2);
     img.draw(cr, AK::Point{x, y});
+}
+
+// ---- NSMenuExtraAnimationView
+
+namespace {
+AK::Font animationFont() { return AK::Font::system(12); }   // -_textAttributes: systemFontOfSize:12
+} // namespace
+
+MenuExtraAnimationView::MenuExtraAnimationView(MenuExtra *extra, double minWidth)
+    : MenuExtraView(extra), m_minWidth(minWidth)
+{
+}
+
+MenuExtraAnimationView::~MenuExtraAnimationView()
+{
+    if (m_timer)
+        AK::App::shared().removeTimer(m_timer);
+}
+
+void MenuExtraAnimationView::setAnimationText(const std::string &text)
+{
+    m_text = text;
+    m_textFrame = 0;
+    m_textImageWidth = text.empty() ? 0 : std::floor(AK::textWidth(text, animationFont()) + 10);
+}
+
+void MenuExtraAnimationView::setStaticText(const std::string &text)
+{
+    setAnimationText(text);
+    setMaxWidth(m_minWidth + m_textImageWidth);
+    if (m_timer)
+        AK::App::shared().removeTimer(m_timer);
+    m_timer = 0;
+    m_stage = text.empty() ? 0 : 2;
+    m_extra->setLength(text.empty() ? m_minWidth : m_maxWidth);
+    setNeedsDisplay();
+}
+
+void MenuExtraAnimationView::startTextAnimation()
+{
+    if (m_stage == 0) {
+        m_stage = 1;
+        if (!m_timer)
+            m_timer = AK::App::shared().addTimer(1.0 / 30, true, [this] { tick(); });   // 0.0333 s
+    } else if (m_stage == 3) {
+        m_stage = 1;
+    }
+}
+
+void MenuExtraAnimationView::stopTextAnimation()
+{
+    if (m_stage == 1 || m_stage == 2) {
+        m_stage = 3;
+    } else if (m_stage == 0 && m_timer) {
+        AK::App::shared().removeTimer(m_timer);
+        m_timer = 0;
+        setNeedsDisplay();
+    }
+}
+
+void MenuExtraAnimationView::tick()
+{
+    double w = m_extra->length();
+    switch (m_stage) {
+    case 1:
+        w = std::floor(m_widthIncrement + w);
+        if (w >= m_maxWidth) {
+            m_stage = 2;
+            w = m_maxWidth;
+        }
+        m_extra->setLength(w);
+        break;
+    case 2:
+        if (++m_textFrame > m_textImageWidth)
+            m_textFrame = 0;
+        break;
+    case 3:
+        w = std::floor(w - m_widthIncrement);
+        if (w <= m_minWidth) {
+            m_stage = 0;
+            w = m_minWidth;
+        }
+        m_extra->setLength(w);
+        break;
+    default:
+        if (m_timer) {
+            const int t = m_timer;
+            m_timer = 0;
+            AK::App::shared().removeTimer(t);   // may be this callback's own: nothing after it
+            setNeedsDisplay();
+            return;
+        }
+    }
+    setNeedsDisplay();
+}
+
+void MenuExtraAnimationView::draw(cairo_t *cr)
+{
+    const double w = frame().w, h = frame().h;
+    const bool down = m_extra->isMenuDown();
+    if (down)
+        drawHighlight(cr, Rect{0, 0, w, h - 1});
+    // the image in the first frame, centred
+    const Image &img = down && !m_extra->alternateImage().isNull() ? m_extra->alternateImage() : m_extra->image();
+    if (!img.isNull()) {
+        const double x = std::floor(std::max(0.0, (m_minWidth - img.width()) / 2));
+        const double y = std::floor(std::max(0.0, (h - 1 - img.height()) / 2));
+        img.draw(cr, AK::Point{x, y});
+    }
+    if ((m_stage != 1 && m_stage != 2) || m_text.empty())
+        return;
+    const AK::Font font = animationFont();
+    const double th = AK::lineHeight(font);
+    const double x0 = m_minWidth + 5;
+    // a point over the middle (Cocoa's y up: floor((h - th) / 2) + 1 from the bottom)
+    const double top = h - (std::floor((h - th) / 2) + 1) - th;
+    AK::TextStyle style;
+    style.font = font;
+    style.color = AK::Color::gray(down ? 255 : 0);
+    style.elide = false;
+    cairo_save(cr);
+    cairo_rectangle(cr, x0, 0, std::max(0.0, w - x0), h);
+    cairo_clip(cr);
+    cairo_push_group(cr);
+    // the picture from the scroll's offset, then its start again after its end
+    const double first = m_textImageWidth - m_textFrame;
+    AK::drawText(cr, m_text, Rect{x0 - m_textFrame, top, m_textImageWidth, th}, style);
+    if (first < w)
+        AK::drawText(cr, m_text, Rect{x0 + first, top, m_textImageWidth, th}, style);
+    if (!down) {
+        // the ends faded (NSRectFillListUsingOperation, NSCompositeDestinationIn): white at 0.4, 0.6, 0.8
+        static const double alpha[] = {0.4, 0.6, 0.8};
+        // (cairo's DEST_IN clears what lies outside its shape: each column clipped and painted)
+        cairo_set_operator(cr, CAIRO_OPERATOR_DEST_IN);
+        for (int i = 0; i < 3; ++i)
+            for (const double x : {x0 + i, w - i - 1}) {
+                cairo_save(cr);
+                cairo_rectangle(cr, x, top, 1, th);
+                cairo_clip(cr);
+                cairo_set_source_rgba(cr, 1, 1, 1, alpha[i]);
+                cairo_paint(cr);
+                cairo_restore(cr);
+            }
+    }
+    cairo_pop_group_to_source(cr);
+    cairo_paint(cr);
+    cairo_restore(cr);
 }
 
 void MenuExtraView::mouseDown(AK::Event &e)

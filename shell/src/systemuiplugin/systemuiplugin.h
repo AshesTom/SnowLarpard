@@ -80,6 +80,15 @@ public:
     void popUpMenu();   // -popUpMenu:
     void setNeedsDisplay();
 
+    // NSMenuExtra's animation (-setSupportsAnimation:, before the view is made: an
+    // NSMenuExtraAnimationView then): a text sliding out beside the image and scrolling
+    void setSupportsAnimation(bool on) { m_supportsAnimation = on && !m_view; }
+    bool supportsAnimation() const { return m_supportsAnimation; }
+    void setAnimationText(const std::string &text);
+    void setStaticText(const std::string &text);
+    void startTextAnimation();
+    void stopTextAnimation();
+
     // SystemUIServer's side (NSMenuToolbar): told of a new length; pops the menus up
     struct Host {
         virtual ~Host() = default;
@@ -98,6 +107,7 @@ private:
     Image m_image, m_alternate;
     MenuExtraView *m_view = nullptr;
     bool m_menuDown = false;
+    bool m_supportsAnimation = false;
     unsigned m_modifiers = 0;
 };
 
@@ -115,6 +125,35 @@ public:
 protected:
     MenuExtra *m_extra;
     bool m_commandDrag = false;
+};
+
+// NSMenuExtraAnimationView (SystemUIPlugin 0x2c9d…0x3790): the extra's image in its first frame (the
+// minimum), and a text: -startTextAnimation widens the view to its maximum width (100 points unless
+// set) by maxWidth / 0.75 / 30 a tick, 30 ticks a second, then scrolls the text a point a tick, round
+// and round (its picture the text's width + 10 wide); -stopTextAnimation narrows it back the same way.
+// The text in the system font of 12, black (white on the highlight), 5 points after the image, a
+// point over the middle; faded over its first and last three columns (0.4, 0.6, 0.8) when not
+// highlighted. -setStaticText: the text shown at once, the view as wide as image and text, still.
+class MenuExtraAnimationView : public MenuExtraView {
+public:
+    MenuExtraAnimationView(MenuExtra *extra, double minWidth);
+    ~MenuExtraAnimationView() override;
+    void draw(cairo_t *cr) override;
+    void setMaxWidth(double w) { m_maxWidth = w, m_widthIncrement = w / 0.75 / 30; }
+    double maxWidth() const { return m_maxWidth; }
+    void setAnimationText(const std::string &text);
+    void setStaticText(const std::string &text);
+    void startTextAnimation();
+    void stopTextAnimation();
+
+private:
+    void tick();   // -_updateTextAnimation:
+    double m_minWidth, m_maxWidth = 100, m_widthIncrement = 100 / 0.75 / 30;
+    std::string m_text;
+    double m_textImageWidth = 0;   // the text's width + 10 (_maxTextImageFrame)
+    double m_textFrame = 0;        // the scroll (_textImageFrame)
+    int m_stage = 0;               // 0 none, 1 widening, 2 scrolling, 3 narrowing
+    int m_timer = 0;
 };
 
 // The menu bar's text: 14 points (CLKDigitalView's systemFontOfSize:14), black, white while highlighted
