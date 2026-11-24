@@ -3,12 +3,17 @@
 // knows them by) connected to the shell's settings or to the system's tools. And the three panes whose
 // nibs are of the older NSArchiver format (Displays, Language & Text, Speech), laid out by hand after
 // 10.6's.
+#include "colorpanel.h"
 #include "foundation.h"
 #include "nibpane.h"
 
 #include <algorithm>
 #include <cmath>
 #include <clocale>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <memory>
 #include <ctime>
 #include <langinfo.h>
 #include <functional>
@@ -366,10 +371,151 @@ void printFax(NibPane &p)
 
 // ---- Appearance: the lists its code fills
 
+// AppearanceShared's settings: the global domain's (appearance.conf here), which CoreUI, AppKit and
+// screencapture read
+struct NamedColor {
+    std::string name;
+    double r, g, b;
+};
+
+bool parseRGB(const std::string &text, double &r, double &g, double &b)
+{
+    // _colorFromRGBString: three floats and nothing after them
+    std::istringstream in(text);
+    std::string rest;
+    return bool(in >> r >> g >> b) && !(in >> rest);
+}
+
+std::string rgbString(double r, double g, double b)
+{
+    // _rgbStringFromColor: "%f %f %f", calibrated RGB
+    char s[64];
+    std::snprintf(s, sizeof s, "%f %f %f", r, g, b);
+    return s;
+}
+
+std::vector<NamedColor> highlightColors()
+{
+    // NamedColor +namedColorsFromFile:bundle: highlightColors.plist's pairs (name, "r g b") in the
+    // file's order (not sorted), each name through the pane's Localizable.strings; the last one is
+    // "Other..." (extract.py's JSON beside the plist: its strings in order)
+    const std::string pane = "/System/Library/PreferencePanes/Appearance.prefPane";
+    std::vector<NamedColor> out;
+    std::ifstream in(Assets::path(pane + "/Contents/Resources/highlightColors.plist.json"));
+    std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<std::string> strings;
+    for (size_t i = 0; i < json.size(); ++i) {
+        if (json[i] != '"')
+            continue;
+        std::string s;
+        for (++i; i < json.size() && json[i] != '"'; ++i)
+            s += json[i] == '\\' && i + 1 < json.size() ? json[++i] : json[i];
+        strings.push_back(s);
+    }
+    for (size_t i = 0; i + 1 < strings.size(); i += 2) {
+        NamedColor c{Assets::tr(pane, "Localizable", strings[i], strings[i]), 0, 0, 0};
+        if (parseRGB(strings[i + 1], c.r, c.g, c.b))
+            out.push_back(c);
+    }
+    if (out.empty())   // without the DVD's file: 10.6's list
+        out = {{"Graphite", 0.7804, 0.8157, 0.8588}, {"Silver", 0.7765, 0.7765, 0.7765}, {"Blue", 0.7098, 0.8353, 1.0},
+               {"Gold", 0.9843, 0.9294, 0.4510}, {"Red", 1.0, 0.6941, 0.5490}, {"Orange", 1.0, 0.8235, 0.5059},
+               {"Green", 0.7647, 0.9765, 0.5686}, {"Purple", 0.9137, 0.7216, 1.0}, {"Other...", 0.5, 0.5, 0.5}};
+    return out;
+}
+
+Image swatch(double r, double g, double b)
+{
+    // -addNamedColor:toPopUp:: a 24 x 12 image, the colour filling it, a frame 2 wide in black at 0.1
+    // (swatchFillPath, swatchFramePath: the same rectangle)
+    Image img(24, 12);
+    cairo_t *cr = cairo_create(img.surface());
+    cairo_rectangle(cr, 0, 0, 24, 12);
+    cairo_set_source_rgb(cr, r, g, b);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 0, 0, 0, 0.1);
+    cairo_set_line_width(cr, 2);
+    cairo_stroke(cr);
+    cairo_destroy(cr);
+    return img;
+}
+
 void appearance(NibPane &p)
 {
-    fillPopUp(p.nib.outlet<PopUpButton>("highlightColorPopUp"),
-              {"Blue", "Gold", "Graphite", "Green", "Orange", "Purple", "Red", "Silver", "-", "Other…"}, 0);
+    auto settings = std::make_shared<Settings>("appearance");
+    // Appearance: the nib's items, tags 1 (Blue, aqua_blue.tiff) and 6 (Graphite, graphite.tiff);
+    // -aquaColorChanged: → -setAquaInterface: the tag (anything but 1 or 6 is 1) as
+    // AppleAquaColorVariant, then AppleAquaColorVariantChanged (CoreUI's _CUIGetTheme reads it again)
+    if (auto *aqua = p.nib.outlet<PopUpButton>("aquaColorPopUp")) {
+        const std::string pane = "/System/Library/PreferencePanes/Appearance.prefPane/Contents/Resources/";
+        for (MenuItem &it : aqua->items)
+            if (it.tag == 1 || it.tag == 6)
+                it.image = Image::load(Assets::path(pane + (it.tag == 1 ? "aqua_blue.tiff" : "graphite.tiff")));
+        const int variant = settings->integer("AppleAquaColorVariant", 1);
+        for (size_t i = 0; i < aqua->items.size(); ++i)
+            if (aqua->items[i].tag == variant)
+                aqua->setSelected(int(i));
+        then(aqua, [settings, aqua] {
+            const int s = aqua->selected();
+            int tag = s >= 0 && size_t(s) < aqua->items.size() ? aqua->items[size_t(s)].tag : 1;
+            if (tag != 1 && tag != 6)
+                tag = 1;
+            settings->set("AppleAquaColorVariant", tag);
+        });
+    }
+    // Highlight Color: the named colours with their swatches; the one equal to AppleHighlightColor
+    // ("0.709800 0.835300 1.000000" unset) selected, else the last ("Other...") given that colour.
+    // -newHighlightColor:: the item's colour as AppleHighlightColor; the last opens the colour panel
+    // (-applyColorClicked: sets it), starting from AppleOtherHighlightColor
+    if (auto *hl = p.nib.outlet<PopUpButton>("highlightColorPopUp")) {
+        auto colors = std::make_shared<std::vector<NamedColor>>(highlightColors());
+        double r = 0.7098, g = 0.8353, b = 1.0;
+        parseRGB(settings->string("AppleHighlightColor", "0.709800 0.835300 1.000000"), r, g, b);
+        double orr, og, ob;
+        if (parseRGB(settings->string("AppleOtherHighlightColor"), orr, og, ob))
+            colors->back() = {colors->back().name, orr, og, ob};
+        else
+            settings->set("AppleOtherHighlightColor", rgbString(colors->back().r, colors->back().g, colors->back().b));
+        hl->items.clear();
+        for (const NamedColor &c : *colors) {
+            MenuItem it{c.name};
+            it.image = swatch(c.r, c.g, c.b);
+            hl->items.push_back(it);
+        }
+        int chosen = int(colors->size()) - 1;
+        for (size_t i = 0; i < colors->size(); ++i) {
+            const NamedColor &c = (*colors)[i];
+            if (std::fabs(c.r - r) < 1e-4 && std::fabs(c.g - g) < 1e-4 && std::fabs(c.b - b) < 1e-4) {
+                chosen = int(i);
+                break;
+            }
+        }
+        if (chosen == int(colors->size()) - 1) {
+            colors->back() = {colors->back().name, r, g, b};   // -updateItem:withColor:
+            hl->items.back().image = swatch(r, g, b);
+        }
+        hl->setSelected(chosen);
+        hl->setNeedsDisplay();
+        then(hl, [settings, colors, hl] {
+            const int s = hl->selected();
+            if (s < 0 || size_t(s) >= colors->size())
+                return;
+            const NamedColor c = (*colors)[size_t(s)];
+            settings->set("AppleHighlightColor", rgbString(c.r, c.g, c.b));
+            if (size_t(s) + 1 != colors->size())
+                return;
+            ColorPanel::setColor(Color{c.r, c.g, c.b, 1});
+            ColorPanel::setTarget([settings, colors, hl](const Color &picked) {
+                // -applyColorClicked:: the Other item's colour, and the highlight
+                colors->back() = {colors->back().name, picked.r, picked.g, picked.b};
+                hl->items.back().image = swatch(picked.r, picked.g, picked.b);
+                hl->setNeedsDisplay();
+                settings->set("AppleOtherHighlightColor", rgbString(picked.r, picked.g, picked.b));
+                settings->set("AppleHighlightColor", rgbString(picked.r, picked.g, picked.b));
+            });
+            ColorPanel::show();
+        });
+    }
     for (const char *o : {"recentAppsPopUpButton", "recentDocsPopUpButton", "recentServersPopUpButton"}) {
         auto *b = p.nib.outlet<PopUpButton>(o);
         fillPopUp(b, {"None", "5", "10", "15", "20", "30", "50"}, 2);

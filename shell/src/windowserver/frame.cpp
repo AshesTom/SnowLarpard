@@ -2,6 +2,7 @@
 #include "frame.h"
 
 #include "aqua.h"
+#include "art.h"
 #include "artfile.h"
 #include "assets.h"
 #include "x11.h"
@@ -36,7 +37,7 @@ QImage buttonImage(const TitleBar &t, int button)
     static const char *names[] = {"close", "minimize", "zoom", "toolbar"};
     // -[NSWindow setDocumentEdited:]: the close button with its dot (closedirty)
     const char *name = button == Close && t.documentEdited ? "closedirty" : names[button];
-    QStringList path = {"titlebarcontrols", name, button == ToolbarButton ? "colorsrgb" : "colorsryg"};
+    QStringList path = {"titlebarcontrols", name, button == ToolbarButton ? "colorsrgb" : Art::graphite() ? "graphite" : "colorsryg"};
     path << (t.utility ? QStringList{"utilwin", "variant2"} : QStringList{"regularwin"});
     if (!t.active)
         path << "inactive";

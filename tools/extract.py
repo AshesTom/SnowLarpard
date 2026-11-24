@@ -190,6 +190,8 @@ WANTED = {
         "./System/Library/PreferencePanes/*.prefPane/Contents/Resources/English.lproj/*",
         # the search field's terms (Fibre Channel keeps them beside its resources, not in English.lproj)
         "./System/Library/PreferencePanes/*.prefPane/Contents/Resources/*.searchTerms",
+        # Appearance's highlight colours (LookPref -populatePopUp:fromColorListFile:)
+        "./System/Library/PreferencePanes/Appearance.prefPane/Contents/Resources/highlightColors.plist",
         # Preview: its nibs, toolbar, pictures and strings (Preview.app on AquaKit reads them)
         "./Applications/Preview.app/Contents/Resources/*.tiff",
         "./Applications/Preview.app/Contents/Resources/*.tif",

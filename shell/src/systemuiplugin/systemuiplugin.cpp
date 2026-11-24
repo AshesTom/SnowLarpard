@@ -111,7 +111,8 @@ void MenuExtra::popUpMenu()
 
 void MenuExtraView::drawHighlight(cairo_t *cr, const Rect &r)
 {
-    static const Image tab = CoreUI::shared(20103);
+    // DrawMenuTitle, state 0xA8: 20103, Graphite 20104
+    const Image tab = CoreUI::shared(CoreUI::graphite() ? 20104 : 20103);
     if (!tab.isNull()) {
         tab.draw(cr, r);
         return;

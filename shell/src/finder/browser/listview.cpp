@@ -50,7 +50,7 @@ public:
             // the sorted column: the blue cell (clear in an inactive window), its arrow apart
             CoreUI::Element bg;
             if (sorted)
-                bg = CoreUI::element({"listheader", active ? "blue" : "clear", "regular"});
+                bg = CoreUI::element({"listheader", active ? CoreUI::tint() : "clear", "regular"});
             if (bg.isNull())
                 bg = CoreUI::element({"listheader", active ? "active" : "clear", "clear", "regular"});
             if (bg.isNull())
@@ -68,7 +68,7 @@ public:
             }
             double textRight = r.right() - 4;
             if (sorted) {
-                const CoreUI::Element arrow = CoreUI::element({"listheader", "arrow", active ? "blue" : "clear", "regular", direction});
+                const CoreUI::Element arrow = CoreUI::element({"listheader", "arrow", active ? CoreUI::tint() : "clear", "regular", direction});
                 if (!arrow.isNull()) {
                     const Image &a = arrow.pieces.front();
                     const Rect ar{std::floor(r.right() - a.width() - 6), std::floor((HeaderHeight - a.height()) / 2), double(a.width()),

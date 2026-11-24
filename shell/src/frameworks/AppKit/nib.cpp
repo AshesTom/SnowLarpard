@@ -422,6 +422,7 @@ View *Nib::buildControl(int obj, const std::string &cls, const Rect &frame)
             if (placeholder(mi.title))
                 mi.title = "\u2013";   // filled by the pane's code on the Mac
             mi.enabled = !m_archive.boolean(item, "NSIsDisabled");
+            mi.tag = int(m_archive.integer(item, "NSTag"));   // -indexOfItemWithTag:
             p->items.push_back(mi);
         }
         p->pullDown = m_archive.boolean(cell, "NSPullDown");

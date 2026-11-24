@@ -256,6 +256,28 @@ void draw(cairo_t *cr, const Element &e, const Rect &b, int vertical)
     }
 }
 
+namespace {
+int gTheme = -1;   // _CUIGetTheme's gTheme: -1 until read
+}
+
+int theme()
+{
+    // _CUIGetTheme (0x21d64): AppleAquaColorVariant (the Appearance pane's, the global domain's;
+    // here appearance.conf) 6 is Graphite (1), anything else Blue (0); read once, again after
+    // AppleAquaColorVariantChanged
+    if (gTheme < 0)
+        gTheme = AK::Settings("appearance").integer("AppleAquaColorVariant", 1) == 6 ? 1 : 0;
+    return gTheme;
+}
+
+void themeChanged() { gTheme = -1; }
+
+const char *tint()
+{
+    // CUIPath::AppendTint (0x355f2): a tinted state's token, 0x3B "graphite" or 0x0D "blue"
+    return graphite() ? "graphite" : "blue";
+}
+
 Color color(int index)
 {
     // kColorTable (CoreUI 0x3FB60): RGBA doubles, the entries used here; Generic RGB, as all of
@@ -316,7 +338,7 @@ void focusRing(cairo_t *cr, const Rect &bounds, const std::function<void(cairo_t
         }
     cairo_surface_mark_dirty(ring);
     cairo_save(cr);
-    color(FocusBlue).set(cr);
+    color(graphite() ? FocusGraphite : FocusBlue).set(cr);
     cairo_mask_surface(cr, ring, bounds.x - pad, bounds.y - pad);
     cairo_restore(cr);
     cairo_surface_destroy(ring);
@@ -361,7 +383,7 @@ void withFocus(cairo_t *cr, const Rect &r, const State &s, const std::function<v
 void pushButton(cairo_t *cr, const Rect &r, const State &s, bool isDefault)
 {
     const bool blue = (isDefault && s.enabled && s.windowActive) || s.pressed;
-    Element e = first({{"pushbutton", blue ? "blue" : "clear", stateToken(s), sizeToken(s)}, {"pushbutton", "clear", sizeToken(s)}});
+    Element e = first({{"pushbutton", blue ? tint() : "clear", stateToken(s), sizeToken(s)}, {"pushbutton", "clear", sizeToken(s)}});
     withFocus(cr, r, s, [&](cairo_t *c) { draw(c, e, r); });
 }
 
@@ -370,14 +392,14 @@ void checkBox(cairo_t *cr, const Rect &r, const State &s, int value)
     const std::string v = value == 1 ? "onchecked" : value == 2 ? "mixed" : "off";
     // checked: blue in a key window; pressed: blue when it will be checked
     const bool blue = s.enabled && s.windowActive && (value != 0) != s.pressed;
-    Element e = first({{"checkbox", blue ? "blue" : "clear", v, stateToken(s), sizeToken(s)}, {"checkbox", "clear", v, sizeToken(s)}});
+    Element e = first({{"checkbox", blue ? tint() : "clear", v, stateToken(s), sizeToken(s)}, {"checkbox", "clear", v, sizeToken(s)}});
     withFocus(cr, r, s, [&](cairo_t *c) { draw(c, e, r); });
 }
 
 void radioButton(cairo_t *cr, const Rect &r, const State &s, bool on)
 {
     const bool blue = s.enabled && s.windowActive && on != s.pressed;
-    Element e = first({{"radiobutton", blue ? "blue" : "clear", on ? "on" : "off", stateToken(s), sizeToken(s)},
+    Element e = first({{"radiobutton", blue ? tint() : "clear", on ? "on" : "off", stateToken(s), sizeToken(s)},
                        {"radiobutton", "clear", on ? "on" : "off", sizeToken(s)}});
     withFocus(cr, r, s, [&](cairo_t *c) { draw(c, e, r); });
 }
@@ -385,7 +407,7 @@ void radioButton(cairo_t *cr, const Rect &r, const State &s, bool on)
 void popUpButton(cairo_t *cr, const Rect &r, const State &s)
 {
     const bool blue = s.enabled && s.windowActive;
-    Element e = first({{"popup", blue ? "blue" : "clear", stateToken(s), sizeToken(s), "rightsidebutton"},
+    Element e = first({{"popup", blue ? tint() : "clear", stateToken(s), sizeToken(s), "rightsidebutton"},
                        {"popup", "clear", stateToken(s), sizeToken(s), "rightsidebutton"}, {"popup", sizeToken(s), "rightsidebutton"}});
     withFocus(cr, r, s, [&](cairo_t *c) { draw(c, e, r); });
 }
@@ -529,7 +551,7 @@ void segments(cairo_t *cr, SegmentStyle style, const std::vector<Rect> &rects, c
         const bool sel = i < selected.size() && selected[i];
         const bool down = int(i) == pressed;
         const bool blue = s.enabled && s.windowActive && sel;
-        std::vector<std::string> p{"tabs", blue ? "blue" : "clear", "horizontal", size};
+        std::vector<std::string> p{"tabs", blue ? tint() : "clear", "horizontal", size};
         if (!s.enabled)
             p.push_back("disabled");
         else if (down)
@@ -624,7 +646,7 @@ void scroller(cairo_t *cr, const Rect &r, double value, double proportion, const
     const std::string active = s.windowActive ? "active" : "inactive";
     const char *end = horizontal ? "right" : "bottom";
     Element arrows = element({"scrollbars", active, "arrows", end, "double", "regular"});
-    Element down = pressedArrow ? element({"scrollbars", "arrows", "blue", end, "double", "pressed", "regular"}) : Element{};
+    Element down = pressedArrow ? element({"scrollbars", "arrows", tint(), end, "double", "pressed", "regular"}) : Element{};
     // the track runs under the arrows' rounded start (their first piece, 8 long)
     if (horizontal) {
         draw(cr, element({"scrollbars", active, "regular", "track", dir}), Rect{r.x, r.y, p.track.w + 8, r.h});
@@ -648,7 +670,7 @@ void scroller(cairo_t *cr, const Rect &r, double value, double proportion, const
         }
     }
     if (!p.knob.empty())
-        draw(cr, element({"scrollbars", s.windowActive ? "blue" : "clear", "regular", "thumb", dir}), p.knob);
+        draw(cr, element({"scrollbars", s.windowActive ? tint() : "clear", "regular", "thumb", dir}), p.knob);
 }
 
 SliderParts sliderParts(const Rect &r, double value, int ticks, bool ticksAbove, bool small)
@@ -703,7 +725,7 @@ void slider(cairo_t *cr, const Rect &r, double value, int ticks, const State &s,
         }
     const char *dir = ticks <= 0 ? "none" : p.vertical ? (ticksAbove ? "west" : "east") : (ticksAbove ? "north" : "south");
     // an inactive window's thumb is the active one's: the art has no other
-    Element thumb = first({{"sliders", s.pressed ? "blue" : "clear", stateToken(s), sizeToken(s), dir, "thumb"},
+    Element thumb = first({{"sliders", s.pressed ? tint() : "clear", stateToken(s), sizeToken(s), dir, "thumb"},
                            {"sliders", "active", "clear", sizeToken(s), dir, "thumb"}, {"sliders", "clear", sizeToken(s), dir, "thumb"}});
     withFocus(cr, p.thumb, s, [&](cairo_t *c) { draw(c, thumb, p.thumb); });
 }
@@ -719,7 +741,7 @@ void progressBar(cairo_t *cr, const Rect &r, double value, bool indeterminate, d
     // done part, the "complete" art once it is full; an indeterminate one: its stripes across, moving
     const char *active = s.windowActive ? "active" : "inactive";
     auto tile = [&](bool complete) {
-        std::vector<std::string> p{"progressindicator", "blue", "horizontal", "outset", "regular",
+        std::vector<std::string> p{"progressindicator", tint(), "horizontal", "outset", "regular",
                                    indeterminate ? "indeterminate" : "determinate"};
         if (complete)
             p.push_back("complete");
@@ -763,7 +785,7 @@ void comboBox(cairo_t *cr, const Rect &r, const State &s)
 {
     const bool blue = s.enabled && s.windowActive;
     Element field = element({"combobox", "active", "regular", "rightsidebutton", "textfield"});
-    Element end = first({{"combobox", blue ? "blue" : "clear", stateToken(s), "regular", "rightsidebutton"},
+    Element end = first({{"combobox", blue ? tint() : "clear", stateToken(s), "regular", "rightsidebutton"},
                          {"combobox", "clear", "regular", "rightsidebutton"}});
     const double endWidth = end.pieces.size() == 2 ? end.pieces[1].width() : 18;
     withFocus(cr, r, s, [&](cairo_t *c) {
@@ -833,6 +855,12 @@ void menuBackground(cairo_t *cr, const Rect &r, MenuShape shape, double resultsC
 
 void menuSelection(cairo_t *cr, const Rect &r)
 {
+    // DrawMenuItem, state 0xA8: SArtFile 20114 (Graphite 20115) stretched over the item
+    const Image selected = shared(graphite() ? 20115 : 20114);
+    if (!selected.isNull()) {
+        selected.draw(cr, r);
+        return;
+    }
     Element e = element({"menu", "selection"});
     if (e.isNull())
         AK::fill(cr, r, AK::Color::rgb(0x2a, 0x5c, 0xe0));

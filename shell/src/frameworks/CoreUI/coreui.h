@@ -51,6 +51,14 @@ Rect aligned(double w, double h, const Rect &bounds, int horizontal, int vertica
 // CUIRenderer's drawing of an element in bounds (see above)
 void draw(cairo_t *cr, const Element &e, const Rect &bounds, int vertical = AlignCenter);
 
+// _CUIGetTheme: 1 for Graphite (AppleAquaColorVariant 6), 0 for Blue; themeChanged() forgets it
+// (AppleAquaColorVariantChanged). tint(): the token of a tinted state ("graphite" or "blue",
+// CUIPath::AppendTint) where 10.6's art says "blue"
+int theme();
+inline bool graphite() { return theme() == 1; }
+void themeChanged();
+const char *tint();
+
 // _CUIColorGet: the entries of kColorTable the controls use
 enum ColorIndex {
     FocusBlue = 0x3E, FocusGraphite = 0x3F,

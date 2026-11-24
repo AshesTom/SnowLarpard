@@ -34,6 +34,12 @@ enum : int {
 };
 
 QImage shared(int id, int representation = 0);
+
+// _CUIGetTheme: Graphite when AppleAquaColorVariant (the Appearance pane's, in appearance.conf) is 6;
+// read again when the file changes. tint(): the art's token for a tinted state, CUIPath::AppendTint's
+// "graphite" or "blue"
+bool graphite();
+const char *tint();
 // The same image as a PNG file in the cache (~/.cache/snowleopard/art), for Qt style sheets.
 QString sharedFile(int id);
 

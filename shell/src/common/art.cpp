@@ -3,7 +3,10 @@
 
 #include "assets.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
+#include <QSettings>
 #include <QFile>
 #include <QStandardPaths>
 #include <QHash>
@@ -20,6 +23,21 @@ static const QByteArray &artFile()
     }();
     return bytes;
 }
+
+bool graphite()
+{
+    static QDateTime seen;
+    static bool value = false;
+    const QString file = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/appearance.conf";
+    const QDateTime modified = QFileInfo(file).lastModified();
+    if (modified != seen || !seen.isValid()) {
+        seen = modified;
+        value = QSettings(file, QSettings::IniFormat).value("AppleAquaColorVariant", 1).toInt() == 6;
+    }
+    return value;
+}
+
+const char *tint() { return graphite() ? "graphite" : "blue"; }
 
 QImage shared(int id, int representation)
 {

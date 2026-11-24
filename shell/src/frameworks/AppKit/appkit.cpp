@@ -15,6 +15,8 @@
 #include <map>
 #include <cstdio>
 #include <poll.h>
+#include <sys/inotify.h>
+#include <unistd.h>
 
 namespace AK {
 
@@ -457,7 +459,7 @@ void Window::drawTitleBar(cairo_t *cr)
     }
     static const char *const names[] = {"close", "minimize", "zoom"};
     for (int b = 0; b < (m_titleButtons ? 3 : 0); ++b) {
-        std::vector<std::string> path{"titlebarcontrols", b == 0 && m_edited ? "closedirty" : names[b], "colorsryg", "regularwin"};
+        std::vector<std::string> path{"titlebarcontrols", b == 0 && m_edited ? "closedirty" : names[b], CoreUI::graphite() ? "graphite" : "colorsryg", "regularwin"};
         if (!active)
             path.push_back("inactive");
         else if (m_titlePressed == b)
@@ -802,6 +804,38 @@ void App::setFrontWithoutWindows(bool front)
         m_platform->setFrontWithoutWindows(front);
 }
 
+void App::watchAppearance()
+{
+    // CoreUI listens for AppleAquaColorVariantChanged and AppleColorPreferencesChangedNotification
+    // (the Appearance pane's distributed notifications): here, its settings file being written
+    // (Settings writes a copy then renames it over the old one)
+    const int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (fd < 0)
+        return;
+    makePath(configDir());
+    if (inotify_add_watch(fd, configDir().c_str(), IN_CLOSE_WRITE | IN_MOVED_TO) < 0) {
+        close(fd);
+        return;
+    }
+    watch(fd, [this, fd] {
+        alignas(inotify_event) char buf[4096];
+        bool changed = false;
+        ssize_t n;
+        while ((n = read(fd, buf, sizeof buf)) > 0)
+            for (char *p = buf; p < buf + n;) {
+                const auto *e = reinterpret_cast<const inotify_event *>(p);
+                if (e->len && std::strcmp(e->name, "appearance.conf") == 0)
+                    changed = true;
+                p += sizeof(inotify_event) + e->len;
+            }
+        if (!changed)
+            return;
+        CoreUI::themeChanged();
+        for (Window *w : m_windows)
+            w->invalidate();
+    });
+}
+
 int App::run()
 {
     // the display, a source of the main run loop: the windows redrawn after the timers, its events
@@ -823,6 +857,7 @@ int App::run()
         return false;
     };
     RunLoop::main().setSource(std::move(display));
+    watchAppearance();
     return RunLoop::main().run();
 }
 

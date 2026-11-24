@@ -259,6 +259,7 @@ public:
 private:
     friend class Window;
     App() = default;
+    void watchAppearance();
     std::unique_ptr<Platform> m_platform;
     std::vector<Window *> m_windows;
 };

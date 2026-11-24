@@ -72,7 +72,7 @@ Reader: `CUISharedArtReader::Setup` (0x35758), `GetImageHeader` (0x35890),
 | `ResetMenuBarWindowFilter` (HIToolbox 0x25e2e) asks the application for a filter (event 'menu' 2010, parameter 'mbfi') and otherwise passes nil to `CGSSetMenuBarFilter`: the default filter is the window server's, not in HIToolbox | HIToolbox | Partial |
 | What that filter gives, measured on two 10.6 screenshots (different desktops, same result): the art as if over a backing white to mid-height, then grey down to 150; nothing of the desktop shows | measured | Done |
 | The bar's 22nd row (its edge): grey 75, opaque | measured | Done |
-| Selected title: art 20103 (Graphite theme: 20104) stretched over the title | `CUIRenderer::DrawMenuTitle` (0x1e460), state 0xA8 | Done (Blue only) |
+| Selected title: art 20103 (Graphite theme: 20104) stretched over the title | `CUIRenderer::DrawMenuTitle` (0x1e460), state 0xA8 | Done (Blue and Graphite, section 24) |
 | The Apple menu's title (title kind 0xCF): art 20061, black, 22 × 22 (open: 20062, white), centred, 1 px right | `DrawMenuTitle` | Done |
 | HIToolbox's `HiResAppleMenu*.png` (blue, 76 × 88) | HIToolbox resources | Not 10.6's menu bar Apple: left over from earlier systems, unused |
 | CoreUI's menu bar recipe: `selectiontab` (`menubrtab`, sides `menutabsides1`), `search` (`searchtab`, `searchheader`) | `UI.bundle/Contents/Recipes/menubar.xml` | Partial: read; used by Spotlight's tab later |
@@ -81,7 +81,7 @@ Reader: `CUISharedArtReader::Setup` (0x35758), `GetImageHeader` (0x35890),
 
 | Item | Source | Status |
 |---|---|---|
-| Selected item: art 20114 (Graphite: 20115) stretched over the item | `CUIRenderer::DrawMenuItem` (0x1b942), state 0xA8 | Done (Blue only) |
+| Selected item: art 20114 (Graphite: 20115) stretched over the item | `CUIRenderer::DrawMenuItem` (0x1b942), state 0xA8 | Done (Blue and Graphite, section 24) |
 | kCUIVariantMenuItemHelpResults (0xC8) and MenuItemSearchResults (0xCA), Help's search results: the item filled with 0xE1 (white at 0.95), then from x + the column (the descriptor's value, else 128) to its end with 0xE3 (black at 0.02) | `DrawMenuItem` | Read (CoreUI's constants table: `_kCUIConstantKeys` / `_kCUIConstantIDs`, 0x14d pairs); the shell has no Help menu search to draw yet |
 | kCUIVariantMenuItemSearch (0xC9), the Help menu's search field item: art 10050 in one piece (three across at scale 1) | `DrawMenuItem` | Read; not used yet (no Help menu search) |
 | The Dock's menus: see section 4 | `CUIRenderer::DrawDockMenu` (0x8610) | Done |
@@ -765,9 +765,26 @@ applications alike), each under the freedesktop names for its job.
 | The window: HelpWindow.nib's HVWindow, style 159 (utility, non-activating panel), 480 × 400: the utility title bar; under it the toolbar continuing it (a grey from 196 to 168, its baseline 101: a 10.6 screenshot). The toolbar: back and forward (NSSegmentStyleTexturedRounded, 23 points a segment, the history's menus), Home (the library's menu) and the action menu (HelpActionMenu.nib) as textured segmented controls with a menu indicator, their images AppKit's `imageNamed:` NSGoBack, NSGoForward, NSHome, NSAction; a flexible space, a small spinner not displayed when stopped, the search field "Ask a Question" (`-[NSToolbar _minimumSizeForSearchFieldToolbarItem]` / `_maximum…`: 140 × 22 to 200 × 22, 19 high in the small size). The pages' scroll bars: AppKit's (WebKit's WebView) | `-_setupSegmentedButtons` 0x100009aff, `-toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:` 0x100009494, `-_setupSearchField` 0x1000089a3, `-_setupActionMenu` 0x100008ff3; AppKit 0x16998e, 0x1699c4 | Done in part: Home and the action button 44 and 46 wide as measured (AppKit's -sizeToFit not read); the images still Help Viewer's Back.tif, Forward.tif, Home.tif and a drawn gear (AppKit's named images are in its __IMAGE segment, their table not found); the scroll bars AquaStyle's pictures as Chromium's ::-webkit-scrollbar parts, vertical only |
 | help: URLs: openbook=, anchor= (the page that names the anchor), topic_list= (the pages naming it, through the book's XQuery template and stylesheet, headed Other=), search=, searchall= | HVAnchorURLHandler, HVSearchURLHandler; the books' genlist.xquery; Help Viewer's searchResultTemplate.xquery, resultList.xquery, topicListTmpl.htm, no_topics_found.html | Done: the templates' XQuery (variables, for … return, if/then/else, data()) interpreted; the anchors and the search from the pages themselves, not the .helpindex; the pages drawn by Qt WebEngine (WebKit's WebView on the Mac) |
 
+## 24. The appearance: Blue and Graphite
+
+CoreUI 1.0's x86_64 slice and the Appearance pane's code (Appearance.prefPane's `LookPref` and
+`AppearanceShared`, in the clear), read with REA. Port: [`coreui.cpp`](../shell/src/frameworks/CoreUI/coreui.cpp)
+(AquaKit), [`art.cpp`](../shell/src/common/art.cpp) (the Qt programs: WindowServer, the Aqua style),
+[`linuxpanes.cpp`](../shell/src/prefs/linuxpanes.cpp) (the pane).
+
+| What | Where | Status |
+|---|---|---|
+| `_CUIGetTheme`: AppleAquaColorVariant (the current application's, else the global domain's) 6 is Graphite (1), anything else Blue (0); cached, read again on `AppleAquaColorVariantChanged` | CoreUI 0x21d64 | Done: appearance.conf (the global domain here); AquaKit's run loop watches the file (inotify) and redraws its windows, the Qt programs read it again when it changes |
+| `CUIPath::AppendTint`: a tinted state's token in the art's key, 0x3B `graphite` for Graphite, 0x0D `blue` otherwise; untinted 0x12 `clear` | CoreUI 0x355f2 | Done: push buttons, check boxes, radio buttons, popups, tabs, scroll bars, sliders, progress bars, combo boxes, round buttons, list headers (AquaKit and the Qt style); the window buttons' `colorsryg` becomes `graphite` (AquaKit's title bars and WindowServer's) |
+| The tinted pictures and colours by theme: the selected menu title 20103 / 20104 (`DrawMenuTitle`), the selected menu item 20114 / 20115 (`DrawMenuItem`), the focus ring `_CUIColorGet(0x3E)` / `0x3F` (`BeginFocus`) | CoreUI | Done |
+| `__CUIGetSystemHighlightColor` (colour 0xE0): AppleHighlightColor "r g b" from any application's preferences, else 0.7098 0.8353 1.0; again on `AppleColorPreferencesChangedNotification` | CoreUI 0x21a9a | Read; screencapture's selection uses the setting, AquaKit's text selection not yet |
+| The pane: Appearance's popup (the nib's items, tags 1 and 6, with aqua_blue.tiff and graphite.tiff) selected by tag; `-aquaColorChanged:` → `-setAquaInterface:` the tag (other than 1 or 6: 1) as AppleAquaColorVariant, then `AppleAquaColorVariantChanged` | `-mainViewDidLoad` 0x1477, `-resetUIFromPrefs` 0x20ac, `-aquaColorChanged:` 0x2a06, `-setAquaInterface:` 0x2a50 | Done |
+| Highlight Color: highlightColors.plist's pairs in the file's order (Graphite, Silver, Blue, Gold, Red, Orange, Green, Purple, Other...), names through Localizable.strings, each item a 24 x 12 swatch (the colour, a frame 2 wide in black at 0.1); the one equal to AppleHighlightColor selected, else the last given that colour; Other... opens the colour panel from AppleOtherHighlightColor (`-applyColorClicked:`); a choice written as "%f %f %f" (`_rgbStringFromColor`) | `-populatePopUp:fromColorListFile:`, `+namedColorsFromFile:bundle:`, `-addNamedColor:toPopUp:`, `-selectColor:inPopUp:`, `-newHighlightColor:` 0x2b01 | Done (extract.py takes highlightColors.plist) |
+| NSPopUpButtonCell: the item's image before its title | AppKit | Done (the gap of 5 points by eye) |
+| WindowServer's title bars redrawn at once on a change | | Partial: on their next redraw (focus, a move) |
+
 ## Next
 
-- `_CUIGetTheme` and the Graphite appearance (AppleAquaColorVariant).
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.

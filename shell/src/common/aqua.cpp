@@ -63,7 +63,7 @@ void init(QApplication &app)
     app.setFont(Assets::uiFont(13));
     if (ArtFile::element({"menu", "allround"}).isNull()) {
         QString style = QString::fromLatin1(menuStyle);
-        QString selected = Art::sharedFile(Art::MenuItemSelected);
+        QString selected = Art::sharedFile(Art::graphite() ? Art::MenuItemSelectedGraphite : Art::MenuItemSelected);
         if (!selected.isEmpty())
             style += QStringLiteral("QMenu::item:selected { background: transparent; border-image: url(%1) 0 0 0 0 stretch stretch; }")
                          .arg(selected);

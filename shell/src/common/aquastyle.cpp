@@ -2,6 +2,7 @@
 #include "aqua.h"
 #include "aquastyle.h"
 
+#include "art.h"
 #include "artfile.h"
 #include "assets.h"
 #include "x11.h"
@@ -297,7 +298,7 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
                 return;
             }
         }
-        drawElement(p, art({"pushbutton", isDefault && s == "active" ? "blue" : "clear", s, "regular"}), opt->rect);
+        drawElement(p, art({"pushbutton", isDefault && s == "active" ? Art::tint() : "clear", s, "regular"}), opt->rect);
         return;
     }
     case CE_PushButtonLabel:
@@ -361,10 +362,10 @@ void AquaStyle::drawControl(ControlElement ce, const QStyleOption *opt, QPainter
         if (!tab)
             break;
         const bool selected = opt->state & State_Selected;
-        ArtFile::Element e = art({"tabs", selected ? "blue" : "clear", (opt->state & State_Sunken) ? "pressed" : windowState(opt),
+        ArtFile::Element e = art({"tabs", selected ? Art::tint() : "clear", (opt->state & State_Sunken) ? "pressed" : windowState(opt),
                                   "horizontal", "regular"});
         if (e.isNull())
-            e = art({"tabs", selected ? "blue" : "clear", "horizontal", "regular"});
+            e = art({"tabs", selected ? Art::tint() : "clear", "horizontal", "regular"});
         const int cap = e.isNull() ? 0 : e.pieces[0].width();
         QRect r = opt->rect;
         const bool first = tab->position == QStyleOptionTab::Beginning || tab->position == QStyleOptionTab::OnlyOneTab;
@@ -500,7 +501,7 @@ void AquaStyle::drawComplexControl(ComplexControl cc, const QStyleOptionComplex 
                     y += piece.height();
                 }
             }
-            drawElement(p, art({"scrollbars", windowActive ? "blue" : "clear", "regular", "thumb", "vertical"}), slider);
+            drawElement(p, art({"scrollbars", windowActive ? Art::tint() : "clear", "regular", "thumb", "vertical"}), slider);
             return;
         }
     }
@@ -509,7 +510,7 @@ void AquaStyle::drawComplexControl(ComplexControl cc, const QStyleOptionComplex 
         if (cb && !cb->editable) {
             const bool active = (opt->state & State_Active) && (opt->state & State_Enabled);
             QString s = !(opt->state & State_Enabled) ? "disabled" : (opt->state & State_Sunken) ? "pressed" : windowState(opt);
-            ArtFile::Element e = art({"popup", active ? "blue" : "clear", s, "regular", "rightsidebutton"});
+            ArtFile::Element e = art({"popup", active ? Art::tint() : "clear", s, "regular", "rightsidebutton"});
             if (e.isNull())
                 e = art({"popup", "clear", s, "regular", "rightsidebutton"});
             drawElement(p, e, opt->rect);

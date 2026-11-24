@@ -122,7 +122,7 @@ void Button::draw(cairo_t *cr)
     }
     case Round: {
         // NSCircularBezelStyle: roundbutton, its image or title in the middle
-        CoreUI::draw(cr, CoreUI::element({"roundbutton", m_pressed ? "blue" : "clear", m_pressed ? "pressed" : "active", "regular"}), bounds());
+        CoreUI::draw(cr, CoreUI::element({"roundbutton", m_pressed ? CoreUI::tint() : "clear", m_pressed ? "pressed" : "active", "regular"}), bounds());
         if (!image.isNull())
             image.draw(cr, Point{std::floor((frame().w - image.width()) / 2), std::floor((frame().h - image.height()) / 2)});
         else
@@ -844,8 +844,17 @@ void PopUpButton::draw(cairo_t *cr)
     t.color = textColor(isEnabled());
     t.font = Font::system(small ? 11 : 13);
     const int shown = pullDown ? 0 : m_selected;
-    if (shown >= 0 && size_t(shown) < items.size())
-        drawText(cr, items[size_t(shown)].title, Rect{small ? 9.0 : 11.0, 0, frame().w - 11 - 26, frame().h - 2}, t);
+    if (shown >= 0 && size_t(shown) < items.size()) {
+        // NSPopUpButtonCell: the item's image, if it has one, before its title (the Appearance
+        // pane's swatches)
+        double x = small ? 9.0 : 11.0;
+        const Image &img = items[size_t(shown)].image;
+        if (!img.isNull()) {
+            img.draw(cr, Point{x, std::floor((frame().h - 2 - img.height()) / 2)});
+            x += img.width() + 5;
+        }
+        drawText(cr, items[size_t(shown)].title, Rect{x, 0, frame().w - x - 26, frame().h - 2}, t);
+    }
 }
 
 void PopUpButton::mouseDown(Event &)
