@@ -97,6 +97,10 @@ if [[ -z ${SNOWLEOPARD_TOOLS:-} ]]; then
         [[ -f $t/softwareupdate.py ]] && { export SNOWLEOPARD_TOOLS=$(cd -- "$t" && pwd); break; }
     done
 fi
+# Time Machine's engine: com.apple.backupd-auto's hourly backups (StartInterval 3600), while automatic
+# backups are on (backupd checks timemachine.conf)
+backupd="$apps/backupd.bundle/Contents/Resources/backupd"
+[[ -x $backupd ]] && { "$backupd" --daemon >"$state/backupd.log" 2>&1 & pids+=($!); }
 updater="$apps/Software Update.app/Contents/MacOS/Software Update"
 rm -f -- "$state/install-updates"
 while :; do

@@ -466,6 +466,12 @@ set_target_properties(WindowServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_
 
 # /usr/sbin/screencapture: the screen shots, of the screen, a selection or a window (SystemUIServer's
 # hot keys, Grab), to a file or the clipboard; a program of its own as the Mac's
+# backupd.bundle: Time Machine's engine (docs/reverse-status.md, section 37); the menu extra starts it
+add_executable(backupd src/backupd/main.cpp src/backupd/thinning.cpp src/backupd/thinning.h)
+target_link_libraries(backupd PRIVATE Foundation)
+target_compile_options(backupd PRIVATE -Wall -Wextra)
+set_target_properties(backupd PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/backupd.bundle/Contents/Resources")
+
 add_executable(screencapture src/screencapture/main.cpp)
 target_link_libraries(screencapture PRIVATE aquashell PkgConfig::XCB_COMPOSITOR)
 target_compile_options(screencapture PRIVATE -Wall -Wextra)

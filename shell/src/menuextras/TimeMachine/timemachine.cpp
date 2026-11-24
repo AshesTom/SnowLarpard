@@ -306,16 +306,17 @@ private:
                 relative = backupdString("YESTERDAY", "Yesterday");
         }
         if (!relative.empty()) {
-            // DATE_TIME_FORMAT "%1$@, %2$@" with the short time style ("h:mm a")
-            std::strftime(buf, sizeof buf, "%l:%M %p", &t);
-            std::string time = buf;
-            while (!time.empty() && time[0] == ' ')
-                time.erase(0, 1);
+            // DATE_TIME_FORMAT "%1$@, %2$@" with the short time style ("h:mm a", English: the
+            // shell's language, whatever the C library's locale says of AM and PM)
+            std::snprintf(buf, sizeof buf, "%d:%02d %s", t.tm_hour % 12 ? t.tm_hour % 12 : 12, t.tm_min, t.tm_hour < 12 ? "AM" : "PM");
+            const std::string time = buf;
             return format(backupdString("DATE_TIME_FORMAT", "%1$@, %2$@"), {relative, time});
         }
-        // NSDateFormatterLongStyle, no time: "November 24, 2026"
-        std::strftime(buf, sizeof buf, "%B %e, %Y", &t);
-        return replaced(buf, "  ", " ");
+        // NSDateFormatterLongStyle, no time: "November 24, 2026" (English month names, as above)
+        static const char *const months[] = {"January", "February", "March",     "April",   "May",      "June",
+                                             "July",    "August",   "September", "October", "November", "December"};
+        std::snprintf(buf, sizeof buf, "%s %d, %d", months[t.tm_mon], t.tm_mday, t.tm_year + 1900);
+        return buf;
     }
 
     // /System/Library/CoreServices/backupd.bundle's MDDateFormatter.strings
