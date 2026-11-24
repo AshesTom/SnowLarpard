@@ -109,8 +109,36 @@ bool canLoad(const std::string &method)
         const std::string layouts = q.substr(at, q.find('\n', at) - at);
         return layouts.find(',') != std::string::npos;
     }
-    // _pppCanLoad,
-    // _pppoeCanLoad, _remoteDesktopCanLoad, _timeMachineCanLoad: off by default on 10.6
+    // _timeMachineCanLoad (0x1000121f8): any user but the guest account (User -isGuestUser); Linux has
+    // no guest account but one named so
+    if (method == "_timeMachineCanLoad") {
+        const char *user = std::getenv("USER");
+        return !user || std::string(user) != "guest";
+    }
+    // _pppCanLoad, _pppoeCanLoad: ShowPPPMenuExtra, ShowPPPoEMenuExtra (any application's, any user's,
+    // the current host's; Network's "Show modem status in menu bar"), off unless set
+    if (method == "_pppCanLoad")
+        return Settings("network").boolean("ShowPPPMenuExtra", false);
+    if (method == "_pppoeCanLoad")
+        return Settings("network").boolean("ShowPPPoEMenuExtra", false);
+    // _remoteDesktopCanLoad: com.apple.RemoteManagement's LoadRemoteManagementMenuExtra, off unless set
+    if (method == "_remoteDesktopCanLoad")
+        return Settings("remotemanagement").boolean("LoadRemoteManagementMenuExtra", false);
+    // _verizonCanLoad: a modem (IOModemSerialStreamSync) with WWAN = true; _expressCardCanLoad: an
+    // ejectable PCI device (IOPCIEjectable). Linux: a WWAN interface (/sys/class/net/*/device's
+    // wwan), a hot-pluggable PCI Express slot holding a card
+    if (method == "_verizonCanLoad") {
+        for (const std::string &n : entries("/sys/class/net"))
+            if (fileName(n).rfind("wwan", 0) == 0 || exists(n + "/wwan"))
+                return true;
+        return !entries("/sys/class/wwan").empty();
+    }
+    if (method == "_expressCardCanLoad") {
+        for (const std::string &s : entries("/sys/bus/pci/slots"))
+            if (exists(s + "/power") && firstLine(s + "/adapter") == "1")
+                return true;
+        return false;
+    }
     return false;
 }
 

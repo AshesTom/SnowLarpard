@@ -219,6 +219,8 @@ WANTED = {
         "./System/Library/CoreServices/Search.bundle/Contents/Resources/*.pdf",
         "./System/Library/CoreServices/Search.bundle/Contents/Resources/*.tif*",
         "./System/Library/CoreServices/Search.bundle/Contents/Resources/English.lproj/*.strings",
+        # backupd.bundle's date words (Time Machine's menu extra: "Today, 5:40 PM")
+        "./System/Library/CoreServices/backupd.bundle/Contents/Resources/English.lproj/MDDateFormatter.strings",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.png",
         "./System/Library/CoreServices/Menu Extras/*.menu/Contents/Resources/*.tif*",
         # their Info.plist (NSMenuExtraWidth, NSPrincipalClass) and their strings (the Clock's menu)
