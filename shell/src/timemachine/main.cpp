@@ -231,6 +231,8 @@ struct TimelineItem {
     enum Kind { Placeholder, Month, Label, Snapshot, Current } kind;
     QString text;
     int layer = -1;            // the stack's index of a snapshot or Now
+    // a TTimelineItemCluster's member: its cluster (the first member's index), its place and their number
+    int cluster = -1, member = 0, members = 1;
 };
 
 struct Button {
@@ -1156,7 +1158,76 @@ private:
             before = before.addMonths(-1);
             m_items.insert(m_items.begin(), {TimelineItem::Placeholder, QString(), -1});
         }
+        clusterTimeline();
         m_timelineDirty = true;
+    }
+
+    // FUN_0004a37c: when the items' gap ((H − 2N) / N, FUN_00049046) is under 4 points, the runs of
+    // items after each month or label (up to the next one or Now) are cut to at most k items, the
+    // largest k up to 31 FUN_00049046 allows, by TTimelineItemClusters (FUN_0004a03c)
+    void clusterTimeline()
+    {
+        const double colH = m_view.height() - 50 - 60;
+        const int n = int(m_items.size());
+        auto anchor = [](const TimelineItem &it) { return it.kind == TimelineItem::Month || it.kind == TimelineItem::Label; };
+        auto gap = [&](int k) {
+            int over = 0, run = 0;
+            for (const TimelineItem &it : m_items) {
+                if (anchor(it))
+                    run = 0;
+                else if (it.kind != TimelineItem::Current && ++run > k)
+                    ++over;
+            }
+            const double N = n - over;
+            return (colH - 2 * N) / N;
+        };
+        if (n == 0 || !(gap(31) < 4))
+            return;
+        // with 3 a run still too many FUN_00049d22 regroups by date: not ported, 3 kept
+        int k = 31;
+        if (gap(3) < 4)
+            k = 3;
+        else
+            while (k > 1 && gap(k - 1) < 4)
+                --k;
+        for (int i = 0; i < n;) {
+            if (!anchor(m_items[i])) {
+                ++i;
+                continue;
+            }
+            int first = i + 1, len = 0;
+            while (first + len < n && !anchor(m_items[first + len]) && m_items[first + len].kind != TimelineItem::Current)
+                ++len;
+            if (len > k) {
+                // the run's items dealt into k buckets, ratio len / k each, from 0.5
+                const double ratio = double(len) / k;
+                double acc = 0.5;
+                int bucket = 0;
+                std::vector<int> owner(static_cast<size_t>(len));
+                for (int j = 0; j < len; ++j) {
+                    if (ratio < acc) {
+                        ++bucket;
+                        acc -= ratio;
+                    }
+                    owner[size_t(j)] = bucket;
+                    acc += 1;
+                }
+                for (int j = 0; j < len;) {
+                    int e = j;
+                    while (e < len && owner[size_t(e)] == owner[size_t(j)])
+                        ++e;
+                    if (e - j > 1)
+                        for (int m = j; m < e; ++m) {
+                            TimelineItem &it = m_items[first + m];
+                            it.cluster = first + j;
+                            it.member = m - j;
+                            it.members = e - j;
+                        }
+                    j = e;
+                }
+            }
+            i = first + len;
+        }
     }
 
     // the items' centres in the timeline's picture (flipped: item 0 at the top), with the hover's spacing
@@ -1165,9 +1236,41 @@ private:
         const double H = m_view.height() - 50, colTop = 30, colBottom = H - 30;
         const int n = int(m_items.size());
         double colH = colBottom - colTop;
-        const double slot = std::min(colH / n, 16.0);
-        colH = slot * n;
+        // a cluster takes one slot (N its members counted once)
+        int slotCount = 0;
+        for (const TimelineItem &it : m_items)
+            slotCount += it.member == 0;
+        const double slot = std::min(colH / std::max(slotCount, 1), 16.0);
+        colH = slot * slotCount;
         std::vector<double> y(static_cast<size_t>(n), 0.0);
+        if (slotCount < n) {
+            // FUN_0004725a, FUN_00044cba…e20: each item's gap before and after, (slot − 2) / 2 at rest
+            // (a cluster's at its ends only), 7 magnified; its tick 2, a member's 2 / members at rest
+            double pos = colBottom - colH;
+            for (int i = 0; i < n; ++i) {
+                const TimelineItem &it = m_items[i];
+                const bool head = it.member == 0, tail = it.member == it.members - 1;
+                const double edge = (slot - 2) / 2;
+                const double before = (head ? edge : 0) * (1 - h) + 7 * h, after = (tail ? edge : 0) * (1 - h) + 7 * h;
+                const double core = 2.0 / it.members * (1 - h) + 2 * h;
+                y[size_t(i)] = pos + before + core / 2;
+                pos += before + core + after;
+            }
+            if (h > 0) {
+                int anchor = 0;
+                for (int i = 0; i < n; ++i)
+                    if (std::fabs(y[size_t(i)] - mouseY) < std::fabs(y[size_t(anchor)] - mouseY))
+                        anchor = i;
+                if (m_tlAnchor >= 0 && m_tlAnchor < n)
+                    anchor = m_tlAnchor;
+                // the anchor's place at rest kept
+                const std::vector<double> rest = timelineLayout(0, mouseY);
+                const double shift = rest[size_t(anchor)] - y[size_t(anchor)] + m_tlScroll;
+                for (double &v : y)
+                    v += shift;
+            }
+            return y;
+        }
         for (int i = 0; i < n; ++i)
             y[size_t(i)] = colBottom - colH + (i + 0.5) * slot;
         if (h > 0) {
@@ -1260,7 +1363,10 @@ private:
             const double mL = std::clamp(h * lengthCurve(d), 0.0, 1.0), mT = std::clamp(h * thicknessCurve(d), 0.0, 1.0);
             const bool big = it.kind == TimelineItem::Month || it.kind == TimelineItem::Label;
             const double L0 = big ? 36 : 16, T0 = big ? 3 : 2;
-            const double length = L0 * (1 - mL) + L0 * 4.34 * mL, thick = T0 * (1 - mT) + T0 * 9.789 * mT;
+            const double length = L0 * (1 - mL) + L0 * 4.34 * mL;
+            double thick = T0 * (1 - mT) + T0 * 9.789 * mT;
+            if (it.members > 1)   // FUN_00044cba: the member's share of the cluster's tick at rest
+                thick = (1 - h) * (2.0 / it.members * (1 - h) + 2 * h) + h * thick;
             double alpha = 0.6;
             if (it.kind == TimelineItem::Snapshot || it.kind == TimelineItem::Current) {
                 const bool valid = m_layers[it.layer].valid;
@@ -1269,6 +1375,22 @@ private:
                 alpha = 50 / 255.0;
             }
             alpha *= std::clamp(std::min(y, H - y) / 30, 0.0, 1.0);   // the fade at either end
+            if (it.members > 1 && it.member == 0 && h < 1) {
+                // FUN_00048be6: the cluster's own tick, 16 long over its members' ticks, its alpha the
+                // highest of theirs (FUN_00048726), fading as the magnification grows
+                double top = y, bottom = y, a = 0;
+                for (int m = 0; m < it.members; ++m) {
+                    const TimelineItem &member = m_items[i + m];
+                    top = std::min(top, ys[size_t(i + m)]);
+                    bottom = std::max(bottom, ys[size_t(i + m)]);
+                    const double ma = member.layer == m_current ? 1.0 : i + m == hovered ? 200 / 255.0
+                                    : !m_layers[member.layer].valid ? 50 / 255.0 : 153 / 255.0;
+                    a = std::max(a, ma);
+                }
+                const double t = 2.0 / it.members;
+                p.setOpacity((1 - h) * a * std::clamp(std::min(y, H - y) / 30, 0.0, 1.0));
+                p.fillRect(QRectF(400 - 16, top - t / 2, 16, bottom - top + t), Qt::white);
+            }
             const QRectF tick(400 - length, y - thick / 2, length, thick);
             p.setOpacity(alpha);
             if (thick > 3.5) {   // magnified: TickCap.png and TickFill.png
