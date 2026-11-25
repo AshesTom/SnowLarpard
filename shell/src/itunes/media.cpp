@@ -223,6 +223,8 @@ int Library::addEpisode(const Track &episode)
             return 0;
     Track t = episode;
     t.id = m_nextId++;
+    if (t.persistentId.empty())
+        t.persistentId = newPersistentId();
     t.mediaKind = 4 | (t.hasVideo ? 2 : 0);
     t.unplayed = true;
     t.rememberBookmark = true;

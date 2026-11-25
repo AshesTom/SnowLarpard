@@ -447,8 +447,14 @@ bool InfoWindow::save()
     for (const auto &sf : SortFields)
         if (auto *f = dynamic_cast<TextField *>(p.sorting[sf.item]); f && f->text != p.sortLoaded[sf.tag])
             sorts[sf.tag] = f->text;
-    if (!sorts.empty())
+    if (!sorts.empty()) {
         writeTags(t.path, sorts);
+        if (Track *kept = m_library.track(t.id))   // the plist's Sort … keys (section 31)
+            for (const auto &[tag, v] : sorts)
+                (tag == "TITLESORT" ? kept->sortName : tag == "ARTISTSORT" ? kept->sortArtist : tag == "ALBUMARTISTSORT" ? kept->sortAlbumArtist
+                 : tag == "ALBUMSORT" ? kept->sortAlbum : tag == "COMPOSERSORT" ? kept->sortComposer : kept->sortSeries) = v;
+        m_library.save();
+    }
     if (changed && onChanged)
         onChanged(t.id);
     return changed;

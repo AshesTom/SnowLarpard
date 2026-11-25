@@ -42,6 +42,20 @@ struct Track {
     // Remember Bookmark / Bookmark Time: where it was left (milliseconds), played from there next time
     bool rememberBookmark = false;
     int bookmark = 0;
+    // section 31: Date Modified (the file's, ISO 8601), Volume Adjustment (−255 to 255: +0xa2), Equalizer
+    // (the preset's name), Last Played (Unix seconds: the plist's Play Date in the Mac's local seconds and
+    // Play Date UTC), Skip Count and Skip Date, Start / Stop Time (ms), the sort fields (Sort Name, Sort
+    // Artist, Sort Album Artist, Sort Album, Sort Composer, Sort Series), Persistent ID (16 hex digits),
+    // Disabled (unchecked)
+    std::string dateModified, equalizer, skipDate;
+    int volumeAdjustment = 0, skipCount = 0, startTime = 0, stopTime = 0;
+    long long playDate = 0;
+    std::string sortName, sortArtist, sortAlbumArtist, sortAlbum, sortComposer, sortSeries;
+    std::string persistentId;
+    bool disabled = false;
+    // the plist's other keys (Album Rating, Normalization, Artwork Count, Store URL…), kept as read: the
+    // key and its value's XML, written back
+    std::vector<std::pair<std::string, std::string>> extra;
 };
 
 // The library's distinguished kinds (+0xE8; FUN_002e68aa makes their smart playlists): 2 Movies, 3 TV
@@ -174,6 +188,7 @@ private:
     // Audiobooks true), All Items, the tracks of their kind
     void writeDistinguished(std::ostream &o, const std::set<int> *songs) const;
     int m_nextId = 100;
+    mutable std::string m_libraryId;   // Library Persistent ID (16 hex digits; made once)
     int m_addedKinds = 0;
 };
 

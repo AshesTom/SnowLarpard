@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <map>
 #include <set>
 #include <memory>
@@ -3656,6 +3657,7 @@ private:
         m_player.play(t->path, t->hasVideo, resume ? t->bookmark / 1000.0 : 0);
         showVideo(t->hasVideo ? t : nullptr);
         t->playCount++;
+        t->playDate = (long long)std::time(nullptr);   // Last Played (the plist's Play Date, section 31)
         t->unplayed = false;   // the podcasts' blue dot
         m_library.save();
         updateCells(id, 22);

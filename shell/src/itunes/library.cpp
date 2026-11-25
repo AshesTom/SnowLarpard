@@ -175,11 +175,49 @@ std::string isoNow()
     return buf;
 }
 
+// Mac seconds (from 1904) and Unix ones; the local offset for Play Date (FUN_000ab536 adds the zone's
+// offset to Play Date for Play Date UTC)
+constexpr long long MacEpoch = 2082844800;
+long long zoneOffset(long long unixTime)
+{
+    const std::time_t t = std::time_t(unixTime);
+    std::tm local{};
+    localtime_r(&t, &local);
+    return local.tm_gmtoff;
+}
+std::vector<std::string> splitPath(const std::string &p)
+{
+    std::vector<std::string> out;
+    std::string part;
+    for (char c : p + "/") {
+        if (c == '/') {
+            if (!part.empty())
+                out.push_back(part);
+            part.clear();
+        } else
+            part += c;
+    }
+    return out;
+}
+
+std::string isoOf(long long unixTime)
+{
+    char buf[32];
+    const std::time_t t = std::time_t(unixTime);
+    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t));
+    return buf;
+}
+long long unixOf(const std::string &iso)
+{
+    std::tm t{};
+    return strptime(iso.c_str(), "%Y-%m-%dT%H:%M:%SZ", &t) ? (long long)timegm(&t) : 0;
+}
+
 // A small reader for the plist this file holds: dictionaries, arrays, keys, strings, integers, dates,
 // booleans
 struct Node {
     enum Kind { Dict, Array, String, Integer, Bool, Other } kind = Other;
-    std::string text;
+    std::string text, tag;   // tag: the element's name (date, data, real…)
     std::vector<std::pair<std::string, Node>> dict;
     std::vector<Node> array;
     const Node *get(const std::string &k) const
@@ -192,6 +230,9 @@ struct Node {
     std::string str(const std::string &k) const { const Node *n = get(k); return n ? n->text : std::string(); }
     long long num(const std::string &k) const { const Node *n = get(k); return n ? std::atoll(n->text.c_str()) : 0; }
 };
+
+// a value back as the plist's XML (the keys kept as read)
+std::string rawValue(const struct Node &n);
 
 class Parser {
 public:
@@ -280,10 +321,12 @@ private:
         }
         if (name == "true" || name == "false") {
             out.kind = Node::Bool;
+            out.tag = name;
             out.text = name;
             return true;
         }
         out.kind = name == "integer" ? Node::Integer : name == "string" ? Node::String : Node::Other;
+        out.tag = name;
         if (!empty)
             out.text = textUntil("</" + name + ">");
         return true;
@@ -291,6 +334,17 @@ private:
     const std::string &m_s;
     size_t m_p = 0;
 };
+
+std::string rawValue(const Node &n)
+{
+    switch (n.kind) {
+    case Node::Bool: return n.text == "true" ? "<true/>" : "<false/>";
+    case Node::Integer: return "<integer>" + n.text + "</integer>";
+    case Node::String: return "<string>" + xmlEscape(n.text) + "</string>";
+    case Node::Other: return n.tag.empty() ? std::string() : "<" + n.tag + ">" + xmlEscape(n.text) + "</" + n.tag + ">";
+    default: return {};   // a dictionary or an array: not kept
+    }
+}
 
 // The media kinds' keys (the plist iTunes 8.2.1 writes, FUN_000ab536's strings): Has Video, Video Width
 // and Height, Movie, Music Video, TV Show, Podcast, Unplayed; Series, Season, Episode, Episode Order,
@@ -331,22 +385,63 @@ void readKinds(const Node &t, Track &tr)
     tr.bookmark = int(t.num("Bookmark Time"));
 }
 
-void writeKinds(std::ostream &o, const Track &t)
+// A track's keys, written in FUN_000ab536's order (its strings, below); the keys it does not know,
+// the port's own and those kept as read, after them
+struct KeySink {
+    std::vector<std::pair<std::string, std::string>> keys;   // key, its value's XML
+    void put(const std::string &k, const std::string &v)
+    {
+        for (auto &kv : keys)
+            if (kv.first == k) {
+                kv.second = v;
+                return;
+            }
+        keys.emplace_back(k, v);
+    }
+    void write(std::ostream &o) const
+    {
+        static const char *order[] = {
+            "Track ID", "Name", "Artist", "Album Artist", "Composer", "Album", "Grouping", "Genre", "Kind", "Size", "Total Time",
+            "Start Time", "Stop Time", "Disc Number", "Disc Count", "Track Number", "Track Count", "Year", "BPM", "Date Modified",
+            "Date Added", "Date Backed Up", "Bit Rate", "Sample Rate", "Part Of Gapless Album", "Volume Adjustment", "Equalizer",
+            "Comments", "Play Count", "Play Date", "Play Date UTC", "Skip Count", "Skip Date", "Release Date", "Rating",
+            "Rating Computed", "Album Rating", "Album Rating Computed", "Normalization", "Compilation", "Artwork Count",
+            "Description", "Category", "Series", "Season", "Episode", "Episode Order", "Sort Album", "Sort Album Artist",
+            "Sort Artist", "Sort Composer", "Sort Name", "Sort Series", "Persistent ID", "Disabled", "Explicit", "Clean",
+            "Content Rating", "Track Type", "Protected", "Purchased", "Podcast", "Unplayed", "Has Video", "HD", "Video Width",
+            "Video Height", "Movie", "Music Video", "TV Show", "File Type", "File Creator", "Location", "File Folder Count",
+            "Library Folder Count", "Store URL", "Song ID", "Genre ID", "Artist ID", "Playlist ID", "Composer ID", "VO Language",
+        };
+        std::set<std::string> done;
+        auto one = [&](const std::string &k, const std::string &v) { o << "\t\t\t<key>" << xmlEscape(k) << "</key>" << v << "\n"; };
+        for (const char *k : order)
+            for (const auto &kv : keys)
+                if (kv.first == k) {
+                    one(kv.first, kv.second);
+                    done.insert(kv.first);
+                }
+        for (const auto &kv : keys)
+            if (!done.count(kv.first))
+                one(kv.first, kv.second);
+    }
+};
+
+void writeKinds(KeySink &o, const Track &t)
 {
     auto str = [&](const char *k, const std::string &v) {
         if (!v.empty())
-            o << "\t\t\t<key>" << k << "</key><string>" << xmlEscape(v) << "</string>\n";
+            o.put(k, "<string>" + xmlEscape(v) + "</string>");
     };
     auto num = [&](const char *k, long long v) {
         if (v)
-            o << "\t\t\t<key>" << k << "</key><integer>" << v << "</integer>\n";
+            o.put(k, "<integer>" + std::to_string(v) + "</integer>");
     };
     auto yes = [&](const char *k, bool v) {
         if (v)
-            o << "\t\t\t<key>" << k << "</key><true/>\n";
+            o.put(k, "<true/>");
     };
     if (!t.releaseDate.empty())
-        o << "\t\t\t<key>Release Date</key><date>" << t.releaseDate << "</date>\n";
+        o.put("Release Date", "<date>" + t.releaseDate + "</date>");
     yes("Has Video", t.hasVideo);
     num("Video Width", t.videoWidth);
     num("Video Height", t.videoHeight);
@@ -496,6 +591,7 @@ bool Library::load()
         return false;
     m_tracks.clear();
     m_playlists.clear();
+    m_libraryId = root.str("Library Persistent ID");
     if (const Node *tracks = root.get("Tracks"))
         for (const auto &[key, t] : tracks->dict) {
             Track tr;
@@ -523,7 +619,40 @@ bool Library::load()
             tr.rating = int(t.num("Rating"));
             tr.compilation = t.get("Compilation") && t.get("Compilation")->text == "true";
             tr.dateAdded = t.str("Date Added");
+            tr.dateModified = t.str("Date Modified");
+            tr.volumeAdjustment = int(t.num("Volume Adjustment"));
+            tr.equalizer = t.str("Equalizer");
+            tr.playDate = !t.str("Play Date UTC").empty() ? unixOf(t.str("Play Date UTC"))
+                          : t.num("Play Date") ? t.num("Play Date") - MacEpoch - zoneOffset(t.num("Play Date") - MacEpoch) : 0;
+            tr.skipCount = int(t.num("Skip Count"));
+            tr.skipDate = t.str("Skip Date");
+            tr.startTime = int(t.num("Start Time"));
+            tr.stopTime = int(t.num("Stop Time"));
+            tr.sortName = t.str("Sort Name");
+            tr.sortArtist = t.str("Sort Artist");
+            tr.sortAlbumArtist = t.str("Sort Album Artist");
+            tr.sortAlbum = t.str("Sort Album");
+            tr.sortComposer = t.str("Sort Composer");
+            tr.sortSeries = t.str("Sort Series");
+            tr.persistentId = t.str("Persistent ID");
+            tr.disabled = t.get("Disabled") && t.get("Disabled")->text == "true";
             readKinds(t, tr);
+            {
+                // the keys the port does not use, kept
+                static const std::set<std::string> known = {
+                    "Track ID", "Name", "Artist", "Album Artist", "Composer", "Album", "Grouping", "Genre", "Kind", "Size",
+                    "Total Time", "Start Time", "Stop Time", "Disc Number", "Disc Count", "Track Number", "Track Count", "Year",
+                    "BPM", "Date Modified", "Date Added", "Bit Rate", "Sample Rate", "Volume Adjustment", "Equalizer", "Comments",
+                    "Play Count", "Play Date", "Play Date UTC", "Skip Count", "Skip Date", "Release Date", "Rating", "Compilation",
+                    "Description", "Long Description", "Category", "Series", "Season", "Episode", "Episode Order", "Sort Album",
+                    "Sort Album Artist", "Sort Artist", "Sort Composer", "Sort Name", "Sort Series", "Persistent ID", "Disabled",
+                    "Track Type", "Podcast", "Unplayed", "Has Video", "Video Width", "Video Height", "Movie", "Music Video",
+                    "TV Show", "Location", "File Folder Count", "Library Folder Count", "Media Kind", "Podcast URL",
+                    "External GUID", "Remember Bookmark", "Bookmark Time"};
+                for (const auto &[k, v] : t.dict)
+                    if (!known.count(k) && !rawValue(v).empty())
+                        tr.extra.emplace_back(k, rawValue(v));
+            }
             {
                 const std::string loc = t.str("Location");
                 tr.path = loc.rfind("file:", 0) == 0 || loc.find("://") == std::string::npos ? pathFromURL(loc) : loc;
@@ -532,6 +661,8 @@ bool Library::load()
                 const std::string e = extension(tr.path);
                 tr.mediaKind = e == "m4b" || e == "aa" || e == "aax" ? 8 : e == "m4r" ? 0x4000 : tr.mediaKind;
             }
+            if (tr.persistentId.empty())
+                tr.persistentId = newPersistentId();
             if (tr.id > 0) {
                 m_tracks[tr.id] = tr;
                 m_nextId = std::max(m_nextId, tr.id + 1);
@@ -616,20 +747,31 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
          "\t<key>Features</key><integer>5</integer>\n"
          "\t<key>Show Content Ratings</key><true/>\n"
          "\t<key>Music Folder</key><string>"
-      << xmlEscape(fileURL(MusicFolder::path() + "/")) << "</string>\n"
+      << xmlEscape(fileURL(MusicFolder::path() + "/")) << "</string>\n";
+    if (m_libraryId.empty())
+        m_libraryId = newPersistentId();
+    o << "\t<key>Library Persistent ID</key><string>" << m_libraryId << "</string>\n"
       << "\t<key>Tracks</key>\n\t<dict>\n";
-    auto str = [&](const char *k, const std::string &v) {
-        if (!v.empty())
-            o << "\t\t\t<key>" << k << "</key><string>" << xmlEscape(v) << "</string>\n";
-    };
-    auto num = [&](const char *k, long long v) {
-        if (v)
-            o << "\t\t\t<key>" << k << "</key><integer>" << v << "</integer>\n";
-    };
+    const std::string libraryFile = file();
     for (const auto &[id, t] : m_tracks) {
         if (songs && !songs->count(id))
             continue;
         o << "\t\t<key>" << id << "</key>\n\t\t<dict>\n";
+        KeySink k;
+        for (const auto &[key, v] : t.extra)   // first, so that the port's own values win
+            k.put(key, v);
+        auto str = [&](const char *key, const std::string &v) {
+            if (!v.empty())
+                k.put(key, "<string>" + xmlEscape(v) + "</string>");
+        };
+        auto num = [&](const char *key, long long v) {
+            if (v)
+                k.put(key, "<integer>" + std::to_string(v) + "</integer>");
+        };
+        auto date = [&](const char *key, const std::string &iso) {
+            if (!iso.empty())
+                k.put(key, "<date>" + iso + "</date>");
+        };
         num("Track ID", id);
         str("Name", t.name);
         str("Artist", t.artist);
@@ -641,29 +783,60 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
         str("Kind", t.kind);
         num("Size", t.size);
         num("Total Time", t.totalTime);
+        num("Start Time", t.startTime);
+        num("Stop Time", t.stopTime);
         num("Disc Number", t.discNumber);
         num("Disc Count", t.discCount);
         num("Track Number", t.trackNumber);
         num("Track Count", t.trackCount);
         num("Year", t.year);
         num("BPM", t.bpm);
-        if (t.compilation)
-            o << "\t\t\t<key>Compilation</key><true/>\n";
-        if (!t.dateAdded.empty())
-            o << "\t\t\t<key>Date Added</key><date>" << t.dateAdded << "</date>\n";
+        date("Date Modified", t.dateModified);
+        date("Date Added", t.dateAdded);
         num("Bit Rate", t.bitRate);
         num("Sample Rate", t.sampleRate);
-        num("Play Count", t.playCount);
-        num("Rating", t.rating);
+        num("Volume Adjustment", t.volumeAdjustment);
+        str("Equalizer", t.equalizer);
         str("Comments", t.comments);
-        writeKinds(o, t);
+        num("Play Count", t.playCount);
+        if (t.playDate) {
+            // Play Date: the Mac's local seconds (an unsigned 32-bit number); Play Date UTC its date
+            num("Play Date", t.playDate + MacEpoch + zoneOffset(t.playDate));
+            date("Play Date UTC", isoOf(t.playDate));
+        }
+        num("Skip Count", t.skipCount);
+        date("Skip Date", t.skipDate);
+        num("Rating", t.rating);
+        if (t.compilation)
+            k.put("Compilation", "<true/>");
+        writeKinds(k, t);
+        str("Sort Album", t.sortAlbum);
+        str("Sort Album Artist", t.sortAlbumArtist);
+        str("Sort Artist", t.sortArtist);
+        str("Sort Composer", t.sortComposer);
+        str("Sort Name", t.sortName);
+        str("Sort Series", t.sortSeries);
+        str("Persistent ID", t.persistentId);
+        if (t.disabled)
+            k.put("Disabled", "<true/>");
         if (isStream(t)) {
-            o << "\t\t\t<key>Track Type</key><string>URL</string>\n";
+            k.put("Track Type", "<string>URL</string>");
             str("Location", t.path);
         } else {
-            o << "\t\t\t<key>Track Type</key><string>File</string>\n";
+            k.put("Track Type", "<string>File</string>");
             str("Location", fileURL(t.path));
+            // the alias' levels (+300, +0x12e): the folders from the file and from the library file up to
+            // the folder they share; none when that is the disk's root
+            const std::vector<std::string> a = splitPath(dirName(t.path)), b = splitPath(dirName(libraryFile));
+            size_t common = 0;
+            while (common < a.size() && common < b.size() && a[common] == b[common])
+                ++common;
+            if (common > 0) {
+                num("File Folder Count", static_cast<long long>(a.size() - common + 1));
+                num("Library Folder Count", static_cast<long long>(b.size() - common + 1));
+            }
         }
+        k.write(o);
         o << "\t\t</dict>\n";
     }
     o << "\t</dict>\n\t<key>Playlists</key>\n\t<array>\n";
@@ -865,12 +1038,12 @@ bool Library::exportText(const std::string &path, const std::vector<int> &ids, b
             t->size ? std::to_string(t->size) : std::string(),   // %llu
             number(t->totalTime / 1000),                         // seconds
             number(t->discNumber), number(t->discCount), number(t->trackNumber), number(t->trackCount), number(t->year),
-            std::string(),                                       // Date Modified: not kept
+            shortDate(t->dateModified),
             shortDate(t->dateAdded), number(t->bitRate), number(t->sampleRate),
-            std::string(),                                       // Volume Adjustment
-            t->kind, std::string(),                              // Equalizer
-            t->comments, number(t->playCount), std::string(),    // Last Played
-            std::string(), std::string(),                        // Skip Count, Last Skipped
+            number(t->volumeAdjustment),
+            t->kind, t->equalizer,
+            t->comments, number(t->playCount), t->playDate ? shortDate(isoOf(t->playDate)) : std::string(),   // Last Played
+            number(t->skipCount), shortDate(t->skipDate),        // Skip Count, Last Skipped
             number(t->rating), t->path,                          // Location: the file's path (HFS on the Mac)
         };
         for (size_t i = 0; i < std::size(v); ++i)
@@ -1093,6 +1266,7 @@ int Library::addURL(const std::string &url)
         file = file.substr(last + 1);
     Track t;
     t.id = m_nextId++;
+    t.persistentId = newPersistentId();
     t.path = url;
     t.name = (!file.empty() ? file : !path.empty() ? path : url).substr(0, 255);
     t.kind = tr("3101.003");   // "MPEG audio stream" (the MP3 decoder's: its format once read)
@@ -1114,9 +1288,12 @@ void Library::addFile(const std::string &path, bool copy)
     t.path = path;
     t.kind = kindOf(path);
     t.dateAdded = isoNow();
+    t.persistentId = newPersistentId();
     struct stat st;
-    if (::stat(path.c_str(), &st) == 0)
+    if (::stat(path.c_str(), &st) == 0) {
         t.size = st.st_size;
+        t.dateModified = isoOf(st.st_mtime);   // Date Modified: the file's (+0x30)
+    }
     TagLib::FileRef f(path.c_str());
     if (!f.isNull() && f.tag()) {
         TagLib::Tag *tag = f.tag();
@@ -1145,6 +1322,13 @@ void Library::addFile(const std::string &path, bool copy)
         t.bpm = std::atoi(prop("BPM").c_str());
         // MP4's cpil, Vorbis' COMPILATION; ID3's TCMP (iTunes' own frame: TagLib names it by its ID)
         t.compilation = std::atoi(prop("COMPILATION").c_str()) != 0 || std::atoi(prop("TCMP").c_str()) != 0;
+        // the sort fields (ID3's TSOT, TSOP, TSO2, TSOA, TSOC; MP4's sonm, soar, soaa, soal, soco, sosn)
+        t.sortName = prop("TITLESORT");
+        t.sortArtist = prop("ARTISTSORT");
+        t.sortAlbumArtist = prop("ALBUMARTISTSORT");
+        t.sortAlbum = prop("ALBUMSORT");
+        t.sortComposer = prop("COMPOSERSORT");
+        t.sortSeries = prop("SHOWSORT");
     }
     if (!f.isNull() && f.audioProperties()) {
         t.totalTime = f.audioProperties()->lengthInMilliseconds();
@@ -1180,6 +1364,11 @@ bool Library::writeTags(const Track &t)
     const Track old = *mine;
     *mine = t;
     const bool ok = writeFileTags(t);
+    struct stat st;
+    if (ok && ::stat(t.path.c_str(), &st) == 0) {
+        mine->dateModified = isoOf(st.st_mtime);
+        mine->size = st.st_size;
+    }
     // FUN_001832e2 after an edit: the fields the file's place comes from (the mask 0x40c0004d)
     if (std::tie(old.name, old.artist, old.albumArtist, old.album, old.series, old.trackNumber, old.discNumber, old.discCount,
                  old.compilation, old.mediaKind) != std::tie(t.name, t.artist, t.albumArtist, t.album, t.series, t.trackNumber,
