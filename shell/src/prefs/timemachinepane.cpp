@@ -754,7 +754,7 @@ struct TimeMachinePane {
                 engrave(tabs->page(i));
             }
         for (View *b : p.nib.withAction("showDestinationSheet:"))
-            then(b, [this] { App::shared().later([this] { showDestinationSheet(); }); });
+            then(b, [this] { reopenDestinationSheet(); });
         for (View *b : p.nib.withAction("showOptionsSheet:"))
             then(b, [this] { App::shared().later([this] { showOptionsSheet(); }); });
         if (stop)
@@ -776,7 +776,7 @@ struct TimeMachinePane {
             if (!hasDestination()) {
                 if (slider)
                     slider->setState(1, false);
-                App::shared().later([this] { showDestinationSheet(); });
+                reopenDestinationSheet();
                 return;
             }
             setAutoBackup(true);
@@ -1095,7 +1095,8 @@ struct TimeMachinePane {
         bool none = false;   // the "None" row (a disk already set): Stop Backing Up
         std::string chosen;  // the path confirmed with the button
         bool confirmed = false;
-        Image deleteIcon;
+        bool pickFolder = false;   // the "Other Folder…" row: a folder on any disk (not 10.6's)
+        Image deleteIcon, folderIcon;
     };
 
     void showDestinationSheet()
@@ -1109,6 +1110,7 @@ struct TimeMachinePane {
             return;
         auto sheet = std::make_shared<DestinationSheet>();
         sheet->deleteIcon = p.nib.image("Delete");
+        sheet->folderIcon = Image::load(Assets::path(std::string(CoreTypes) + "GenericFolderIcon.icns"), {32, 32});
         // -updateTableViewContents (the local volumes then the read-only ones), the None row
         sheet->volumes = destinations(backupPath());
         sheet->none = hasDestination();
@@ -1122,6 +1124,8 @@ struct TimeMachinePane {
             table->rows.clear();
             for (const Volume &v : sheet->volumes)
                 table->rows.push_back({"", v.name, v.free > 0 ? bytesString(v.free) : ""});
+            // not 10.6's: a folder of the user's choosing, for a computer with its startup disk only
+            table->rows.push_back({"", tr("DISK_PICKER_OTHER_FOLDER", "Other Folder\u2026"), ""});
             if (sheet->none)
                 table->rows.push_back({"", tr("DISK_PICKER_NONE", "None"), ""});
             // -updateTableViewSelection: the disk set now
@@ -1131,10 +1135,11 @@ struct TimeMachinePane {
                 if (!current.empty() && realPath(sheet->volumes[i].path) == current)
                     table->selected = int(i);
             table->drawCell = [sheet, table](cairo_t *cr, int row, int column, const Rect &cell, bool highlighted) {
-                const bool noneRow = size_t(row) >= sheet->volumes.size();
+                const bool folderRow = size_t(row) == sheet->volumes.size();
+                const bool noneRow = size_t(row) > sheet->volumes.size();
                 if (column == 0) {
                     // the volume's icon (-iconForPath:, else -genericDiskIcon), the None row's Delete.tiff
-                    Image icon = noneRow ? sheet->deleteIcon : iconForPath(sheet->volumes[size_t(row)].path, 32);
+                    Image icon = noneRow ? sheet->deleteIcon : folderRow ? sheet->folderIcon : iconForPath(sheet->volumes[size_t(row)].path, 32);
                     if (!icon.isNull()) {
                         const Size s = scaledToFit(icon.size(), {32, 32});
                         icon.draw(cr, Rect{cell.x + std::floor((cell.w - s.w) / 2), cell.y + std::floor((cell.h - s.h) / 2), s.w, s.h});
@@ -1158,7 +1163,7 @@ struct TimeMachinePane {
             if (!ok || !table)
                 return;
             const int row = table->selected;
-            const bool disk = row >= 0 && size_t(row) < sheet->volumes.size();
+            const bool disk = row >= 0 && size_t(row) <= sheet->volumes.size();
             ok->setEnabled(hasDestination() || row >= 0);
             ok->title = disk || !hasDestination() ? tr("DISK_PICKER_BUTTON_USE", "Use for Backup") : tr("DISK_PICKER_BUTTON_STOP", "Stop Backing Up");
             if (!hasDestination())
@@ -1175,6 +1180,7 @@ struct TimeMachinePane {
                 return;
             const int row = table->selected;
             sheet->chosen = row >= 0 && size_t(row) < sheet->volumes.size() ? sheet->volumes[size_t(row)].path : std::string();
+            sheet->pickFolder = row >= 0 && size_t(row) == sheet->volumes.size();
             sheet->confirmed = true;
             Sheet::end(w);
         };
@@ -1187,9 +1193,60 @@ struct TimeMachinePane {
         if (cancel)
             cancel->action = [w] { Sheet::end(w); };   // -cancelButtonPressed:
         begin(content, size, [this, sheet] {
+            if (sheet->confirmed && sheet->pickFolder) {
+                App::shared().later([this, sheet] { chooseBackupFolder(*sheet); });
+                return;
+            }
             if (sheet->confirmed)
                 confirmBackupPath(sheet->chosen, *sheet);
             updateGUI(false);
+        });
+    }
+
+    // the destination sheet again once the sheet in its place (an alert) has finished sliding away:
+    // Sheet::end gives the first responder back and removes its host on the run loop's next turn
+    // after it stops being open, so the new sheet comes one turn after that
+    void reopenDestinationSheet()
+    {
+        if (window() && Sheet::isOpen(window())) {
+            App::shared().addTimer(0.05, false, [this] { reopenDestinationSheet(); });
+            return;
+        }
+        App::shared().later([this] { showDestinationSheet(); });
+    }
+
+    // "Other Folder…": the folder chosen, then confirmed as a disk would be (the same-device warning
+    // when it is on the disk backed up)
+    void chooseBackupFolder(const DestinationSheet &sheet)
+    {
+        OpenPanel::chooseDirectory(tr("DISK_PICKER_BUTTON_USE", "Use for Backup"), home(), [this, sheet](std::string dir) {
+            if (dir.empty()) {
+                reopenDestinationSheet();
+                return;
+            }
+            dir = realPath(dir);
+            // the folder backed up (the home), or one holding it, can't take its own backups; nor
+            // a folder that can't be written to
+            const std::string source = realPath(home());
+            const bool holdsSource = dir == source || dir == "/" || source.rfind(dir + "/", 0) == 0;
+            if (holdsSource || access(dir.c_str(), W_OK) != 0) {
+                Alert::beginSheet(window(), p.info.icon, "\u201c" + fileName(dir) + "\u201d can\u2019t be used for backups.",
+                                  holdsSource ? "It holds the folder being backed up. Choose a folder inside it, or on another disk."
+                                              : "You don\u2019t have permission to write to it.",
+                                  {tr("CHOOSE_ANOTHER_DISK_BUTTON", "Select Another Volume")},
+                                  [this](int) { reopenDestinationSheet(); });
+                return;
+            }
+            DestinationSheet copy = sheet;
+            Volume v;
+            v.path = dir;
+            v.name = fileName(dir);
+            v.mountPoint = mountPointOf(dir) == dir;
+            const std::vector<Mount> all = mounts();
+            if (const Mount *m = mountAt(all, mountPointOf(dir)))
+                v.device = realPath(m->device);
+            copy.volumes.push_back(v);
+            App::shared().later([this, dir, copy] { confirmBackupPath(dir, copy); });
         });
     }
 
@@ -1227,7 +1284,7 @@ struct TimeMachinePane {
                                       if (b == 0)
                                           App::shared().later([this, path, copy] { confirmBackupPath(path, copy, true); });
                                       else
-                                          App::shared().later([this] { showDestinationSheet(); });
+                                          reopenDestinationSheet();
                                   });
                 return;
             }
