@@ -43,6 +43,31 @@ QString attribute(const QString &path, const char *key)
     return n > 0 ? QString::fromLatin1(buf) : QString();
 }
 
+// /proc/self/mountinfo's mount points (the octal escapes decoded)
+QStringList mountPoints()
+{
+    QStringList out;
+    QFile f("/proc/self/mountinfo");
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    for (const QByteArray &line : f.readAll().split('\n')) {
+        const QList<QByteArray> fields = line.split(' ');
+        if (fields.size() < 5)
+            continue;
+        QByteArray raw = fields[4], mp;
+        for (int i = 0; i < raw.size(); ++i) {
+            if (raw[i] == '\\' && i + 3 < raw.size()) {
+                mp += char(raw.mid(i + 1, 3).toInt(nullptr, 8));
+                i += 3;
+            } else {
+                mp += raw[i];
+            }
+        }
+        out << QFile::decodeName(mp);
+    }
+    return out;
+}
+
 // /proc/self/mountinfo: the longest mount point holding `path` (_BSDVolumePathLength)
 QString mountPoint(const QString &path)
 {
@@ -150,6 +175,75 @@ QString displayName(const QString &path)
     return n.isEmpty() ? QString("Macintosh HD") : n;
 }
 
+QString volumeName(const QString &mountPoint)
+{
+    const QString label = byDevice("/dev/disk/by-label", mountPoint);
+    if (!label.isEmpty())
+        return label;
+    return mountPoint == "/" ? QString("Macintosh HD") : QFileInfo(mountPoint).fileName();
+}
+
+QVector<Volume> volumes()
+{
+    // the Finder's Computer: the startup disk, then the disks the desktop mounted (/run/media, /media, /mnt)
+    QVector<Volume> out{{volumeName("/"), "/", Volume::Internal}};
+    QSet<QString> seen{"/"};
+    for (const QString &mp : mountPoints()) {
+        const bool removable = mp.startsWith("/run/media/") || mp.startsWith("/media/");
+        if (seen.contains(mp) || !(removable || mp.startsWith("/mnt/")))
+            continue;
+        if (mp.count('/') > (mp.startsWith("/run/media/") ? 4 : mp.startsWith("/media/") ? 3 : 2))
+            continue;   // a mount inside a disk
+        seen.insert(mp);
+        out.push_back({volumeName(mp), mp, removable ? Volume::Removable : Volume::External});
+    }
+    return out;
+}
+
+QVector<BackupStore> backupStores()
+{
+    // FUN_100014390: every mounted volume holding Backups.backupdb (lstat), its computers' folders;
+    // backupd's BackupPath too when it isn't a mount point of its own
+    QStringList disks = mountPoints();
+    QSettings st(configDir() + "/timemachine.conf", QSettings::IniFormat);
+    const QString configured = st.value("BackupPath").toString();
+    if (!configured.isEmpty())
+        disks << QDir::cleanPath(configured);
+    QVector<BackupStore> out;
+    QSet<QString> seen;
+    for (const QString &disk : disks) {
+        const QString db = (disk == "/" ? QString() : disk) + "/Backups.backupdb";
+        struct stat sb;
+        if (seen.contains(disk) || lstat(QFile::encodeName(db).constData(), &sb) != 0 || !S_ISDIR(sb.st_mode))
+            continue;
+        seen.insert(disk);
+        const bool removable = disk.startsWith("/run/media/") || disk.startsWith("/media/");
+        const bool mounted = mountPoint(disk) == disk;
+        for (const QString &computer : QDir(db).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            BackupStore b;
+            b.computer = db + "/" + computer;
+            b.computerName = computer;
+            b.volume = {mounted ? volumeName(disk) : QFileInfo(disk).fileName(), disk,
+                        disk == "/" ? Volume::Internal : removable ? Volume::Removable : Volume::External};
+            out.push_back(b);
+        }
+    }
+    // TBackupVolumeTableViewController: sorted by displayName, caseSensitiveSystemLocaleCompare:
+    std::sort(out.begin(), out.end(), [](const BackupStore &a, const BackupStore &b) {
+        return QString::localeAwareCompare(a.computerName + " " + a.volume.name, b.computerName + " " + b.volume.name) < 0;
+    });
+    return out;
+}
+
+QString volumeIconFile(const Volume &v)
+{
+    // IOStorageFamily.kext's icons, as the Finder's
+    const char *name = v.kind == Volume::Internal ? "Internal" : v.kind == Volume::Removable ? "Removable" : "External";
+    return QString("/System/Library/Extensions/IOStorageFamily.kext/Contents/Resources/") + name + ".icns";
+}
+
+QImage volumeIcon(const Volume &v, int size) { return Assets::image(volumeIconFile(v), QSize(size, size)); }
+
 QString machineFolder()
 {
     QSettings s(configDir() + "/timemachine.conf", QSettings::IniFormat);
@@ -192,13 +286,15 @@ QVector<Snapshot> snapshots(const QString &machine)
     return out;
 }
 
-QString folderInSnapshot(const QString &snapshot, const QString &original)
+QString folderInSnapshot(const QString &snapshot, const QString &original, const QString &volumeHint)
 {
     const QString mp = mountPoint(original);
     const QString relative = mp == "/" ? original : original.mid(mp.size());
     // _FindChildFolderByMatchingXTAttr: the volume folder with the volume's UUID, else its name
     QString uuid = byDevice("/dev/disk/by-uuid", original).toUpper();
     QStringList volumes;
+    if (!volumeHint.isEmpty())
+        volumes << volumeHint;
     const QDir d(snapshot);
     for (const QString &v : d.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
         if (!uuid.isEmpty() && attribute(d.filePath(v), "user.com.apple.backupd.SnapshotVolumeUUID") == uuid)
@@ -291,7 +387,7 @@ QImage paintWindow(const WindowPicture &w, QSize size)
     t.active = true;
     t.hasToolbar = true;
     t.unifiedToolbar = Toolbar;
-    t.proxyIcon = icon("GenericFolderIcon.icns", 16);
+    t.proxyIcon = icon(w.titleIcon.isEmpty() ? QString("GenericFolderIcon.icns") : w.titleIcon, 16);
     p.drawImage(0, 0, Frame::paintTitleBar(t));
     p.setPen(QColor(64, 64, 64));
     p.drawLine(0, Top - 1, size.width(), Top - 1);
@@ -392,7 +488,7 @@ QImage paintWindow(const WindowPicture &w, QSize size)
                 p.setBrush(QColor(0, 0, 0, 40));
                 p.drawRoundedRect(QRectF(ir).adjusted(-4, -4, 4, 4), 5, 5);
             }
-            p.drawImage(ir, icon(e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", 64));
+            p.drawImage(ir, icon(!e.icon.isEmpty() ? e.icon : e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", 64));
             p.setFont(font(12));
             const QFontMetrics fm(p.font());
             const QString label = fm.elidedText(e.name, Qt::ElideMiddle, cell.width() - 6);
@@ -452,7 +548,7 @@ QImage paintWindow(const WindowPicture &w, QSize size)
             p.drawPolygon(QPolygonF({QPointF(cx - 2.5, cy - 4.5), QPointF(cx + 3.5, cy), QPointF(cx - 2.5, cy + 4.5)}));
             p.setRenderHint(QPainter::Antialiasing, false);
         }
-        p.drawImage(r.x() + 18, r.y() + 1, icon(e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", 16));
+        p.drawImage(r.x() + 18, r.y() + 1, icon(!e.icon.isEmpty() ? e.icon : e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", 16));
         p.setFont(font(12));
         p.setPen(sel ? Qt::white : Qt::black);
         Aqua::drawText(p, QRectF(r.x() + 38, r.y(), nameW - 44, Row), Qt::AlignLeft | Qt::AlignVCenter, e.name);

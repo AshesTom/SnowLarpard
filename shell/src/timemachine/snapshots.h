@@ -27,7 +27,26 @@ QVector<Snapshot> snapshots(const QString &machine);
 // <snapshot>/<volume folder>/<path relative to the volume's mount point>, the volume folder found by
 // its SnapshotVolumeUUID attribute, else by name; the older layout (the absolute path) as well.
 // Empty when the snapshot doesn't hold it.
-QString folderInSnapshot(const QString &snapshot, const QString &original);
+// volumeHint: the volume folder to try first (a volume entered from the Computer of another disk)
+QString folderInSnapshot(const QString &snapshot, const QString &original, const QString &volumeHint = QString());
+
+// The Finder's Computer (TNode's computer node, "file:///?Computer"): the startup disk, then the disks
+// mounted under /run/media, /media and /mnt
+struct Volume {
+    QString name, path;
+    enum Kind { Internal, External, Removable } kind = Internal;
+};
+QVector<Volume> volumes();
+QString volumeName(const QString &mountPoint);
+QString volumeIconFile(const Volume &v);
+QImage volumeIcon(const Volume &v, int size);
+// Browse Other Time Machine Disks' rows: every <volume>/Backups.backupdb/<computer> on the mounted disks
+struct BackupStore {
+    QString computer;       // the computer's backup folder
+    QString computerName;
+    Volume volume;
+};
+QVector<BackupStore> backupStores();
 
 struct Entry {
     QString name;
@@ -35,6 +54,7 @@ struct Entry {
     qint64 size = 0;        // its physical size (blocks)
     QDateTime modified;
     QString kind;
+    QString icon;           // an icon file of its own (the Computer's volumes), else the folder's or document's
 };
 QVector<Entry> listFolder(const QString &path);
 // a signature of the folder's items (names, sizes, dates): "smart" navigation's changes
@@ -49,6 +69,7 @@ struct WindowPicture {
     qint64 available = -1;
     QString home;           // for the sidebar
     bool icons = false;     // icon view (else list view)
+    QString titleIcon;      // the proxy icon's file, else the folder's
 };
 QImage paintWindow(const WindowPicture &w, QSize size);
 // the items in the picture (y down): item i's rectangle; -1 from itemAt outside them

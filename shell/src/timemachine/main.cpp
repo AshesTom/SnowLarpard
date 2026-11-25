@@ -18,8 +18,8 @@
 //
 // The launcher's numbers (the Dock's menu): none or 0 enter Time Machine, 1 opens Time Machine's
 // preferences, 2 backs up now, 3 stops the backup, 4 (or --browse-other-disks) browses other disks
-// (the chooser isn't ported: the default disk). --folder <path> chooses the folder; otherwise the
-// Finder's front window's (its state file), else the Desktop.
+// (the chooser, then the chosen backups with the Computer as target). --folder <path> chooses the
+// folder; otherwise the Finder's front window's (its state file), else the Desktop.
 #include "snapshots.h"
 #include "starfield.h"
 
@@ -49,6 +49,8 @@
 #include <QScreen>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QSysInfo>
+#include <QListWidget>
 #include <QTimer>
 
 #include <xcb/xcb.h>
@@ -77,6 +79,9 @@ QString bu(const char *key, const char *fallback)
     return s.isEmpty() ? QString(fallback) : s;
 }
 QString finder(const char *key, const char *fallback) { return Assets::tr(FinderBundle, "Localizable", key, fallback); }
+
+// The Finder's Computer as a target (its URL "file:///?Computer"): browsing another disk starts there
+const QString ComputerTarget = "computer:";
 
 QString appsDir() { return QDir(QCoreApplication::applicationDirPath() + "/../../..").canonicalPath(); }
 
@@ -217,7 +222,8 @@ struct Button {
 
 class TimeMachine : public QOpenGLWindow {
 public:
-    TimeMachine(const QString &target, QSize windowSize, QRect liveRect, const QImage &desktop, const QStringList &selection, bool icons)
+    TimeMachine(const QString &machine, const QString &target, QSize windowSize, QRect liveRect, const QImage &desktop, const QStringList &selection,
+                bool icons)
         : m_target(target), m_desktop(desktop), m_icons(icons)
     {
         for (const QString &s : selection)
@@ -254,7 +260,7 @@ public:
             const QRect hole = liveRect.adjusted(-24, -14, 24, 34).intersected(m_desktop.rect());
             p.drawImage(hole.topLeft(), wall.copy(hole));
         }
-        m_machine = machineFolder();
+        m_machine = machine;
         m_snapshots = snapshots(m_machine);
         retarget(m_target);
         m_clock.start();
@@ -396,7 +402,14 @@ protected:
             } else {
                 const QString name = l.entries[row].name;
                 if (ev->type() == QEvent::MouseButtonDblClick && l.entries[row].dir) {
-                    retarget(m_target + "/" + name);   // BUChangeTimeMachineTarget
+                    if (m_target == ComputerTarget) {
+                        // a volume of the Computer: the mounted one of that name, else (another
+                        // computer's disk) the startup disk's place with that volume folder
+                        m_volumeHint = name;
+                        retarget(m_computerPaths.value(name, "/"));
+                    } else {
+                        retarget(m_target + "/" + name);   // BUChangeTimeMachineTarget
+                    }
                     return;
                 }
                 if (ev->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
@@ -639,18 +652,35 @@ private:
         m_layers.clear();
         Layer now;
         now.folder = target;
-        now.valid = QFileInfo(target).isDir();
+        now.valid = target == ComputerTarget || QFileInfo(target).isDir();
         m_layers.push_back(now);
         for (const Snapshot &s : m_snapshots) {
             Layer l;
-            l.folder = folderInSnapshot(s.path, target);
+            // the Computer inside a snapshot: its volumes' folders
+            l.folder = target == ComputerTarget ? s.path : folderInSnapshot(s.path, target, m_volumeHint);
             l.valid = !l.folder.isEmpty();
             l.date = s.date;
             m_layers.push_back(l);
         }
         for (Layer &l : m_layers) {
-            if (l.valid)
+            if (l.valid && l.folder == ComputerTarget) {
+                for (const Volume &v : volumes()) {
+                    Entry e;
+                    e.name = v.name;
+                    e.dir = true;
+                    e.kind = "Volume";
+                    e.icon = volumeIconFile(v);
+                    m_computerPaths[v.name] = v.path;
+                    l.entries.push_back(e);
+                }
+            } else if (l.valid) {
                 l.entries = listFolder(l.folder);
+                if (target == ComputerTarget)
+                    for (Entry &e : l.entries) {
+                        e.kind = "Volume";
+                        e.icon = volumeIconFile(Volume{e.name, QString(), Volume::Internal});
+                    }
+            }
             l.signature = signature(l.entries);
         }
         // the selection mapped into the new folder (mapBackupSelectionToContainer:)
@@ -682,12 +712,14 @@ private:
                 m_f->glDeleteTextures(1, &l.texture);
             if (l.valid) {
                 WindowPicture w;
-                w.title = displayName(m_target);
+                w.title = m_target == ComputerTarget ? QSysInfo::machineHostName().section('.', 0, 0) : displayName(m_target);
                 w.entries = l.entries;
                 w.selected = m_selection;
                 w.home = QDir::homePath();
-                w.available = QStorageInfoAvailable(l.folder);
+                w.available = l.folder == ComputerTarget ? -1 : QStorageInfoAvailable(l.folder);
                 w.icons = m_icons;
+                if (m_target == ComputerTarget)
+                    w.titleIcon = "com.apple.imac-aluminum-24.icns";   // the computer's model icon, as the Finder's
                 l.picture = paintWindow(w, m_B);
             } else {
                 l.picture = invalidPicture(m_B);
@@ -779,7 +811,8 @@ private:
         m_restoreAll.frame = QRectF(m_restore.frame.x() + 46 - aw, 10, aw, 44);
         m_date.frame = QRectF(m_cancel.frame.right() - 46, 10, m_restoreAll.frame.x() + 46 - (m_cancel.frame.right() - 46), 44);
         // updateButtonsEnableStateForTargetIndex: Restore and Restore All for a snapshot other than Now
-        const bool snapshot = m_current > 0 && m_layers[m_current].valid;
+        // (the Computer's volumes aren't restored)
+        const bool snapshot = m_current > 0 && m_layers[m_current].valid && m_target != ComputerTarget;
         m_restoreAll.enabled = snapshot && !m_layers[m_current].entries.isEmpty();
         bool any = false;
         for (const Entry &e : m_layers[m_current].entries)
@@ -1045,6 +1078,8 @@ private:
     }
 
     QString m_target;
+    QString m_volumeHint;                     // the volume folder entered from the Computer
+    QHash<QString, QString> m_computerPaths;  // the Computer's volumes: name -> mount point
     QImage m_desktop;
     bool m_icons = false;
     QSet<QString> m_selection;
@@ -1173,6 +1208,54 @@ void runRestore(const QString &from, const QStringList &names, const QString &to
 
 } // namespace
 
+// Browse Other Time Machine Disks (TBackup::ChooseAndEnterBackupStore, host 13): the Finder's
+// BackupVolumeBrowserWindow.nib, "Choose Time Machine Disk to Browse", one row per computer backup
+// folder on the mounted disks, "“^0” on “^1”" (BU41) with the volume's icon at 32 × 32; Use Selected
+// Disk (enabled with a selection, Return, a double click) or Cancel (Escape). The chosen computer
+// folder, or nothing.
+QString chooseBackupStore()
+{
+    QDialog dialog;
+    dialog.setWindowTitle("Choose Time Machine Disk to Browse");
+    dialog.setMinimumSize(336, 352);
+    dialog.resize(372, 374);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(20, 20, 20, 12);
+    auto *text = new QLabel("These disks contain Time Machine backups. Select the disk you want to use with Time Machine:");
+    text->setWordWrap(true);
+    QFont bold = text->font();
+    bold.setBold(true);
+    text->setFont(bold);
+    layout->addWidget(text);
+    auto *list = new QListWidget;
+    list->setIconSize(QSize(32, 32));
+    list->setSpacing(1);
+    const QVector<BackupStore> stores = backupStores();
+    for (const BackupStore &b : stores) {
+        const QString name = finder("BU41", "“^0” on “^1”").replace("^0", b.computerName).replace("^1", b.volume.name);
+        auto *item = new QListWidgetItem(QIcon(QPixmap::fromImage(volumeIcon(b.volume, 64))), name);
+        item->setData(Qt::UserRole, b.computer);
+        list->addItem(item);
+    }
+    layout->addWidget(list, 1);
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch();
+    auto *cancel = new QPushButton("Cancel");
+    auto *ok = new QPushButton("Use Selected Disk");
+    ok->setDefault(true);
+    ok->setEnabled(false);
+    buttons->addWidget(cancel);
+    buttons->addWidget(ok);
+    layout->addLayout(buttons);
+    QObject::connect(list, &QListWidget::itemSelectionChanged, ok, [&] { ok->setEnabled(!list->selectedItems().isEmpty()); });
+    QObject::connect(list, &QListWidget::itemDoubleClicked, &dialog, &QDialog::accept);
+    QObject::connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+    QObject::connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted || list->selectedItems().isEmpty())
+        return {};
+    return list->selectedItems().first()->data(Qt::UserRole).toString();
+}
+
 int main(int argc, char **argv)
 {
     Aqua::preinit();
@@ -1220,11 +1303,19 @@ int main(int argc, char **argv)
             kill(pid, SIGTERM);
         return 0;
     }
-    if (command == 4)
-        fprintf(stderr, "Time Machine: Browse Other Time Machine Disks isn't ported; the default disk\n");
+    // Browse Other Time Machine Disks: the chooser, then EnterBackupWithStore with the Computer as target
+    QString machine;
+    if (command == 4) {
+        machine = chooseBackupStore();
+        if (machine.isEmpty())
+            return 0;
+        folder = ComputerTarget;
+    } else {
+        machine = machineFolder();
+    }
 
     // PreflightShowBackup: no backup disk
-    if (machineFolder().isEmpty()) {
+    if (machine.isEmpty()) {
         QMessageBox box;
         box.setIconPixmap(QPixmap::fromImage(Assets::image("/Applications/Time Machine.app/Contents/Resources/backup.icns", QSize(64, 64))));
         box.setText(finder("BU1", "You haven’t selected a location for Time Machine backups."));
@@ -1245,7 +1336,8 @@ int main(int argc, char **argv)
         folder = !front.folder.isEmpty() && QFileInfo(front.folder).isDir() ? front.folder : desktopDir();
     if (folder != front.folder)
         selection.clear();
-    folder = QDir(folder).absolutePath();
+    if (folder != ComputerTarget)
+        folder = QDir(folder).absolutePath();
     const QRect live = folder == front.folder ? finderWindowRect(front.pid, displayName(folder)) : QRect();
     if (!live.isNull() && !windowSize.isValid())
         windowSize = live.size();
@@ -1257,7 +1349,7 @@ int main(int argc, char **argv)
         desktop = Assets::wallpaperFor(screen->geometry().size()).convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }
 
-    TimeMachine tm(folder, windowSize, live, desktop, selection, folder == front.folder && front.icons);
+    TimeMachine tm(machine, folder, windowSize, live, desktop, selection, folder == front.folder && front.icons);
     tm.onRestore = runRestore;
     tm.showFullScreen();
     tm.requestActivate();
