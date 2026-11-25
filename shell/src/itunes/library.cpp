@@ -3,6 +3,7 @@
 
 #include "foundation.h"
 #include "musicfolder.h"
+#include "smartblobs.h"
 #include "resources.h"
 
 #include <taglib/audioproperties.h>
@@ -566,8 +567,12 @@ bool Library::load()
             if (const Node *items = p.get("Playlist Items"))
                 for (const Node &i : items->array)
                     pl.items.push_back(int(i.num("Track ID")));
-            if (const Node *s = p.get("Smart Rules")) {
-                // ours: iTunes keeps them as the binary "Smart Info" and "Smart Criteria" (SLst)
+            const Node *si = p.get("Smart Info"), *sc = p.get("Smart Criteria");
+            if (si && sc && !pl.geniusTrack) {
+                // iTunes' own (FUN_000ab536: FUN_00192dfa's Smart Info, FUN_0037c336's SLst)
+                pl.smart = readSmartInfo(base64Decode(si->text), pl.info) && readSmartCriteria(base64Decode(sc->text), pl.info);
+            } else if (const Node *s = p.get("Smart Rules")) {
+                // the port's own key before section 31, still read
                 auto flag = [&](const char *k) { const Node *n = s->get(k); return n && n->text == "true"; };
                 pl.smart = true;
                 pl.info.any = flag("Match Any");
@@ -677,24 +682,17 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
             o << "\t\t\t<key>Folder</key><true/>\n";
         if (p.geniusTrack)
             o << "\t\t\t<key>Genius Track ID</key><integer>" << p.geniusTrack << "</integer>\n";
-        if (p.smart) {
-            const SmartInfo &s = p.info;
-            auto b = [](bool v) { return v ? "<true/>" : "<false/>"; };
-            o << "\t\t\t<key>Smart Rules</key>\n\t\t\t<dict>\n"
-              << "\t\t\t\t<key>Match</key>" << b(s.useRules) << "\n"
-              << "\t\t\t\t<key>Match Any</key>" << b(s.any) << "\n"
-              << "\t\t\t\t<key>Limit</key>" << b(s.limit) << "\n"
-              << "\t\t\t\t<key>Limit Value</key><integer>" << s.limitValue << "</integer>\n"
-              << "\t\t\t\t<key>Limit Unit</key><integer>" << s.limitUnit << "</integer>\n"
-              << "\t\t\t\t<key>Limit Order</key><integer>" << s.limitOrder << "</integer>\n"
-              << "\t\t\t\t<key>Checked Only</key>" << b(s.checkedOnly) << "\n"
-              << "\t\t\t\t<key>Live Updating</key>" << b(s.live) << "\n"
-              << "\t\t\t\t<key>Rules</key>\n\t\t\t\t<array>\n";
-            for (const SmartRule &r : s.rules)
-                o << "\t\t\t\t\t<dict><key>Field</key><integer>" << r.field << "</integer><key>Operator</key><integer>" << r.op
-                  << "</integer><key>Text</key><string>" << xmlEscape(r.text) << "</string><key>From</key><integer>" << r.from
-                  << "</integer><key>To</key><integer>" << r.to << "</integer><key>Unit</key><integer>" << r.unit << "</integer></dict>\n";
-            o << "\t\t\t\t</array>\n\t\t\t</dict>\n";
+        if (p.smart && !p.geniusTrack) {
+            // FUN_000ab536: Smart Info (0x70 bytes) and Smart Criteria, as <data>
+            auto data = [&](const char *k, const std::string &bytes) {
+                o << "\t\t\t<key>" << k << "</key>\n\t\t\t<data>\n";
+                const std::string b64 = base64Encode(bytes);
+                for (size_t at = 0; at < b64.size(); at += 60)
+                    o << "\t\t\t" << b64.substr(at, 60) << "\n";
+                o << "\t\t\t</data>\n";
+            };
+            data("Smart Info", smartInfoBlob(p.info));
+            data("Smart Criteria", smartCriteriaBlob(p.info));
         }
         o << "\t\t\t<key>All Items</key><true/>\n\t\t\t<key>Playlist Items</key>\n\t\t\t<array>\n";
         const std::vector<int> items = p.folder ? folderItems(p) : p.items;

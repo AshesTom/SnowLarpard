@@ -75,6 +75,10 @@ struct SmartInfo {
     bool checkedOnly = false;
     bool live = true;
     std::vector<SmartRule> rules;
+    // as read from the plist's Smart Criteria / Smart Info (smartblobs.h): the list's own bytes, written
+    // back while the rules are unchanged; Smart Info's byte 14
+    std::string criteria;
+    int infoFlag = 0;
 };
 
 struct Playlist {
