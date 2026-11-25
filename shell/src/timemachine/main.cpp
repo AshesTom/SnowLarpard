@@ -54,6 +54,9 @@
 #include <QTimer>
 
 #include <xcb/xcb.h>
+#ifdef SNOWLEOPARD_WAYLAND
+#include "windowserverclient.h"
+#endif
 
 #include <signal.h>
 #include <sys/statvfs.h>
@@ -143,9 +146,24 @@ FinderFront finderFront()
     return f;
 }
 
-// the Finder window's frame on the screen (y down), through X11
+// the Finder window's frame on the screen (y down), title bar included: through X11, or on Wayland
+// the window server's window events (sl_window_server_v1's frames)
 QRect finderWindowRect(uint pid, const QString &title)
 {
+#ifdef SNOWLEOPARD_WAYLAND
+    if (X11::wayland()) {
+        QRect found;
+        for (const WindowServerClient::WindowInfo &w : WindowServerClient::windows()) {
+            if (w.appId != "Finder" || (pid && w.pid != pid) ||
+                (w.flags & (WindowServerClient::Minimized | WindowServerClient::Hidden)))
+                continue;
+            const QRect r(w.x, w.y, w.width, w.height);
+            if (QString::fromStdString(w.title) == title || found.isNull())
+                found = r;
+        }
+        return found;
+    }
+#endif
     if (X11::wayland() || !X11::conn())
         return {};
     QRect found;
@@ -1426,7 +1444,18 @@ int main(int argc, char **argv)
 
     // the desktop's picture before the window covers it (setRevealImages:'s reveal layer)
     QScreen *screen = QGuiApplication::primaryScreen();
-    QImage desktop = screen->grabWindow(0).toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QImage desktop;
+#ifdef SNOWLEOPARD_WAYLAND
+    if (X11::wayland()) {
+        // the window server's capture (CGSHWCaptureWindowList's counterpart): Qt can't grab on Wayland
+        const QRect g = screen->geometry();
+        const std::string png = WindowServerClient::captureScreen(g.x(), g.y(), g.width(), g.height());
+        desktop = QImage::fromData(reinterpret_cast<const uchar *>(png.data()), int(png.size()), "PNG")
+                      .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+#endif
+    if (desktop.isNull())
+        desktop = screen->grabWindow(0).toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
     if (desktop.isNull() || desktop.size() != screen->geometry().size()) {
         desktop = Assets::wallpaperFor(screen->geometry().size()).convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }
