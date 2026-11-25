@@ -8,6 +8,7 @@
 #include <string>
 
 struct mpv_handle;
+struct mpv_render_context;
 
 namespace iTunes {
 
@@ -17,7 +18,13 @@ public:
     ~Player();
     bool available() const { return m_mpv != nullptr; }
 
-    void play(const std::string &path);   // from its start
+    void play(const std::string &path, bool video = false);   // from its start; its picture too when video
+    // The picture of a movie playing (docs/itunes-reverse.md section 29): libmpv's software renderer,
+    // a frame drawn into a buffer (cairo's RGB24) of the size given; onFrame when a new one is ready
+    bool hasVideo() const { return m_video && m_render; }
+    bool renderFrame(int width, int height, int stride, void *pixels);
+    void videoSize(int &width, int &height) const;
+    std::function<void()> onFrame;
     void pause();
     void resume();
     void stop();
@@ -51,6 +58,9 @@ private:
     double property(const char *name) const;
     enum State { Stopped, Playing, Paused } m_state = Stopped;
     mpv_handle *m_mpv = nullptr;
+    mpv_render_context *m_render = nullptr;
+    int m_frames[2] = {-1, -1};   // the render context's update callback's pipe
+    bool m_video = false;
     int m_fd = -1;
     double m_volume = 1;
     std::string m_eq;          // the equalizer's filters

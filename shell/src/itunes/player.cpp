@@ -4,6 +4,7 @@
 #include "appkit.h"
 
 #include <mpv/client.h>
+#include <mpv/render.h>
 
 #include <algorithm>
 #include <clocale>
@@ -21,9 +22,10 @@ Player::Player()
     m_mpv = mpv_create();
     if (!m_mpv)
         return;
-    // sound alone: no video window, no terminal, no configuration of the user's mpv
+    // sound alone unless a movie plays (its picture through the render API: no window of mpv's), no
+    // terminal, no configuration of the user's mpv
     mpv_set_option_string(m_mpv, "vid", "no");
-    mpv_set_option_string(m_mpv, "video", "no");
+    mpv_set_option_string(m_mpv, "vo", "libmpv");
     mpv_set_option_string(m_mpv, "terminal", "no");
     mpv_set_option_string(m_mpv, "config", "no");
     mpv_set_option_string(m_mpv, "idle", "yes");
@@ -35,6 +37,41 @@ Player::Player()
     }
     m_fd = mpv_get_wakeup_pipe(m_mpv);
     AK::App::shared().watch(m_fd, [this] { drain(); });
+    // the software renderer (section 29); its update callback (another thread) writes to a pipe the
+    // run loop watches
+    mpv_render_param params[] = {{MPV_RENDER_PARAM_API_TYPE, const_cast<char *>(MPV_RENDER_API_TYPE_SW)}, {MPV_RENDER_PARAM_INVALID, nullptr}};
+    if (::pipe(m_frames) == 0 && mpv_render_context_create(&m_render, m_mpv, params) >= 0) {
+        mpv_render_context_set_update_callback(
+            m_render, [](void *fd) { const char c = 1; (void)!::write(*static_cast<int *>(fd), &c, 1); }, &m_frames[1]);
+        AK::App::shared().watch(m_frames[0], [this] {
+            char buf[64];
+            while (::read(m_frames[0], buf, sizeof buf) == sizeof buf) {
+            }
+            if (m_render && (mpv_render_context_update(m_render) & MPV_RENDER_UPDATE_FRAME) && onFrame)
+                onFrame();
+        });
+    } else
+        m_render = nullptr;
+}
+
+bool Player::renderFrame(int width, int height, int stride, void *pixels)
+{
+    if (!m_render || width <= 0 || height <= 0)
+        return false;
+    int size[2] = {width, height};
+    size_t pitch = size_t(stride);
+    mpv_render_param params[] = {{MPV_RENDER_PARAM_SW_SIZE, size},
+                                 {MPV_RENDER_PARAM_SW_FORMAT, const_cast<char *>("bgr0")},
+                                 {MPV_RENDER_PARAM_SW_STRIDE, &pitch},
+                                 {MPV_RENDER_PARAM_SW_POINTER, pixels},
+                                 {MPV_RENDER_PARAM_INVALID, nullptr}};
+    return mpv_render_context_render(m_render, params) >= 0;
+}
+
+void Player::videoSize(int &width, int &height) const
+{
+    width = int(property("dwidth"));
+    height = int(property("dheight"));
 }
 
 Player::~Player()
@@ -42,6 +79,10 @@ Player::~Player()
     if (!m_mpv)
         return;
     AK::App::shared().unwatch(m_fd);
+    if (m_render) {
+        AK::App::shared().unwatch(m_frames[0]);
+        mpv_render_context_free(m_render);
+    }
     mpv_terminate_destroy(m_mpv);
 }
 
@@ -71,10 +112,12 @@ void Player::drain()
     }
 }
 
-void Player::play(const std::string &path)
+void Player::play(const std::string &path, bool video)
 {
     if (!m_mpv)
         return;
+    m_video = video && m_render;
+    mpv_set_property_string(m_mpv, "vid", m_video ? "auto" : "no");
     setVolume(m_volume);
     mpv_set_property_string(m_mpv, "pause", "no");
     const char *cmd[] = {"loadfile", path.c_str(), "replace", nullptr};

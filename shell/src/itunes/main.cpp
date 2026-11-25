@@ -45,6 +45,7 @@
 #include "librarysources.h"
 #include "podcasts.h"
 #include "podcastui.h"
+#include "video.h"
 #include "player.h"
 #include "resources.h"
 #include "store.h"
@@ -1722,6 +1723,16 @@ private:
         m_divider = c->add<View>();
 
         m_list = c->add<TrackList>();
+        // a movie's picture in the iTunes window (section 29)
+        m_videoView = c->add<VideoView>(m_player);
+        m_videoView->setHidden(true);
+        m_videoView->onEscape = [this] { stop(); };
+        m_videoView->onDoubleClick = [this] { videoFullScreen(!m_videoFull); };
+        m_player.onFrame = [this] {
+            for (VideoView *v : {m_videoView, m_videoWindowView})
+                if (v && !v->isHidden())
+                    v->setNeedsDisplay();
+        };
         // the Podcasts' placard under the list (section 29)
         m_placard = c->add<PodcastPlacard>();
         m_placard->setHidden(true);
@@ -2207,6 +2218,18 @@ private:
         if (placard) {
             area.h = std::max(0.0, area.h - PodcastPlacard::Height);
             m_placard->setFrame({area.x, area.y + area.h, area.w, PodcastPlacard::Height});
+        }
+        // a movie in the iTunes window: in the list's place
+        m_videoView->setHidden(!m_videoInWindow || m_mini);
+        if (m_videoInWindow && !m_mini) {
+            for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2], m_placard})
+                v->setHidden(true);
+            if (m_store) {
+                m_store->setHidden(true);
+                m_storeBar->setHidden(true);
+            }
+            m_videoView->setFrame(area);
+            return;
         }
         if (m_store && !eleven()) {
             const bool store = m_store8 && !m_mini;
@@ -3021,6 +3044,67 @@ private:
         });
     }
 
+    // ---- a movie's picture (section 29): where the Playback pane says (MENU 1373: 0 in the artwork
+    // viewer — none here: the iTunes window's —, 1 in the iTunes window, 2 in a separate window, 3 full
+    // screen, 4 full screen with visuals — the visuals not done)
+
+    void showVideo(const Track *t)
+    {
+        const bool was = m_videoInWindow;
+        m_videoInWindow = false;
+        if (!t || eleven() || !m_player.hasVideo()) {
+            m_videoWindow.reset();
+            m_videoWindowView = nullptr;
+            m_videoFull = false;
+            if (was)
+                layout();
+            return;
+        }
+        const int mode = Settings("itunes").integer((t->mediaKind & 0x20) ? "PlayMusicVideos" : "PlayMovies", 1);
+        if (mode <= 1) {
+            m_videoWindow.reset();
+            m_videoWindowView = nullptr;
+            m_videoFull = false;
+            m_videoInWindow = true;
+            layout();
+            m_window->makeFirstResponder(m_videoView);
+            return;
+        }
+        if (was)
+            layout();
+        openVideoWindow(t->name, mode >= 3, t->videoWidth, t->videoHeight);
+    }
+
+    void openVideoWindow(const std::string &title, bool full, int w, int h)
+    {
+        m_videoWindow.reset();
+        m_videoWindowView = nullptr;
+        m_videoFull = full;
+        const Rect screen = App::shared().screenFrame();
+        const Size size = full ? Size{screen.w, screen.h} : Size{double(w > 0 ? w : 640), double(h > 0 ? h : 360)};
+        m_videoWindow = std::make_unique<Window>(size, title, full ? Window::FullScreen : Window::Titled);
+        m_videoWindowView = m_videoWindow->contentView()->add<VideoView>(m_player);
+        m_videoWindowView->setFrame({0, 0, size.w, size.h});
+        m_videoWindowView->onEscape = [this] { App::shared().later([this] { stop(); }); };
+        m_videoWindowView->onDoubleClick = [this] { App::shared().later([this] { videoFullScreen(!m_videoFull); }); };
+        m_videoWindow->makeFirstResponder(m_videoWindowView);
+        m_videoWindow->show();
+    }
+
+    // a double click on the picture: full screen, and back to where it was
+    void videoFullScreen(bool full)
+    {
+        const Track *t = m_library.track(m_current);
+        if (!t || !t->hasVideo)
+            return;
+        if (full) {
+            m_videoInWindow = false;
+            layout();
+            openVideoWindow(t->name, true, t->videoWidth, t->videoHeight);
+        } else
+            showVideo(t);
+    }
+
     // ---- playback
 
     void markPlaying()
@@ -3063,7 +3147,8 @@ private:
         if (!t)
             return;
         m_current = id;
-        m_player.play(t->path);
+        m_player.play(t->path, t->hasVideo);
+        showVideo(t->hasVideo ? t : nullptr);
         t->playCount++;
         t->unplayed = false;   // the podcasts' blue dot
         m_library.save();
@@ -3088,6 +3173,7 @@ private:
 
     void stop()
     {
+        showVideo(nullptr);
         m_player.stop();
         m_current = -1;
         markPlaying();
@@ -3111,6 +3197,7 @@ private:
             if (m_repeat == 1 || !atEnd)
                 next = (next + int(m_queue.size())) % int(m_queue.size());
             else {
+                showVideo(nullptr);
                 m_player.stop();
                 m_current = -1;
                 markPlaying();
@@ -4088,6 +4175,9 @@ private:
     Library m_library;
     Podcasts m_podcasts{m_library};
     PodcastPlacard *m_placard = nullptr;
+    VideoView *m_videoView = nullptr, *m_videoWindowView = nullptr;
+    std::unique_ptr<Window> m_videoWindow;
+    bool m_videoInWindow = false, m_videoFull = false;
     std::set<std::string> m_openPodcasts;   // the podcasts whose episodes are shown
     std::vector<std::string> m_podcastRows;  // the podcasts' rows: their feeds (the row's id -1, -2…)
     int m_podcastPressed = -1;
