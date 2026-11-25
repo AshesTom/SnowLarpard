@@ -46,6 +46,7 @@
 #include "podcasts.h"
 #include "podcastui.h"
 #include "video.h"
+#include "radio.h"
 #include "player.h"
 #include "resources.h"
 #include "store.h"
@@ -1737,6 +1738,14 @@ private:
         m_placard = c->add<PodcastPlacard>();
         m_placard->setHidden(true);
         m_placard->onCommand = [this](const std::string &cmd) { podcastCommand(cmd); };
+        m_radio.onChanged = [this] {
+            if (m_columnKind == RadioKind)
+                loadSource();
+        };
+        m_radio.onError = [this](const std::string &message) {
+            Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), message, {}, {"OK"},
+                       [](int) {});
+        };
         m_podcasts.onChanged = [this] {
             if (m_columnKind == 10)
                 loadSource();
@@ -1767,6 +1776,8 @@ private:
         applyColumns();
         m_list->onRate = [this](int row, int rating) { rate(m_list->ids[size_t(row)], rating); };
         m_list->onDoubleClick = [this](int row) {
+            if (radioDoubleClick(row))
+                return;
             if (const std::string *url = podcastOfRow(row))   // a podcast's row: opened or closed
                 togglePodcast(*url);
             else
@@ -2572,6 +2583,8 @@ private:
             const std::string x = cellKey(ta, field), y = cellKey(tb, field);
             return asc ? x < y : y < x;
         });
+        if (m_columnKind == RadioKind)
+            shown = radioRows();
         if (m_columnKind == 10) {
             shown = podcastRows(shown);
             App::shared().later([this] { updatePlacard(); });
@@ -2596,8 +2609,8 @@ private:
         m_list->rows.clear();
         long long ms = 0, bytes = 0;
         for (int id : shown) {
-            if (id < 0) {   // a podcast's row
-                m_list->rows.push_back(podcastCells(id));
+            if (id < 0) {   // a podcast's row, the radio's genres and streams
+                m_list->rows.push_back(m_columnKind == RadioKind ? radioCells(id) : podcastCells(id));
                 continue;
             }
             const Track &t = *m_library.track(id);
@@ -2861,7 +2874,7 @@ private:
 
     const std::string *podcastOfRow(int row) const
     {
-        if (row < 0 || size_t(row) >= m_list->ids.size() || m_list->ids[size_t(row)] >= 0)
+        if (m_columnKind != 10 || row < 0 || size_t(row) >= m_list->ids.size() || m_list->ids[size_t(row)] >= 0)
             return nullptr;
         const size_t i = size_t(-m_list->ids[size_t(row)] - 1);
         return i < m_podcastRows.size() ? &m_podcastRows[i] : nullptr;
@@ -2940,6 +2953,18 @@ private:
 
     bool drawPodcastCell(cairo_t *cr, int r, size_t c, const Rect &cell, bool sel, const AK::TextStyle &st)
     {
+        if (!eleven() && m_columnKind == RadioKind && size_t(r) < m_list->ids.size()) {   // the genres' triangles
+            if (c == 0)
+                return true;
+            if (c - 1 < m_columnFields.size() && m_columnFields[c - 1] == 2) {
+                const int id = m_list->ids[size_t(r)];
+                const bool genre = id > -100000;
+                const std::string &text = c < m_list->rows[size_t(r)].size() ? m_list->rows[size_t(r)][c] : std::string();
+                drawPodcastName(cr, cell, text, genre, genre && m_openGenres.count(size_t(-id - 1)), sel, NoButton, false, st);
+                return true;
+            }
+            return false;
+        }
         if (eleven() || m_columnKind != 10 || size_t(r) >= m_list->ids.size())
             return false;
         const int id = m_list->ids[size_t(r)];
@@ -2974,6 +2999,11 @@ private:
 
     bool clickPodcastCell(int r, size_t c, Point at, const Rect &cell)
     {
+        if (!eleven() && m_columnKind == RadioKind && c > 0 && c - 1 < m_columnFields.size() && m_columnFields[c - 1] == 2 &&
+            size_t(r) < m_list->ids.size() && m_list->ids[size_t(r)] > -100000 && podcastTriangle({0, 0, cell.w, cell.h}).inset(-3, -3).contains(at)) {
+            toggleGenre(size_t(-m_list->ids[size_t(r)] - 1));
+            return true;
+        }
         if (eleven() || m_columnKind != 10 || c == 0 || c - 1 >= m_columnFields.size() || m_columnFields[c - 1] != 2)
             return false;
         const Rect local{0, 0, cell.w, cell.h};
@@ -3042,6 +3072,78 @@ private:
             Settings("itunes").set("PodcastLastURL", url);
             m_podcasts.subscribe(url);
         });
+    }
+
+    // ---- the radio tuner (section 29): its genres, each with its triangle, their streams under them
+    //   (ids: a genre -1 - g, a stream -100000 - 10000 g - s); the columns Stream, Bit Rate, Comments
+
+    std::vector<int> radioRows()
+    {
+        if (!m_radio.loaded() && !m_radioAsked) {
+            m_radioAsked = true;   // once each time the source is chosen
+            m_radio.refresh();
+        }
+        std::vector<int> out;
+        const auto &genres = m_radio.genres();
+        for (size_t g = 0; g < genres.size(); ++g) {
+            out.push_back(-int(g) - 1);
+            if (m_openGenres.count(g))
+                for (size_t i = 0; i < genres[g].streams.size(); ++i)
+                    out.push_back(-100000 - int(g) * 10000 - int(i));
+        }
+        return out;
+    }
+
+    const RadioStream *radioStream(int id) const
+    {
+        if (id > -100000)
+            return nullptr;
+        const size_t g = size_t((-id - 100000) / 10000), i = size_t((-id - 100000) % 10000);
+        const auto &genres = m_radio.genres();
+        return g < genres.size() && i < genres[g].streams.size() ? &genres[g].streams[i] : nullptr;
+    }
+
+    std::vector<std::string> radioCells(int id)
+    {
+        std::vector<std::string> row{std::string()};
+        const RadioStream *st = radioStream(id);
+        const auto &genres = m_radio.genres();
+        const size_t g = size_t(-id - 1);
+        for (int field : m_columnFields) {
+            if (st)
+                row.push_back(field == 2 ? st->name : field == 5 && st->kbps ? std::to_string(st->kbps) + " kbps" : field == 14 ? st->description : std::string());
+            else if (g < genres.size())   // the genre: its name and how many streams (by eye)
+                row.push_back(field == 2 ? genres[g].name + (genres[g].count ? " (" + std::to_string(genres[g].count) + ")" : std::string()) : std::string());
+            else
+                row.push_back({});
+        }
+        return row;
+    }
+
+    void toggleGenre(size_t g)
+    {
+        if (!m_openGenres.erase(g)) {
+            m_openGenres.insert(g);
+            if (g < m_radio.genres().size() && !m_radio.genres()[g].loaded)
+                m_radio.open(g);
+        }
+        loadSource();
+    }
+
+    bool radioDoubleClick(int row)
+    {
+        if (eleven() || m_columnKind != RadioKind || row < 0 || size_t(row) >= m_list->ids.size())
+            return false;
+        const int id = m_list->ids[size_t(row)];
+        if (const RadioStream *st = radioStream(id)) {   // a stream played as it comes (not added to the library)
+            keepBookmark();
+            showVideo(nullptr);
+            m_current = -1;
+            m_player.play(st->url);
+            refreshLCD();
+        } else
+            toggleGenre(size_t(-id - 1));
+        return true;
     }
 
     // ---- a movie's picture (section 29): where the Playback pane says (MENU 1373: 0 in the artwork
@@ -3758,6 +3860,7 @@ private:
             kind = 0;
         if (kind == m_columnKind)
             return;
+        m_radioAsked = false;
         if (m_columnKind == 0) {
             m_musicColumns = m_columnFields;
             m_musicSort = m_sortField;
@@ -4199,6 +4302,9 @@ private:
     Library m_library;
     Podcasts m_podcasts{m_library};
     PodcastPlacard *m_placard = nullptr;
+    RadioTuner m_radio;
+    std::set<size_t> m_openGenres;
+    bool m_radioAsked = false;
     VideoView *m_videoView = nullptr, *m_videoWindowView = nullptr;
     std::unique_ptr<Window> m_videoWindow;
     bool m_videoInWindow = false, m_videoFull = false;
