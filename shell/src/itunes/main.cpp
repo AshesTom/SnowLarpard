@@ -42,6 +42,7 @@
 #include "upnext11.h"
 #include "preferences.h"
 #include "library.h"
+#include "musicfolder.h"
 #include "librarysources.h"
 #include "podcasts.h"
 #include "podcastui.h"
@@ -1561,7 +1562,7 @@ public:
     {
         if (paths.empty())
             return;
-        m_library.add(paths);
+        m_library.add(paths, !eleven() && MusicFolder::copyWhenAdding());   // section 31
         m_library.save();
         if (!eleven() && showSourcesFor(m_library.takeAddedKinds()))
             rebuildSources();
@@ -4332,6 +4333,49 @@ private:
 
     // The preferences the port acts on (section 14): the list's text size, Sound Check, the MiniPlayer
     // on top
+    // The Advanced pane's OK (FUN_002ac6e6, section 31): Keep iTunes Music folder organized just turned
+    // on organizes the folder's files at once (FUN_001a094e); already on with the folder changed, it asks
+    // 162.005 first (162.006 for the other changes)
+    void musicFolderChanged(bool folderChanged, bool wasOrganized)
+    {
+        if (!MusicFolder::keepOrganized())
+            return;
+        auto organize = [this] {
+            m_library.organizeAll();
+            m_library.save();
+            loadSource();
+        };
+        if (!wasOrganized)
+            return organize();
+        Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}),
+                   tr(folderChanged ? "162.005" : "162.006"), {}, {"Yes", "No"}, [organize](int b) {
+                       if (b == 0)
+                           organize();
+                   });
+    }
+
+    // File ▸ Library ▸ Consolidate Library… (gath, FUN_001a086c): 143.006 with Consolidate (9004.010), then every file
+    // outside the iTunes Music folder copied in (FUN_001a00ea); 143.010 when a copy fails
+    void consolidateLibrary()
+    {
+        const Image icon = Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64});
+        std::string message = tr("143.006"), informative;
+        for (const char *gap : {"\r\r", "\\r\\r"})   // the strings' CRs, real or as the file spells them
+            if (const size_t cr = message.find(gap); cr != std::string::npos) {
+                informative = message.substr(cr + std::string(gap).size());
+                message = message.substr(0, cr);
+            }
+        Alert::run(icon, message, informative, {tr("9004.010"), "Cancel"}, [this, icon](int b) {
+            if (b != 0)
+                return;
+            const int n = m_library.consolidate();
+            m_library.save();
+            loadSource();
+            if (n < 0)
+                Alert::run(icon, tr("143.010"), {}, {"OK"}, [](int) {});
+        });
+    }
+
     void applyPreferences()
     {
         if (eleven())
@@ -4533,6 +4577,8 @@ private:
             return dynamic_cast<TextField *>(m_window->firstResponder()) || (!m_store8 && !m_list->rows.empty());
         if (a == "SNon")
             return !m_store8 && !m_list->sel.empty();
+        if (a == "gath")   // File ▸ Library ▸ Consolidate Library… (FUN_000b5314's 'gath': always)
+            return !eleven();
         if (a == "ourl")   // Advanced ▸ Open Audio Stream… (enabled unless +0x109bf)
             return !eleven();
         if (a == "pcsb")   // Advanced ▸ Subscribe to Podcast… (FUN_000b5314: unless the podcasts are hidden)
@@ -4678,6 +4724,8 @@ private:
             openStream();
         else if (a == "pcsb")
             subscribeToPodcast();
+        else if (a == "gath")
+            consolidateLibrary();
         else if (a == "sall" && dynamic_cast<TextField *>(m_window->firstResponder())) {
             auto *f = dynamic_cast<TextField *>(m_window->firstResponder());   // the search field's text
             f->selectAll();
@@ -4716,6 +4764,7 @@ private:
         }
         else if (a == "pref") {
             m_prefs.onApply = [this] { applyPreferences(); };
+            m_prefs.onMusicFolder = [this](bool folderChanged, bool wasOrganized) { musicFolderChanged(folderChanged, wasOrganized); };
             m_prefs.show();
         }
         else if (a == "esmp")

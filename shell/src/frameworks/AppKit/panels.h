@@ -28,6 +28,8 @@ namespace OpenPanel {
 // The files chosen (none: cancelled)
 void run(const std::string &title, const std::string &directory, const std::vector<FileFilter> &filters, bool multiple,
          std::function<void(std::vector<std::string>)> done);
+// canChooseDirectories without files: the folder chosen (empty: cancelled)
+void chooseDirectory(const std::string &title, const std::string &directory, std::function<void(std::string)> done);
 }
 
 namespace SavePanel {

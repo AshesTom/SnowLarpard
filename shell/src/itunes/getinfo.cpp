@@ -279,7 +279,6 @@ void InfoWindow::build()
     p.compilation = info->add<CheckBox>("Part of a compilation");
     p.compilation->small = true;
     p.compilation->setFrame(Rect{351, 420, 160, 16}.translated(-TabX, -TabY));
-    p.compilation->setEnabled(false);   // not kept in the library yet
 
     // Video, Sorting, Options: their DITLs
     p.video = ditlPage(video, 275);
@@ -376,6 +375,7 @@ void InfoWindow::load()
     p.discOf->setText(number(t->discCount));
     p.grouping->setText(t->grouping);
     p.bpm->setText(number(t->bpm));
+    p.compilation->setChecked(t->compilation);
     p.composer->setText(t->composer);
     p.comments->setText(t->comments);
     p.genre->setText(t->genre);
@@ -427,15 +427,18 @@ bool InfoWindow::save()
     t.discCount = std::atoi(p.discOf->text.c_str());
     t.grouping = p.grouping->text;
     t.bpm = std::atoi(p.bpm->text.c_str());
+    t.compilation = p.compilation->checked();
     t.composer = p.composer->text;
     t.comments = p.comments->text;
     t.genre = p.genre->text;
     const bool changed = t.name != old->name || t.artist != old->artist || t.year != old->year || t.albumArtist != old->albumArtist ||
                          t.trackNumber != old->trackNumber || t.trackCount != old->trackCount || t.album != old->album ||
                          t.discNumber != old->discNumber || t.discCount != old->discCount || t.grouping != old->grouping ||
-                         t.bpm != old->bpm || t.composer != old->composer || t.comments != old->comments || t.genre != old->genre;
+                         t.bpm != old->bpm || t.composer != old->composer || t.comments != old->comments || t.genre != old->genre ||
+                         t.compilation != old->compilation;
     if (changed) {
         m_library.writeTags(t);
+        t.path = m_library.track(t.id)->path;   // Keep iTunes Music folder organized may have moved it
         m_library.save();
     }
     if (p.lyrics->text != p.lyricsLoaded)

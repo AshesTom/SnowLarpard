@@ -2,6 +2,7 @@
 #include "library.h"
 
 #include "foundation.h"
+#include "musicfolder.h"
 #include "resources.h"
 
 #include <taglib/audioproperties.h>
@@ -519,6 +520,7 @@ bool Library::load()
             tr.discCount = int(t.num("Disc Count"));
             tr.bpm = int(t.num("BPM"));
             tr.rating = int(t.num("Rating"));
+            tr.compilation = t.get("Compilation") && t.get("Compilation")->text == "true";
             tr.dateAdded = t.str("Date Added");
             readKinds(t, tr);
             {
@@ -609,7 +611,7 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
          "\t<key>Features</key><integer>5</integer>\n"
          "\t<key>Show Content Ratings</key><true/>\n"
          "\t<key>Music Folder</key><string>"
-      << xmlEscape(fileURL(musicFolder() + "/iTunes/iTunes Music/")) << "</string>\n"
+      << xmlEscape(fileURL(MusicFolder::path() + "/")) << "</string>\n"
       << "\t<key>Tracks</key>\n\t<dict>\n";
     auto str = [&](const char *k, const std::string &v) {
         if (!v.empty())
@@ -640,6 +642,8 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
         num("Track Count", t.trackCount);
         num("Year", t.year);
         num("BPM", t.bpm);
+        if (t.compilation)
+            o << "\t\t\t<key>Compilation</key><true/>\n";
         if (!t.dateAdded.empty())
             o << "\t\t\t<key>Date Added</key><date>" << t.dateAdded << "</date>\n";
         num("Bit Rate", t.bitRate);
@@ -1102,7 +1106,7 @@ int Library::addURL(const std::string &url)
     return t.id;
 }
 
-void Library::addFile(const std::string &path)
+void Library::addFile(const std::string &path, bool copy)
 {
     for (const auto &[id, t] : m_tracks)
         if (t.path == path)
@@ -1141,6 +1145,8 @@ void Library::addFile(const std::string &path)
         if (!prop("DISCTOTAL").empty())
             t.discCount = std::atoi(prop("DISCTOTAL").c_str());
         t.bpm = std::atoi(prop("BPM").c_str());
+        // MP4's cpil, Vorbis' COMPILATION; ID3's TCMP (iTunes' own frame: TagLib names it by its ID)
+        t.compilation = std::atoi(prop("COMPILATION").c_str()) != 0 || std::atoi(prop("TCMP").c_str()) != 0;
     }
     if (!f.isNull() && f.audioProperties()) {
         t.totalTime = f.audioProperties()->lengthInMilliseconds();
@@ -1150,6 +1156,17 @@ void Library::addFile(const std::string &path)
     if (t.name.empty())
         t.name = baseName(path);
     readMedia(t);
+    if (copy && !MusicFolder::contains(path)) {
+        // the copy thread (FUN_001a2a56): the file copied to its place (FUN_001830e8), the track's
+        // location the copy's
+        const std::string to = MusicFolder::destination(t, {});
+        if (!to.empty() && MusicFolder::copyFile(path, to)) {
+            for (const auto &[id, other] : m_tracks)
+                if (other.path == to)
+                    return;
+            t.path = to;
+        }
+    }
     m_addedKinds |= t.mediaKind;
     m_tracks[t.id] = t;
     for (Playlist &p : m_playlists)
@@ -1162,7 +1179,20 @@ bool Library::writeTags(const Track &t)
     Track *mine = track(t.id);
     if (!mine)
         return false;
+    const Track old = *mine;
     *mine = t;
+    const bool ok = writeFileTags(t);
+    // FUN_001832e2 after an edit: the fields the file's place comes from (the mask 0x40c0004d)
+    if (std::tie(old.name, old.artist, old.albumArtist, old.album, old.series, old.trackNumber, old.discNumber, old.discCount,
+                 old.compilation, old.mediaKind) != std::tie(t.name, t.artist, t.albumArtist, t.album, t.series, t.trackNumber,
+                                                             t.discNumber, t.discCount, t.compilation, t.mediaKind) &&
+        MusicFolder::keepOrganized())
+        organize(t.id);
+    return ok;
+}
+
+bool Library::writeFileTags(const Track &t)
+{
     TagLib::FileRef f(t.path.c_str());
     if (f.isNull() || !f.tag())
         return false;
@@ -1188,11 +1218,12 @@ bool Library::writeTags(const Track &t)
     set("TRACKNUMBER", pair(t.trackNumber, t.trackCount));
     set("DISCNUMBER", pair(t.discNumber, t.discCount));
     set("BPM", t.bpm ? std::to_string(t.bpm) : std::string());
+    set(extension(t.path) == "mp3" ? "TCMP" : "COMPILATION", t.compilation ? "1" : "");
     f.file()->setProperties(p);
     return f.save();
 }
 
-int Library::add(const std::vector<std::string> &paths)
+int Library::add(const std::vector<std::string> &paths, bool copy)
 {
     if (std::none_of(m_playlists.begin(), m_playlists.end(), [](const Playlist &p) { return p.master; })) {
         Playlist lib;
@@ -1217,10 +1248,62 @@ int Library::add(const std::vector<std::string> &paths)
                     todo.push_back(p + "/" + n);
             }
         } else if (isAudio(p)) {
-            addFile(p);
+            addFile(p, copy);
         }
     }
     return int(m_tracks.size() - before);
+}
+
+bool Library::organize(int id, bool force)
+{
+    Track *t = track(id);
+    if (!t || isStream(*t) || !isFile(t->path))
+        return false;
+    if (!force && !MusicFolder::contains(t->path))
+        return true;   // a file outside the folder stays where it is
+    const std::string to = MusicFolder::destination(*t, {}, t->path);
+    if (to.empty() || to == t->path)
+        return !to.empty();
+    if (!MusicFolder::moveFile(t->path, to))
+        return false;
+    t->path = to;
+    return true;
+}
+
+int Library::organizeAll()
+{
+    int moved = 0;
+    for (auto &[id, t] : m_tracks) {
+        const std::string before = t.path;
+        if (!isStream(t) && MusicFolder::contains(t.path) && organize(id) && t.path != before)
+            ++moved;
+    }
+    return moved;
+}
+
+int Library::consolidate()
+{
+    // FUN_001a00ea: the files outside the folder and their size first, against the room on its disk
+    std::vector<int> todo;
+    long long need = 0;
+    for (const auto &[id, t] : m_tracks)
+        if (!isStream(t) && isFile(t.path) && !MusicFolder::contains(t.path)) {
+            todo.push_back(id);
+            need += t.size;
+        }
+    const long long room = MusicFolder::freeSpace(MusicFolder::path());
+    if (room >= 0 && need > room)
+        return -34;   // dskFulErr
+    int copied = 0;
+    for (int id : todo) {
+        Track &t = m_tracks[id];
+        const std::string to = MusicFolder::destination(t, {});
+        if (to.empty() || !MusicFolder::copyFile(t.path, to))
+            return copied ? copied : -1;
+        t.path = to;   // the track now the copy's (FUN_00176c90); the original left where it was
+        ++copied;
+    }
+    return copied;
 }
 
 std::vector<unsigned char> artworkData(const std::string &path)

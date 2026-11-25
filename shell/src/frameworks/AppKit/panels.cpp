@@ -160,6 +160,29 @@ void OpenPanel::run(const std::string &title, const std::string &directory, cons
     });
 }
 
+void OpenPanel::chooseDirectory(const std::string &title, const std::string &directory, std::function<void(std::string)> done)
+{
+    static bool running = false;
+    if (running)
+        return;
+    running = true;
+    auto finish = [done](const std::string &answer) {
+        running = false;
+        const std::vector<std::string> l = lines(answer);
+        done(l.empty() ? std::string() : l.front());
+    };
+    runDialog({"kdialog", "--title", title, "--getexistingdirectory", directory}, [finish, title, directory](bool ran, std::string answer) {
+        if (ran)
+            return finish(answer);
+        runDialog({"zenity", "--file-selection", "--directory", "--title=" + title, "--filename=" + directory + "/"},
+                  [finish](bool ran2, std::string a) {
+                      if (!ran2)
+                          std::fprintf(stderr, "AppKit: the open panel needs kdialog or zenity\n");
+                      finish(a);
+                  });
+    });
+}
+
 void SavePanel::run(const std::string &title, const std::string &start, const std::vector<FileFilter> &filters,
                     std::function<void(std::string)> done)
 {

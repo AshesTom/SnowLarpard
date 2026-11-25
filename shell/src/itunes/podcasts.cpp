@@ -16,6 +16,7 @@
 
 #include "appkit.h"
 #include "foundation.h"
+#include "musicfolder.h"
 #include "resources.h"
 #include "runloop.h"
 
@@ -470,7 +471,7 @@ const Podcasts::Info *Podcasts::feed(const std::string &url) const
 std::string Podcasts::folderFor(const std::string &url) const
 {
     const Info *f = feed(url);
-    return Library::musicFolder() + "/iTunes/iTunes Music/Podcasts/" + sanitize(f ? f->title : std::string());
+    return MusicFolder::path() + "/Podcasts/" + sanitize(f ? f->title : std::string());
 }
 
 void Podcasts::subscribe(const std::string &given)

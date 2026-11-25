@@ -25,6 +25,7 @@ struct Track {
     // Disc Count, BPM; Rating 0 to 100 (20 a star)
     std::string composer, albumArtist, grouping, comments;
     int trackCount = 0, discNumber = 0, discCount = 0, bpm = 0, rating = 0;
+    bool compilation = false;   // the plist's Compilation (the tags' TCMP / cpil): the Compilations folder
     // The media kind (FUN_0017b984's bits; docs/itunes-reverse.md section 29): 1 music, 2 movie, 4 podcast,
     // 8 audiobook, 0x10 booklet, 0x20 music video, 0x40 TV show, 0x4000 ringtone, 0x8000 rental; the
     // plist's Has Video, Video Width / Height, Movie, Music Video, TV Show, Podcast, Unplayed
@@ -108,8 +109,19 @@ public:
     // songs) or one named by the file
     bool importPlaylist(const std::string &path, std::vector<std::pair<std::string, std::vector<int>>> &lists);
 
-    // Files and folders (their audio and video files, recursively) added: the tracks new to the library
-    int add(const std::vector<std::string> &paths);
+    // Files and folders (their audio and video files, recursively) added: the tracks new to the library.
+    // With `copy` (Copy files to iTunes Music folder when adding: the copy thread FUN_001a2a56), a file
+    // not in the iTunes Music folder is copied to its place there (MusicFolder::destination) first
+    int add(const std::vector<std::string> &paths, bool copy = false);
+    // Keep iTunes Music folder organized (FUN_001832e2): the song's file moved to the place its fields
+    // give, when it is in the iTunes Music folder (or `force`: Consolidate's copies); false on a failure
+    bool organize(int id, bool force = false);
+    // The preference turned on, or the folder changed (FUN_001a094e → FUN_0019fea4): every file in the
+    // folder organized; how many moved
+    int organizeAll();
+    // File ▸ Library ▸ Consolidate Library (FUN_001a00ea): every song's file not in the iTunes Music folder
+    // copied to its place there; how many, or -34 (the disk too full: nothing copied), -1 a copy failed
+    int consolidate();
     bool isAudio(const std::string &path) const;   // a file iTunes takes (audio, MPEG-4 and QuickTime video)
     // The media kinds added since last asked (the General pane's Show boxes turned on for them:
     // FUN_002045c4, FUN_001517f8), then cleared
@@ -139,6 +151,7 @@ public:
     // Get Info's changes into the song's file (TagLib) as well as the library: false when the file
     // could not be written
     bool writeTags(const Track &t);
+    bool writeFileTags(const Track &t);   // the tags alone, the library and the file's place left
     // A new playlist's Persistent ID (16 hex digits, as the plist has them)
     static std::string newPersistentId();
     // A folder's songs: those of the playlists in it and in its folders, each once, in their order
@@ -147,7 +160,7 @@ public:
     std::vector<int> evaluate(const SmartInfo &info) const;
 
 private:
-    void addFile(const std::string &path);
+    void addFile(const std::string &path, bool copy);
     void readMedia(Track &t) const;   // the media kind, video, TV and podcast tags
     std::map<int, Track> m_tracks;
     std::vector<Playlist> m_playlists;

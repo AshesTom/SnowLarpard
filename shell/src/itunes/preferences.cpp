@@ -14,8 +14,10 @@
 #include "preferences.h"
 
 #include "controls.h"
+#include "panels.h"
 #include "foundation.h"
 #include "library.h"
+#include "musicfolder.h"
 #include "resources.h"
 
 #include <algorithm>
@@ -61,6 +63,9 @@ const Kept KeptItems[] = {
     // Playback: Play Movies and TV Shows, Play Music Videos (MENU 1373: in artwork viewer, in the iTunes
     // window, in a separate window, full screen, full screen with visuals)
     {257, 14, "PlayMovies", 1}, {257, 16, "PlayMusicVideos", 1},
+    // Advanced: Keep iTunes Music folder organized (+0xc07), Copy files to iTunes Music folder when adding
+    // (section 31: on, as a new 8.2.1 has them by eye; the Setup Assistant asks the first)
+    {260, 6, "KeepOrganized", 1}, {260, 8, "CopyFiles", 1},
     {260, 17, "MiniOnTop"},       // Advanced: Keep MiniPlayer on top of all other windows
 };
 
@@ -152,6 +157,7 @@ void PreferencesWindow::select(int pane)
         c->removeSubview(v);
     m_paneViews.clear();
     m_items.clear();
+    m_where = nullptr;
     m_toolbar->selected = pane;
     m_toolbar->setNeedsDisplay();
     const int ditl = Panes[pane].ditl;
@@ -219,15 +225,31 @@ void PreferencesWindow::select(int pane)
         if (it.type == DialogItem::Edit)
             r = Rect{r.x - 3, r.y - 3, r.w + 6, r.h + 6};
         v->setFrame(r);
+        // Advanced's Change… (4: the folder chooser titled 162.007) and Reset (5): the folder kept until OK
+        if (ditl == 260 && (n == 4 || n == 5)) {
+            auto *b = static_cast<Button *>(v);
+            b->action = [this, n] {
+                if (n == 5) {
+                    setFolder(MusicFolder::defaultPath());
+                    return;
+                }
+                OpenPanel::chooseDirectory(tr("162.007"), m_folder, [this](std::string dir) {
+                    if (!dir.empty())
+                        App::shared().later([this, dir] { setFolder(dir); });
+                });
+            };
+        }
         // what the port does nothing with stays shown, disabled
-        if (it.type != DialogItem::Text && !k)
+        else if (it.type != DialogItem::Text && !k)
             v->setEnabled(false);
         m_items[n] = v;
         m_paneViews.push_back(v);
     }
     // Advanced: the music folder's place in its box (item 3, a user item)
     if (ditl == 260) {
-        Label *where = c->add<Label>(Library::musicFolder() + "/iTunes/iTunes Music", Font::system(11));
+        m_folder = MusicFolder::path();
+        Label *where = c->add<Label>(m_folder, Font::system(11));
+        m_where = where;
         where->wrap = true;
         where->setFrame({85, 103, 304, 40});
         m_paneViews.push_back(where);
@@ -253,10 +275,21 @@ void PreferencesWindow::select(int pane)
     m_window->setContentSize({544, H});
 }
 
+void PreferencesWindow::setFolder(const std::string &dir)
+{
+    m_folder = dir;
+    if (m_where && m_window) {
+        m_where->setText(dir);
+        m_where->setNeedsDisplay();
+    }
+}
+
 void PreferencesWindow::save()
 {
     Settings s("itunes");
     const int ditl = Panes[m_pane].ditl;
+    const bool organized = MusicFolder::keepOrganized();
+    const std::string folder = MusicFolder::path();
     for (const auto &[n, v] : m_items) {
         const Kept *k = kept(ditl, n);
         if (!k)
@@ -267,6 +300,11 @@ void PreferencesWindow::save()
             s.set(k->key, f->text);
         else if (auto *p = dynamic_cast<PopUpButton *>(v))
             s.set(k->key, p->selected());
+    }
+    if (ditl == 260) {
+        MusicFolder::setPath(m_folder);
+        if (onMusicFolder && (MusicFolder::path() != folder || MusicFolder::keepOrganized() != organized))
+            onMusicFolder(MusicFolder::path() != folder, organized);
     }
 }
 
