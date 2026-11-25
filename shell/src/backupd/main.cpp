@@ -562,11 +562,38 @@ int backup()
     return OK;
 }
 
-// backupd-helper -auto: when automatic backups are on and the latest is an hour old
+// on a battery, no power line plugged in (IOPSGetProvidingPowerSourceType: "Battery Power")
+bool onBattery()
+{
+    bool battery = false, ac = false;
+    DIR *d = opendir("/sys/class/power_supply");
+    if (!d)
+        return false;
+    while (dirent *e = readdir(d)) {
+        if (e->d_name[0] == '.')
+            continue;
+        const std::string p = std::string("/sys/class/power_supply/") + e->d_name;
+        std::ifstream type(p + "/type"), online(p + "/online");
+        std::string t;
+        int on = 0;
+        type >> t;
+        if (t == "Mains" && (online >> on) && on)
+            ac = true;
+        battery = battery || t == "Battery";
+    }
+    closedir(d);
+    return battery && !ac;
+}
+
+// backupd-helper -auto: when automatic backups are on and the latest is an hour old; not on battery
+// power when com.apple.TimeMachine's RequiresACPower says so (the preference pane's "Back up while on
+// battery power" unchecked)
 bool due()
 {
     Settings prefs("timemachine");
     if (!prefs.boolean("AutoBackup", false))
+        return false;
+    if (prefs.boolean("RequiresACPower", false) && onBattery())
         return false;
     Settings r("TimeMachine.Results");
     const long long last = std::stoll("0" + r.string("BACKUP_COMPLETED_DATE", "0"));
