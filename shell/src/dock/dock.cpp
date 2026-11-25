@@ -24,6 +24,8 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <cmath>
+#include <cerrno>
+#include <signal.h>
 #include <functional>
 #include <memory>
 
@@ -1110,6 +1112,37 @@ void Dock::showMenu(int index, const QPoint &global)
     } else if (t.kind == Tile::Folder) {
         stackMenu(menu, t);
     } else {
+        // a docklet's own items (DOCKFileTile createMenu:): the bundle's Resources/Menu.plist, an array
+        // of {command, name}, the names from English.lproj/Menu.strings; the chosen one launches the
+        // bundle's program with the command's number as its argument (doCustomMenuCommand:)
+        QString openTitle = menuText("OPEN", "Open");
+        if (!t.app.macBundle.isEmpty()) {
+            const QJsonArray items = Assets::plist(t.app.macBundle + "/Contents/Resources/Menu.plist").toArray();
+            const bool timeMachine =
+                Assets::plist(t.app.macBundle + "/Contents/Info.plist")["CFBundleIdentifier"].toString() == "com.apple.backup.launcher";
+            bool backingUp = false;
+            if (timeMachine) {
+                // FUN_1000453b5: backupd's status, kCSBackupdKeyIsRunning (the shell's backupd.status.conf)
+                QSettings st(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/snowleopard/backupd.status.conf",
+                             QSettings::IniFormat);
+                const int pid = st.value("pid").toInt();
+                backingUp = st.value("Running").toBool() && pid > 0 && !(kill(pid, 0) != 0 && errno == ESRCH);
+                // item 1000, the Dock's Open, retitled
+                openTitle = Assets::tr(t.app.macBundle, "Menu", "Enter Time Machine", "Enter Time Machine");
+            }
+            for (const QJsonValue &item : items) {
+                const int command = item["command"].toInt();
+                const QString name = item["name"].toString();
+                // Time Machine's: Stop Backing Up only while backupd runs, Back Up Now only when it doesn't
+                if (timeMachine && ((command == 3 && !backingUp) || (command == 2 && backingUp)))
+                    continue;
+                const App app = t.app;
+                menu->addAction(Assets::tr(t.app.macBundle, "Menu", name, name),
+                                [app, command] { Apps::launch(app, {QString::number(command)}); });
+            }
+            if (!items.isEmpty())
+                menu->addSeparator();
+        }
         // its windows: the active one checked, a diamond before the minimized ones (as 10.6)
         const xcb_window_t active = X11::activeWindow();
         for (xcb_window_t w : t.windows) {
@@ -1142,7 +1175,7 @@ void Dock::showMenu(int index, const QPoint &global)
             menu->addSeparator();
         }
         if (t.windows.isEmpty()) {
-            menu->addAction(menuText("OPEN", "Open"), [this, index] {
+            menu->addAction(openTitle, [this, index] {
                 if (index < m_tiles.size())
                     activate(m_tiles[index]);
             });

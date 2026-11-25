@@ -238,6 +238,9 @@ WANTED = {
         "./System/Library/CoreServices/loginwindow.app/Contents/Resources/*",
         "./Applications/*.app/Contents/Info.plist",
         "./Applications/*.app/Contents/Resources/*.icns",
+        # the docklets' menus the Dock reads from a bundle (DOCKFileTile createMenu:): Time Machine's
+        "./Applications/*.app/Contents/Resources/Menu.plist",
+        "./Applications/*.app/Contents/Resources/English.lproj/Menu.strings",
         # the ported applications' help books and Help Viewer's pictures, styles and templates
         # (shell/src/helpviewer): English and Shared only, prune() leaves the other languages
         "./Applications/Calculator.app/Contents/Resources/Calculator.help/*",
