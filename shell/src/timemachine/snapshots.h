@@ -57,6 +57,11 @@ struct Entry {
     QString icon;           // an icon file of its own (the Computer's volumes), else the folder's or document's
 };
 QVector<Entry> listFolder(const QString &path);
+// The Finder's search field inside Time Machine (docs/timemachine-host.md 10): the items under `root`
+// whose name contains `text` (the field's name search, no hidden items), a file walk standing for the
+// query in that snapshot (_kMDItemTimeMachinePath = "<scope>/*"); each Entry's name its path relative
+// to root, sorted by their names; at most `limit`
+QVector<Entry> searchFolder(const QString &root, const QString &text, int limit = 1000);
 // a signature of the folder's items (names, sizes, dates): "smart" navigation's changes
 QString signature(const QVector<Entry> &entries);
 
@@ -70,7 +75,11 @@ struct WindowPicture {
     QString home;           // for the sidebar
     bool icons = false;     // icon view (else list view)
     QString titleIcon;      // the proxy icon's file, else the folder's
+    QString search;         // the search field's text (a search's results: the entries' names relative paths)
+    bool searchFocus = false;
 };
+// the toolbar's search field in the picture (y down), empty when the window is too narrow for it
+QRect searchFieldRect(QSize size);
 QImage paintWindow(const WindowPicture &w, QSize size);
 // the items in the picture (y down): item i's rectangle; -1 from itemAt outside them
 QRect itemRect(QSize size, int item, bool icons);

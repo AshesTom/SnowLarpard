@@ -284,6 +284,9 @@ public:
         retarget(m_target);
         m_clock.start();
         connect(&m_timer, &QTimer::timeout, this, [this] { update(); });
+        m_searchTimer.setSingleShot(true);
+        m_searchTimer.setInterval(500);
+        connect(&m_searchTimer, &QTimer::timeout, this, [this] { applySearch(); });
         m_timer.start(16);
     }
 
@@ -425,7 +428,22 @@ protected:
         const QPoint local(int(p.x() - m_front.x()), int(p.y() - topY));
         if (QRectF(QPointF(0, 0), m_front.size()).contains(local)) {
             Layer &l = m_layers[m_current];
-            const int row = itemAt(m_B, local, int(l.entries.size()), m_icons);
+            // the search field: typing goes there; its cancel button clears the search
+            const QRect field = searchFieldRect(m_B);
+            if (field.contains(local)) {
+                if (!m_search.isEmpty() && local.x() >= field.right() - 18) {
+                    m_search.clear();
+                    applySearch();
+                }
+                m_searchFocus = true;
+                selectionChanged();
+                return;
+            }
+            if (m_searchFocus) {
+                m_searchFocus = false;
+                selectionChanged();
+            }
+            const int row = itemAt(m_B, local, int(l.entries.size()), iconsView());
             if (ev->button() == Qt::RightButton) {
                 // the contextual menu on the item clicked, selected if it wasn't
                 if (row >= 0 && !m_selection.contains(l.entries[row].name)) {
@@ -447,7 +465,10 @@ protected:
                         m_volumeHint = name;
                         retarget(m_computerPaths.value(name, "/"));
                     } else {
-                        retarget(m_target + "/" + name);   // BUChangeTimeMachineTarget
+                        // BUChangeTimeMachineTarget (a search's result: its folder, the search left)
+                        m_search.clear();
+                        m_searchScope.clear();
+                        retarget(m_target + "/" + name);
                     }
                     return;
                 }
@@ -506,6 +527,42 @@ protected:
         if (m_phase != Browsing)
             return;
         const bool command = ev->modifiers() & (Qt::ControlModifier | Qt::MetaModifier);
+        if (m_searchFocus && !command) {
+            // the search field's editing: the search runs after a pause in the typing, at once on Return
+            switch (ev->key()) {
+            case Qt::Key_Escape:
+                if (m_search.isEmpty()) {
+                    m_searchFocus = false;
+                } else {
+                    m_search.clear();
+                    applySearch();
+                }
+                selectionChanged();
+                return;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+                m_searchTimer.stop();
+                applySearch();
+                return;
+            case Qt::Key_Backspace:
+                m_search.chop(1);
+                m_searchTimer.start();
+                selectionChanged();
+                return;
+            case Qt::Key_Up:
+            case Qt::Key_Down:
+            case Qt::Key_Tab:
+                break;
+            default:
+                if (!ev->text().isEmpty() && ev->text()[0].isPrint()) {
+                    m_search += ev->text();
+                    m_searchTimer.start();
+                    selectionChanged();
+                    return;
+                }
+                break;
+            }
+        }
         switch (ev->key()) {
         case Qt::Key_Escape:   // the browser's cancel: → BUTimeMachineAction(1)
             startExit();
@@ -727,6 +784,9 @@ private:
                     m_computerPaths[v.name] = v.path;
                     l.entries.push_back(e);
                 }
+            } else if (l.valid && !m_search.isEmpty()) {
+                // the query in this snapshot: its scope moved into it (-updateSearchTarget:)
+                l.entries = searchFolder(l.folder, m_search);
             } else if (l.valid) {
                 l.entries = listFolder(l.folder);
                 if (target == ComputerTarget)
@@ -736,6 +796,12 @@ private:
                     }
             }
             l.signature = signature(l.entries);
+            if (!m_search.isEmpty()) {
+                // NavigateForwardOrBackward in a search: where results appear or disappear
+                l.signature.clear();
+                for (const Entry &e : l.entries)
+                    l.signature += e.name + '\n';
+            }
         }
         // the selection mapped into the new folder (mapBackupSelectionToContainer:)
         QSet<QString> kept;
@@ -757,6 +823,27 @@ private:
             l.picture = QImage();
         m_toolbarDirty = true;
         followQuickLook();
+    }
+
+    // The search field's query (host 10): the target becomes the search of the folder (the Computer is
+    // not searched), its results in every snapshot; an empty field goes back to the folder
+    void applySearch()
+    {
+        if (m_search.isEmpty()) {
+            if (!m_searchScope.isEmpty()) {
+                const QString scope = m_searchScope;
+                m_searchScope.clear();
+                m_selection.clear();
+                retarget(scope);
+            }
+            return;
+        }
+        if (m_target == ComputerTarget)
+            return;
+        if (m_searchScope.isEmpty())
+            m_searchScope = m_target;
+        m_selection.clear();
+        retarget(m_searchScope);
     }
 
     // The front window's selected items in its snapshot (getQuickLookNodes:, the info nodes): the
@@ -839,7 +926,11 @@ private:
                 w.selected = m_selection;
                 w.home = QDir::homePath();
                 w.available = l.folder == ComputerTarget ? -1 : QStorageInfoAvailable(l.folder);
-                w.icons = m_icons;
+                w.icons = iconsView();
+                w.search = m_search;
+                w.searchFocus = m_searchFocus;
+                if (!m_searchScope.isEmpty() && !m_search.isEmpty())
+                    w.title = finder("FF31", "Searching “^0”").replace("^0", displayName(m_searchScope));
                 if (m_target == ComputerTarget)
                     w.titleIcon = "com.apple.imac-aluminum-24.icns";   // the computer's model icon, as the Finder's
                 l.picture = paintWindow(w, m_B);
@@ -1242,7 +1333,7 @@ private:
             if (!m_selection.contains(l.entries[i].name))
                 continue;
             QRect cell;
-            const QImage img = restoreImage(l.entries[i], m_B, i, m_icons, &cell);
+            const QImage img = restoreImage(l.entries[i], m_B, i, iconsView(), &cell);
             if (!visible.contains(cell))
                 continue;
             RestoreLayer r;
@@ -1273,7 +1364,12 @@ private:
     QHash<QString, QString> m_computerPaths;  // the Computer's volumes: name -> mount point
     QImage m_desktop;
     bool m_icons = false;
+    bool iconsView() const { return m_icons && m_search.isEmpty(); }   // a search's results in list view
     QSet<QString> m_selection;
+    // the search field (host 10): its text, the folder searched, typing in it, the search after a pause
+    QString m_search, m_searchScope;
+    bool m_searchFocus = false;
+    QTimer m_searchTimer;
     bool m_quickLook = false, m_finderUsed = false;   // the Finder's Quick Look panel opened from here, a Finder command sent
     QStringList m_quickLookPaths;
     QSize m_view, m_B;
@@ -1344,8 +1440,11 @@ void runRestore(const QString &from, const QStringList &names, const QString &to
             return;
     }
     enum Choice { Ask, KeepOriginal, KeepBoth, Replace } all = Ask;
-    for (const QString &name : names) {
-        const QString src = from + "/" + name, dst = to + "/" + name;
+    for (const QString &relative : names) {
+        // a search's result: its path under the scope, its enclosing folders recreated
+        const QString src = from + "/" + relative, dst = to + "/" + relative;
+        const QString name = relative.section('/', -1), dir = QFileInfo(dst).path();
+        QDir().mkpath(dir);
         Choice c = KeepBoth;
         if (QFileInfo::exists(dst) || QFileInfo(dst).isSymLink()) {
             c = all;
@@ -1393,7 +1492,7 @@ void runRestore(const QString &from, const QStringList &names, const QString &to
             if (c == KeepOriginal)
                 continue;
             if (c == KeepBoth)
-                QFile::rename(dst, to + "/" + originalName(to, name));
+                QFile::rename(dst, dir + "/" + originalName(dir, name));
             else
                 QProcess::execute("rm", {"-rf", "--", dst});
         }

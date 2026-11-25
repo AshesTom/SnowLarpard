@@ -6,6 +6,7 @@
 #include "frame.h"
 
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QLinearGradient>
@@ -311,6 +312,52 @@ QString folderInSnapshot(const QString &snapshot, const QString &original, const
     return {};
 }
 
+namespace {
+Entry entryFor(const QFileInfo &fi)
+{
+    static QMimeDatabase mime;
+    Entry e;
+    e.name = fi.fileName();
+    e.dir = fi.isDir();
+    struct stat st;
+    if (lstat(QFile::encodeName(fi.filePath()).constData(), &st) == 0)
+        e.size = qint64(st.st_blocks) * 512;
+    e.modified = fi.lastModified();
+    if (e.dir) {
+        e.kind = "Folder";
+    } else {
+        QString c = mime.mimeTypeForFile(fi).comment();
+        if (!c.isEmpty())
+            c[0] = c[0].toUpper();
+        e.kind = c.isEmpty() ? QString("Document") : c;
+    }
+    return e;
+}
+} // namespace
+
+QVector<Entry> searchFolder(const QString &root, const QString &text, int limit)
+{
+    QVector<Entry> out;
+    if (root.isEmpty() || text.isEmpty() || !QFileInfo(root).isDir())
+        return out;
+    const QDir base(root);
+    QDirIterator it(root, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System, QDirIterator::Subdirectories);
+    while (it.hasNext() && out.size() < limit) {
+        it.next();
+        const QFileInfo fi = it.fileInfo();
+        if (!fi.fileName().contains(text, Qt::CaseInsensitive))
+            continue;
+        Entry e = entryFor(fi);
+        e.name = base.relativeFilePath(fi.filePath());
+        out.push_back(e);
+    }
+    std::sort(out.begin(), out.end(), [](const Entry &a, const Entry &b) {
+        const int c = QString::compare(a.name.section('/', -1), b.name.section('/', -1), Qt::CaseInsensitive);
+        return c ? c < 0 : a.name < b.name;
+    });
+    return out;
+}
+
 QVector<Entry> listFolder(const QString &path)
 {
     QVector<Entry> out;
@@ -345,6 +392,11 @@ QString signature(const QVector<Entry> &entries)
     return s;
 }
 
+QRect searchFieldRect(QSize size)
+{
+    return size.width() > 420 ? QRect(size.width() - 171, Frame::TitleHeight + 7 + 1, 161, 21) : QRect();
+}
+
 QRect itemRect(QSize size, int item, bool icons)
 {
     const int x = sidebarWidth(size) + 1;
@@ -364,9 +416,9 @@ QImage restoreImage(const Entry &e, QSize size, int item, bool icons, QRect *fra
     const QFontMetrics fm(f);
     const QImage ic = icon(!e.icon.isEmpty() ? e.icon : e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", icons ? 64 : 16);
     QRect r, iconRect, textRect;
-    QString label = e.name;
+    QString label = e.name.section('/', -1);
     if (icons) {
-        label = fm.elidedText(e.name, Qt::ElideMiddle, cell.width() - 6);
+        label = fm.elidedText(label, Qt::ElideMiddle, cell.width() - 6);
         const int tw = fm.horizontalAdvance(label) + 10;
         iconRect = QRect(cell.center().x() - 32, cell.y() + 4, 64, 64);
         textRect = QRect(cell.center().x() - tw / 2, iconRect.bottom() + 6, tw, 16);
@@ -461,14 +513,33 @@ QImage paintWindow(const WindowPicture &w, QSize size)
     p.drawRect(76 + 15, ty + 7, 4, 4);
     p.drawRect(76 + 9, ty + 13, 4, 4);
     p.drawRect(76 + 15, ty + 13, 4, 4);
-    if (size.width() > 420) {
-        const QRectF search(size.width() - 170.5, ty + 1.5, 160, 20);
+    if (const QRect field = searchFieldRect(size); !field.isEmpty()) {
+        const QRectF search = QRectF(field).adjusted(0.5, 0.5, -0.5, -0.5);
+        if (w.searchFocus) {   // the keyboard focus ring
+            p.setPen(QPen(QColor(110, 160, 230, 200), 3));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(search.adjusted(-1, -1, 1, 1), 11, 11);
+        }
         p.setPen(QColor(130, 130, 130));
         p.setBrush(Qt::white);
         p.drawRoundedRect(search, 10, 10);
         p.setBrush(Qt::NoBrush);
         p.drawEllipse(QRectF(search.x() + 7, search.y() + 5, 7, 7));
         p.drawLine(QPointF(search.x() + 13, search.y() + 11.5), QPointF(search.x() + 16, search.y() + 14.5));
+        if (!w.search.isEmpty()) {
+            p.setFont(font(12));
+            p.setPen(Qt::black);
+            Aqua::drawText(p, QRectF(search.x() + 21, search.y(), search.width() - 40, search.height()), Qt::AlignLeft | Qt::AlignVCenter,
+                           QFontMetrics(font(12)).elidedText(w.search, Qt::ElideRight, int(search.width()) - 40));
+            // the cancel button: a grey disc with a white cross
+            const QPointF c(search.right() - 10, search.center().y());
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(165, 165, 165));
+            p.drawEllipse(c, 6.5, 6.5);
+            p.setPen(QPen(Qt::white, 1.5));
+            p.drawLine(c + QPointF(-2.5, -2.5), c + QPointF(2.5, 2.5));
+            p.drawLine(c + QPointF(-2.5, 2.5), c + QPointF(2.5, -2.5));
+        }
     }
 
     // the sidebar
@@ -524,7 +595,7 @@ QImage paintWindow(const WindowPicture &w, QSize size)
             p.drawImage(ir, icon(!e.icon.isEmpty() ? e.icon : e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", 64));
             p.setFont(font(12));
             const QFontMetrics fm(p.font());
-            const QString label = fm.elidedText(e.name, Qt::ElideMiddle, cell.width() - 6);
+            const QString label = fm.elidedText(e.name.section('/', -1), Qt::ElideMiddle, cell.width() - 6);
             const int tw = fm.horizontalAdvance(label) + 10;
             const QRect lr(cell.center().x() - tw / 2, ir.bottom() + 6, tw, 16);
             if (sel) {
@@ -584,7 +655,7 @@ QImage paintWindow(const WindowPicture &w, QSize size)
         p.drawImage(r.x() + 18, r.y() + 1, icon(!e.icon.isEmpty() ? e.icon : e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", 16));
         p.setFont(font(12));
         p.setPen(sel ? Qt::white : Qt::black);
-        Aqua::drawText(p, QRectF(r.x() + 38, r.y(), nameW - 44, Row), Qt::AlignLeft | Qt::AlignVCenter, e.name);
+        Aqua::drawText(p, QRectF(r.x() + 38, r.y(), nameW - 44, Row), Qt::AlignLeft | Qt::AlignVCenter, e.name.section('/', -1));
         p.setPen(sel ? Qt::white : QColor(80, 80, 80));
         Aqua::drawText(p, QRectF(cols[1] + 6, r.y(), dateW - 10, Row), Qt::AlignLeft | Qt::AlignVCenter, dateText(e.modified));
         Aqua::drawText(p, QRectF(cols[2] + 4, r.y(), sizeW - 10, Row), Qt::AlignRight | Qt::AlignVCenter,
