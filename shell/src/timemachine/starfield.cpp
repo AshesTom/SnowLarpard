@@ -52,7 +52,9 @@ struct Interpolator {
     {
         t -= std::floor(t);   // inputRepeat
         const double w = t * t + (1 - (tension + 1) / 2) * 2 * t * (1 - t);
-        const double s = spline && !spline->empty() ? std::clamp((*spline)(w), 0.0, 1.0) : w;
+        // valueAtTime: clamps the time to [0, 1], not the spline's value: A's curve overshoots to about
+        // 1.9 between its points, the clouds twice as opaque as a clamped curve would make them
+        const double s = spline && !spline->empty() ? (*spline)(w) : w;
         return v1 + (v2 - v1) * s;
     }
 };
@@ -463,7 +465,11 @@ void StarField::draw(double time, int w, int h, double galaxyY, double zOffset)
     f->glMatrixMode(GL_MODELVIEW);
     f->glLoadIdentity();
     f->glEnable(GL_TEXTURE_2D);
-    f->glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    // drawGas: and drawSun: set GL_REPLACE (0x1e01), and nothing sets it back in the view's context
+    // (VortexGL's GL_MODULATE is its pbuffers' own contexts' state): the stars drawn after them take
+    // their textures' colours as they are, the background stars' glColor 1 + fBGBrightness (0.4)
+    // having no effect
+    f->glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     f->glEnable(GL_BLEND);
     f->glColor4d(1, 1, 1, 1);
 
@@ -495,7 +501,7 @@ void StarField::draw(double time, int w, int h, double galaxyY, double zOffset)
     f->glFogf(GL_FOG_END, 5.01f);
     const float black[4] = {0, 0, 0, 1};
     f->glFogfv(GL_FOG_COLOR, black);
-    f->glColor4d(0.4, 0.4, 0.4, 1);   // 1 + fBGBrightness
+    f->glColor4d(0.4, 0.4, 0.4, 1);   // 1 + fBGBrightness, ignored under GL_REPLACE
     for (int c = 0; c < 4; ++c)
         drawQuads(m_bgStars[c], m_bgStar[c]);
     f->glColor4d(1, 1, 1, 1);
