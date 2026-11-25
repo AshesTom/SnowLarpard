@@ -35,7 +35,7 @@ the resources (icons, fonts, desktop pictures, nibs, strings) are read from your
 ```sh
 sudo pacman -S --needed cmake qt6-base qt6-imageformats libxcb xcb-util-keysyms cairo pango libjpeg-turbo libtiff lcms2 zlib libxkbcommon wayland wayland-protocols poppler-glib 7zip cpio python-xlib
 sudo pacman -S --needed qt6-webengine   # Help Viewer
-sudo pacman -S --needed mpv taglib curl   # iTunes (curl: its podcasts and radio, found on the PATH)
+sudo pacman -S --needed mpv taglib curl   # iTunes (curl: its podcasts, radio and Genius, found on the PATH)
 ```
 
 ## Usage
