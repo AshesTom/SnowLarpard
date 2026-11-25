@@ -559,6 +559,8 @@ void expose(NibPane &p)
 const char *const ClockExtra = "/System/Library/CoreServices/Menu Extras/Clock.menu";
 const char *const BatteryExtra = "/System/Library/CoreServices/Menu Extras/Battery.menu";
 
+} // namespace
+
 bool menuExtraShown(const std::string &bundle)
 {
     const std::vector<std::string> list = Settings("systemuiserver").list("menuExtras");
@@ -584,6 +586,8 @@ void showMenuExtra(const std::string &bundle, bool shown)
     prefs.set("dontAutoLoad", dont);
     prefs.set("menuExtras", list);
 }
+
+namespace {
 
 // ---- Exposé & Spaces' Spaces tab (ExposePaneMouse.nib, WorkspacesPrefs): what WindowServer's Spaces
 // reads (the Dock's preferences on the Mac)
@@ -1219,6 +1223,8 @@ void wirePane(NibPane &p)
         accounts(p);
     else if (id == "com.apple.preference.startupdisk")
         startupDisk(p);
+    else if (id == "com.apple.prefs.backup")
+        timeMachine(p);
     if (id == "com.apple.preference.network")
         networkDetails(p);
 }

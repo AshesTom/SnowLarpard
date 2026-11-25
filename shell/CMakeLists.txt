@@ -139,7 +139,8 @@ endif()
 add_executable(SystemPreferences src/prefs/main.cpp src/prefs/desktoppane.cpp src/prefs/desktoppane.h
                src/prefs/desktop.cpp src/prefs/desktop.h src/prefs/slideshow.cpp src/prefs/slideshow.h
                src/prefs/catalog.cpp src/prefs/catalog.h src/prefs/showall.cpp src/prefs/showall.h
-               src/prefs/nibpane.cpp src/prefs/nibpane.h src/prefs/linuxpanes.cpp)
+               src/prefs/nibpane.cpp src/prefs/nibpane.h src/prefs/linuxpanes.cpp
+               src/prefs/timemachinepane.cpp)
 target_link_libraries(SystemPreferences PRIVATE aquakit)
 target_compile_options(SystemPreferences PRIVATE -Wall -Wextra)
 set_target_properties(SystemPreferences PROPERTIES OUTPUT_NAME "System Preferences" AUTOMOC OFF

@@ -50,6 +50,12 @@ AK::View *makePane(const PaneInfo &info, AK::Size *size);
 // linuxpanes.cpp
 void wirePane(NibPane &pane);
 AK::View *handPane(const PaneInfo &info, AK::Size *size);   // Displays, Language & Text, Speech; null for the others
+// the menu extras the panes show or hide (SystemUIServer's menuExtras, dontAutoLoad)
+bool menuExtraShown(const std::string &bundle);
+void showMenuExtra(const std::string &bundle, bool shown);
+
+// timemachinepane.cpp: Time Machine's (its sheets, backupd's settings and state)
+void timeMachine(NibPane &pane);
 
 // after a control's own action, `f` (actions chain)
 void then(AK::View *control, std::function<void()> f);

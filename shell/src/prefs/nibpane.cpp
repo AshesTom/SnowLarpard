@@ -155,8 +155,6 @@ struct PanelSpec {
 const PanelSpec Panels[] = {
     {"com.apple.preference.energysaver", "showScheduleSheet:", "", "", "setScheduleAndDismissSheet:"},
     {"com.apple.preference.keyboard", "advancedOptions:", "", "", "modifierMappingDidChange:"},
-    {"com.apple.prefs.backup", "showOptionsSheet:", "TMOptionsSheet", "_optionsSheet", ""},
-    {"com.apple.prefs.backup", "showDestinationSheet:", "TMDestinationSheet", "_destinationSheet", ""},
     {"com.apple.preference.mouse", "zoomOptions:", "SWZoomOptions", "mZoomOptionsWindow", ""},
     {"com.apple.preference.trackpad", "zoomOptions:", "SWZoomOptions", "mZoomOptionsWindow", ""},
     {"com.apple.preferences.Bluetooth", "handleShowAdvancedOptions:", "", "_advancedOptionsPanel", ""},
