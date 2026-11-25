@@ -615,9 +615,17 @@ void WindowServer::restackLayers()
     for (xcb_window_t d : std::as_const(m_desktops))
         xcb_configure_window(m_conn, d, XCB_CONFIG_WINDOW_STACK_MODE, &below);
     bool fullscreenOnTop = m_active && m_active->fullscreen;
+    // a full screen window that floats (Time Machine's, at its own level over everything, the Dock and
+    // the menu bar hidden as SetSystemUIMode hides them) stays under the floating panels, so that the
+    // windows put at its level (the Finder's Get Info and Quick Look there) are over it
+    for (Client *f : std::as_const(m_clients))
+        if (f->floating && f->fullscreen && !f->minimized && onCurrentSpace(f)) {
+            xcb_configure_window(m_conn, f->frame, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+            fullscreenOnTop = true;
+        }
     // floating panels over the windows, under the Dock and the menu bar
     for (Client *f : std::as_const(m_clients))
-        if (f->floating && !f->minimized)
+        if (f->floating && !f->fullscreen && !f->minimized)
             xcb_configure_window(m_conn, f->frame, XCB_CONFIG_WINDOW_STACK_MODE, &above);
     if (!fullscreenOnTop)
         for (xcb_window_t d : std::as_const(m_docks))

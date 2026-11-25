@@ -27,6 +27,10 @@ public:
     // A window for the item, or the one already showing it brought forward
     static void show(const Item &item);
     static void closeAll();
+    // Time Machine's Get Info (showInfoWindowForInfoNodes:… in the 'peab' UI mode, FUN_1001d9448): the
+    // window at the Time Machine level, above its full-screen window, until Time Machine is left
+    static void showInTimeMachine(const Item &item);
+    static void leaveTimeMachine();
 
     // an item renamed from Name & Extension: its folder (the windows showing it refresh)
     static inline std::function<void(const std::string &folder)> onRenamed;

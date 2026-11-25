@@ -259,6 +259,23 @@ void InfoWindow::show(const Item &item)
     windows().push_back(std::unique_ptr<InfoWindow>(new InfoWindow(item)));
 }
 
+void InfoWindow::showInTimeMachine(const Item &item)
+{
+    show(item);
+    for (auto &w : windows())
+        if (w->m_item.path == item.path) {
+            w->m_window->setFloating(true);   // setLevel: _BUGetTimeMachineWindowLevel()
+            w->m_window->show();
+        }
+}
+
+void InfoWindow::leaveTimeMachine()
+{
+    for (auto &w : windows())
+        if (w->m_window->isFloating())
+            w->m_window->setFloating(false);
+}
+
 void InfoWindow::closeAll()
 {
     for (auto &w : windows())

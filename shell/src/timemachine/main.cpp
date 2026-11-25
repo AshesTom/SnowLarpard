@@ -51,6 +51,7 @@
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <QListWidget>
+#include <QMenu>
 #include <QTimer>
 
 #include <xcb/xcb.h>
@@ -425,6 +426,16 @@ protected:
         if (QRectF(QPointF(0, 0), m_front.size()).contains(local)) {
             Layer &l = m_layers[m_current];
             const int row = itemAt(m_B, local, int(l.entries.size()), m_icons);
+            if (ev->button() == Qt::RightButton) {
+                // the contextual menu on the item clicked, selected if it wasn't
+                if (row >= 0 && !m_selection.contains(l.entries[row].name)) {
+                    m_selection = {l.entries[row].name};
+                    selectionChanged();
+                }
+                if (row >= 0)
+                    contextMenu(ev->globalPosition().toPoint());
+                return;
+            }
             if (row < 0) {
                 m_selection.clear();
             } else {
@@ -498,6 +509,17 @@ protected:
         switch (ev->key()) {
         case Qt::Key_Escape:   // the browser's cancel: → BUTimeMachineAction(1)
             startExit();
+            break;
+        case Qt::Key_Space:    // Quick Look (the space bar, ⌘Y)
+            quickLook();
+            break;
+        case Qt::Key_Y:
+            if (command)
+                quickLook();
+            break;
+        case Qt::Key_I:        // Get Info
+            if (command)
+                getInfo();
             break;
         case Qt::Key_Up:
         case Qt::Key_Down:
@@ -590,6 +612,8 @@ private:
     {
         if (m_phase != Browsing)
             return;
+        if (m_finderUsed)
+            finderCommand("exit:");   // the Quick Look panel closed, the Info windows back to their level
         const double now = time();
         m_phase = Exiting;
         m_revealStart = now;
@@ -652,6 +676,7 @@ private:
         m_galaxy = Anim{now, duration, m_galaxy.value(now), galaxyTarget(target), 0.42, 0, 0.58, 1};
         m_current = target;
         m_toolbarDirty = m_timelineDirty = true;
+        followQuickLook();
     }
 
     // previousPressed: / nextPressed: smart navigation by default (the next snapshot where the folder
@@ -731,6 +756,74 @@ private:
         for (Layer &l : m_layers)
             l.picture = QImage();
         m_toolbarDirty = true;
+        followQuickLook();
+    }
+
+    // The front window's selected items in its snapshot (getQuickLookNodes:, the info nodes): the
+    // Finder's Quick Look and Get Info show them (docs/timemachine-host.md 8)
+    QStringList selectedPaths() const
+    {
+        QStringList out;
+        if (m_layers.isEmpty() || !m_layers[m_current].valid)
+            return out;
+        const Layer &l = m_layers[m_current];
+        for (const Entry &e : l.entries)
+            if (m_selection.contains(e.name))
+                out << (l.folder == ComputerTarget ? m_computerPaths.value(e.name) : l.folder + "/" + e.name);
+        out.removeAll(QString());
+        return out;
+    }
+    // the Finder's commands in the 'peab' UI mode, over its socket (FinderWindows --line "items:…")
+    static void finderCommand(const QString &command, const QStringList &paths = {})
+    {
+        QProcess::startDetached(appsDir() + "/Finder.app/Contents/MacOS/FinderWindows",
+                                {"--line", "items:peab:" + command + (paths.isEmpty() ? QString() : "\t" + paths.join('\t'))});
+    }
+    void getInfo()
+    {
+        const QStringList paths = selectedPaths();
+        if (!paths.isEmpty()) {
+            finderCommand("cmdShowStaticInfo:", paths);
+            m_finderUsed = true;
+        }
+    }
+    void quickLook()
+    {
+        // quickLookShouldOpenFullscreenWithEvent: NO in Time Machine: the panel, never full screen
+        const QStringList paths = selectedPaths();
+        if (!paths.isEmpty() || m_quickLook) {
+            finderCommand("cmdQuickLook:", paths);
+            m_quickLook = !m_quickLook;   // the Finder toggles the panel
+            m_quickLookPaths = paths;
+            m_finderUsed = true;
+        }
+    }
+    // the panel follows the selection, and the snapshot shown (-updatePreviewPanel)
+    void followQuickLook()
+    {
+        if (m_quickLook && m_phase == Browsing) {
+            const QStringList paths = selectedPaths();
+            if (!paths.isEmpty() && paths != m_quickLookPaths)
+                finderCommand("follow:", paths);
+            m_quickLookPaths = paths;
+        }
+    }
+    // buildContextMenu:… in the 'peab' mode: the selection's Get Info and Quick Look
+    void contextMenu(const QPoint &global)
+    {
+        const QStringList paths = selectedPaths();
+        if (paths.isEmpty())
+            return;
+        QMenu menu;
+        menu.addAction(finder("N165", "Get Info"), [this] { getInfo(); });
+        const QString one = QFileInfo(paths.first()).fileName();
+        menu.addAction(paths.size() == 1 ? Assets::tr(FinderBundle, "LocalizableCore", "N169.18", "Quick Look “^0”").replace("^0", one)
+                                         : finder("N169.19", "Quick Look ^0 Items").replace("^0", QString::number(paths.size())),
+                       [this] {
+                           if (!m_quickLook)
+                               quickLook();
+                       });
+        menu.exec(global);
     }
 
     GLuint layerTexture(int k)
@@ -1181,6 +1274,8 @@ private:
     QImage m_desktop;
     bool m_icons = false;
     QSet<QString> m_selection;
+    bool m_quickLook = false, m_finderUsed = false;   // the Finder's Quick Look panel opened from here, a Finder command sent
+    QStringList m_quickLookPaths;
     QSize m_view, m_B;
     QRectF m_front, m_live;
     QString m_machine;

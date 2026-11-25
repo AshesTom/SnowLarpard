@@ -380,15 +380,17 @@ void QuickLook::follow(const std::vector<Item> &items)
 {
     if (!isOpen() || items.empty() || !s_panel)
         return;
-    if (s_panel->items.size() == items.size() && s_panel->items[size_t(s_panel->index)].path == items.front().path)
+    // the same items: nothing to do
+    bool same = s_panel->items.size() == items.size();
+    for (size_t i = 0; same && i < items.size(); ++i)
+        same = items[i].path == s_panel->items[i].path;
+    if (same)
         return;
     // several items: the one shown kept if it is among them
     int index = 0;
     for (size_t i = 0; i < items.size(); ++i)
         if (items[i].path == s_panel->items[size_t(s_panel->index)].path)
             index = int(i);
-    if (items.size() == s_panel->items.size() && index == s_panel->index)
-        return;
     show(items, index);
 }
 

@@ -1173,7 +1173,23 @@ public:
         for (const std::string &p : itemPaths)
             if (!p.empty())
                 items.push_back(Item{displayName(p), p, isDir(p)});
-        if (cmd == "cmdShowStaticInfo:") {
+        if (cmd.rfind("peab:", 0) == 0) {
+            // from Time Machine (the 'peab' UI mode, docs/timemachine-host.md 8): Get Info at the Time
+            // Machine level, Quick Look (never full screen there) following its selection, and its exit
+            const std::string c = cmd.substr(5);
+            if (c == "cmdShowStaticInfo:") {
+                for (const Item &i : items)
+                    InfoWindow::showInTimeMachine(i);
+            } else if (c == "cmdQuickLook:") {
+                QuickLook::onShowItem = {};
+                QuickLook::toggle(items);
+            } else if (c == "follow:") {
+                QuickLook::follow(items);
+            } else if (c == "exit:") {
+                QuickLook::close();
+                InfoWindow::leaveTimeMachine();
+            }
+        } else if (cmd == "cmdShowStaticInfo:") {
             for (const Item &i : items)
                 InfoWindow::show(i);
         } else if (cmd == "cmdQuickLook:") {
