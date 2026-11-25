@@ -41,6 +41,7 @@ private:
     int m_pane = 0;
     std::string m_folder;            // Advanced: the music folder shown, kept on OK
     AK::Label *m_where = nullptr;
+    std::unique_ptr<AK::Window> m_importSettings;   // General's Import Settings…
 };
 
 } // namespace iTunes

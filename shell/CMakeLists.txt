@@ -199,8 +199,18 @@ if(ITUNES_DEPS_FOUND)
                    src/itunes/preferences.cpp src/itunes/preferences.h
                    src/itunes/visualizer.cpp src/itunes/visualizer.h
                    src/itunes/miniplayer11.cpp src/itunes/miniplayer11.h
-                   src/itunes/upnext11.cpp src/itunes/upnext11.h)
+                   src/itunes/upnext11.cpp src/itunes/upnext11.h
+                   src/itunes/audiocd.cpp src/itunes/audiocd.h src/itunes/cdimport.cpp src/itunes/cdimport.h
+                   src/itunes/burn.cpp src/itunes/burn.h src/itunes/cdui.cpp src/itunes/cdui.h
+                   src/itunes/cddrive.cpp src/itunes/cddrive.h)
     target_link_libraries(iTunes PRIVATE aquakit PkgConfig::ITUNES_DEPS)
+    # audio CDs read with libcdio and its paranoia when they are installed (docs/itunes-reverse.md,
+    # section 32); without them only the drives' insertion is seen and nothing can be read
+    pkg_check_modules(ITUNES_CDIO IMPORTED_TARGET libcdio libcdio_paranoia libcdio_cdda)
+    if(ITUNES_CDIO_FOUND)
+        target_link_libraries(iTunes PRIVATE PkgConfig::ITUNES_CDIO)
+        target_compile_definitions(iTunes PRIVATE ITUNES_CDIO=1)
+    endif()
     target_compile_options(iTunes PRIVATE -Wall -Wextra)
     set_target_properties(iTunes PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/iTunes.app/Contents/MacOS")
     # iTunes 11.4's Store: its pages in a process of their own (Qt's web engine, off screen), built

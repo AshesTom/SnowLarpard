@@ -51,6 +51,10 @@
 #include "genius.h"
 #include "video.h"
 #include "radio.h"
+#include "audiocd.h"
+#include "burn.h"
+#include "cddrive.h"
+#include "cdui.h"
 #include "player.h"
 #include "resources.h"
 #include "store.h"
@@ -133,6 +137,25 @@ private:
     bool m_pressed = false;
 };
 
+// The bottom bar's Import / Burn button (`Bb09` / `Bb10`, FUN_0014c872's case 7): PBUT 439 stretched to
+// its title's width + 16, the title (161.001 Import CD, 161.002 Burn Disc, 9004.002 Stop Importing) in
+// the system's 11-point font (by eye)
+class TitledButton : public PictureButton {
+public:
+    TitledButton() : PictureButton(439, 0) {}
+    std::string title;
+    double preferredWidth() const { return std::ceil(textWidth(title, Font::system(11))) + 16; }
+    void draw(cairo_t *cr) override
+    {
+        PictureButton::draw(cr);
+        AK::TextStyle t;
+        t.font = Font::system(11);
+        t.align = Align::Center;
+        t.color = isEnabled() ? Color::gray(0) : Color::gray(0, 0.4);
+        drawText(cr, title, Rect{0, 2, frame().w, frame().h - 4}, t);
+    }
+};
+
 // ---- the volume: the track 350 stretched, the thumb 352 (three cells: disabled, normal, pressed)
 
 class VolumeSlider : public View {
@@ -204,6 +227,17 @@ public:
     std::function<void(double)> onSeek;
     std::function<void()> onToggleTime;
     Image artwork;   // the song's own (11.4 shows it)
+    // A task's lines in place of the song's (importing a CD, getting its names, burning: section 32)
+    // and its bar (0..1; < 0 none)
+    void setStatus(const std::string &line1, const std::string &line2, double progress)
+    {
+        if (line1 == m_status[0] && line2 == m_status[1] && progress == m_statusProgress)
+            return;
+        m_status[0] = line1;
+        m_status[1] = line2;
+        m_statusProgress = progress;
+        setNeedsDisplay();
+    }
 
     LCD()
     {
@@ -269,6 +303,10 @@ public:
         }
         // the background: picture 153, its second column when inactive (10.5 and later)
         drawCell(cr, 153, windowIsKey() ? 0 : 1, 0, bounds());
+        if (!m_status[0].empty()) {
+            drawStatus(cr);
+            return;
+        }
         if (!showing) {
             const Image apple = picture(154);
             apple.draw(cr, Point{std::floor((frame().w - apple.width()) / 2), std::floor((frame().h - apple.height()) / 2) + 1});
@@ -323,6 +361,45 @@ public:
             const std::string right = showTotal ? formatTime(whole * 1000) : "-" + formatTime(std::max(0, whole - played) * 1000);
             drawText(cr, right, Rect{bar.right() + 2, bar.y - 1, tw, 14}, t);
         }
+    }
+
+    // A task's two lines centred where the song's are, its bar in the scrubber's place: the scrubber's
+    // track (PSLD 512) filled to the part done in the LCD's text colour (by eye)
+    void drawStatus(cairo_t *cr)
+    {
+        const iTunes::TextStyle lcd = textStyle(302);
+        const double W = frame().w, lineH = std::ceil(lineHeight(lcd.font));
+        AK::TextStyle t;
+        t.font = lcd.font;
+        t.color = lcd.color;
+        t.align = Align::Center;
+        drawText(cr, m_status[0], Rect{5, 2, W - 10, lineH}, t);
+        drawText(cr, m_status[1], Rect{5, 16, W - 10, lineH}, t);
+        if (m_statusProgress < 0)
+            return;
+        const Rect bar = scrubberRect();
+        const Image art = slider(512);
+        if (art.isNull() || bar.w <= 14)
+            return;
+        // the track as the scrubber's (whole pixels, its 7-point ends kept), no thumb
+        const auto part = [&](const Rect &src, const Rect &dst) {
+            if (dst.w <= 0)
+                return;
+            cairo_save(cr);
+            cairo_rectangle(cr, dst.x, dst.y, dst.w, dst.h);
+            cairo_clip(cr);
+            cairo_translate(cr, dst.x, dst.y);
+            cairo_scale(cr, dst.w / src.w, dst.h / src.h);
+            cairo_set_source_surface(cr, art.surface(), -src.x, -src.y);
+            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
+            cairo_paint(cr);
+            cairo_restore(cr);
+        };
+        part(Rect{0, 0, 7, 10}, Rect{bar.x, bar.y, 7, 10});
+        part(Rect{7, 0, 7, 10}, Rect{bar.x + 7, bar.y, bar.w - 14, 10});
+        part(Rect{14, 0, 7, 10}, Rect{bar.right() - 7, bar.y, 7, 10});
+        const double f = std::clamp(m_statusProgress, 0.0, 1.0);
+        fill(cr, Rect{bar.x + 3, bar.y + 3, std::round((bar.w - 6) * f), 4}, Color{lcd.color.r, lcd.color.g, lcd.color.b, 0.75});
     }
 
     // 11.4's LCD: picture 150 stretched (its 4-point ends kept), the Apple 151 centred when stopped
@@ -517,6 +594,8 @@ private:
     bool m_seeking = false;
     std::string m_name, m_fields[3];
     Line m_lines[2];
+    std::string m_status[2];
+    double m_statusProgress = -1;
 };
 
 // ---- the bands
@@ -1550,6 +1629,8 @@ public:
             App::shared().addTimer(60, true, [this] { m_podcasts.tick(); });
             App::shared().later([this] { m_podcasts.tick(); });
         }
+        if (!eleven())
+            setupCD();
         m_player.onEnd = [this] { advance(1, true); };
         m_player.onError = [this](const std::string &) { advance(1, true); };
         if (!eleven())
@@ -1647,7 +1728,7 @@ private:
         m_lcd->showTotal = Settings("itunes").integer("stim", 1) == 2;
         m_lcd->onToggleTime = [this] { Settings("itunes").set("stim", m_lcd->showTotal ? 2 : 1); };
         m_lcd->onSeek = [this](double s) {
-            m_player.seek(s);
+            m_player.seek(s + (isCDRow(m_current) ? m_cdOffset : 0));
             refreshLCD();
         };
         for (int i = 0; i < 3; ++i) {
@@ -1844,9 +1925,15 @@ private:
                 playRow(row);
         };
         m_list->drawCellHook = [this](cairo_t *cr, int r, size_t c, const Rect &cell, bool sel, const AK::TextStyle &st) {
+            if (selectedPlaylist() == CDTag)
+                return drawCDCell(cr, r, c, cell, sel, st);
             return drawPodcastCell(cr, r, c, cell, sel, st);
         };
-        m_list->clickCellHook = [this](int r, size_t c, Point at, const Rect &cell) { return clickPodcastCell(r, c, at, cell); };
+        m_list->clickCellHook = [this](int r, size_t c, Point at, const Rect &cell) {
+            if (selectedPlaylist() == CDTag)
+                return clickCDCell(r, c, at, cell);
+            return clickPodcastCell(r, c, at, cell);
+        };
         // songs dragged from the list onto a playlist of the sources (FUN_000e894e): one that takes
         // songs (not smart, not a folder) and is not the list's own; added at its end (FUN_000e051a)
         m_list->onDragSongs = [this](Point inWindow, bool drop) {
@@ -2025,6 +2112,9 @@ private:
         m_geniusSidebar->onClick = [this] { setSidebar(!Settings("itunes").boolean("GeniusSidebar", false)); };
         m_genius = m_bottom->add<PictureButton>(436, 0);
         m_genius->setEnabled(false);
+        m_cdButton = m_bottom->add<TitledButton>();
+        m_cdButton->setHidden(true);
+        m_cdButton->onClick = [this] { cdButton(); };
         if (eleven())   // 11.4's status bar has the totals alone (shuffle and repeat: the Controls menu)
             for (PictureButton *b : {m_newPlaylist, m_shuffleButton, m_repeatButton, m_artwork, m_geniusSidebar, m_genius})
                 b->setHidden(true);
@@ -2296,6 +2386,9 @@ private:
         m_artwork->setFrame({133, by, 39, 20});
         m_geniusSidebar->setFrame({W - 18 - 40, by, 40, 20});
         m_genius->setFrame({W - 18 - 40 - 39, by, 39, 20});
+        // the Import / Burn button 7 left of the Genius button
+        const double cw = m_cdButton->preferredWidth();
+        m_cdButton->setFrame({W - 18 - 40 - 39 - 7 - cw, by, cw, 20});
         m_window->contentView()->setNeedsDisplay();
     }
 
@@ -2569,6 +2662,15 @@ private:
         store.selectable = !eleven() && StoreView::available();   // 8.2.1: the Store in the window
         store.tag = -2;
         m_sources->rows.push_back(store);
+        // DEVICES (135.012): the audio CD (FUN_00168254's group 0x44; 441's row 17, the disc)
+        if (!e && m_cd.disc()) {
+            header("135.012");
+            SourceRow r;
+            r.title = m_cd.disc()->name;
+            r.icon = 17;
+            r.tag = CDTag;
+            m_sources->rows.push_back(r);
+        }
         header(e ? "135.009" : "135.014");
         // iTunes DJ (group 0x82, unless hidden: +0x2A85, the General pane's box 10) and Genius (0x83: the
         // distinguished kind 0x1A, there while FUN_005790fe says so — the Store there, not barred; box 23)
@@ -2662,6 +2764,7 @@ private:
         const int sel = m_sources->selected();
         const int tag = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
         useSourceColumns(eleven() ? 0 : kindForTag(tag));
+        updateCDButton();
         if (tag != m_layoutTag) {   // iTunes DJ's placard or first page, the Genius bar (section 30)
             m_layoutTag = tag;
             layout();
@@ -2670,6 +2773,10 @@ private:
         }
         if (tag == DJTag) {
             loadDJ();
+            return;
+        }
+        if (tag == CDTag) {
+            loadCD();
             return;
         }
         if (tag == GeniusTag) {
@@ -3610,13 +3717,13 @@ private:
             return;
         }
         for (size_t i = 0; i < m_list->ids.size(); ++i)
-            if (m_list->ids[i] == m_current && m_current >= 0)
+            if (m_list->ids[i] == m_current && (m_current >= 0 || isCDRow(m_current)))
                 m_list->playing = int(i);
     }
 
     void playRow(int row)
     {
-        if (row < 0 || size_t(row) >= m_list->ids.size() || m_list->ids[size_t(row)] < 0)
+        if (row < 0 || size_t(row) >= m_list->ids.size() || (m_list->ids[size_t(row)] < 0 && !isCDRow(m_list->ids[size_t(row)])))
             return;
         if (selectedPlaylist() == DJTag && size_t(row) < m_djRows.size()) {
             playDJ(m_djRows[size_t(row)]);
@@ -3628,7 +3735,7 @@ private:
         for (size_t i = 0; i < m_list->ids.size(); ++i) {
             if (int(i) == row)
                 m_queuePos = int(m_queue.size());
-            if (m_list->ids[i] >= 0)
+            if (m_list->ids[i] >= 0 || isCDRow(m_list->ids[i]))
                 m_queue.push_back(m_list->ids[i]);
         }
         if (m_shuffle)
@@ -3647,6 +3754,10 @@ private:
 
     void playTrack(int id)
     {
+        if (isCDRow(id)) {
+            playCD(id);
+            return;
+        }
         Track *t = m_library.track(id);
         if (!t)
             return;
@@ -3664,6 +3775,359 @@ private:
         markPlaying();
         m_list->body()->setNeedsDisplay();
         refreshLCD();
+    }
+
+    // ---- the audio CD (docs/itunes-reverse.md section 32)
+
+    // The song playing: the library's, or the CD track's
+    const Track *currentTrack()
+    {
+        if (isCDRow(m_current)) {
+            AudioCD *cd = m_cd.disc();
+            return cd && cdIndex(m_current) < cd->tracks.size() ? &cd->tracks[cdIndex(m_current)].info : nullptr;
+        }
+        return m_library.track(m_current);
+    }
+
+    Image appIcon() const { return Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}); }
+
+    // A message with "\r\r" in it: its first part the alert's message, the rest its informative text
+    void cdAlert(std::string message, std::string informative, std::vector<std::string> buttons, std::function<void(int)> done)
+    {
+        for (const char *gap : {"\r\r", "\n\n"}) {
+            const size_t at = message.find(gap);
+            if (at != std::string::npos) {
+                const std::string rest = message.substr(at + 2);
+                informative = informative.empty() ? rest : rest + "\n\n" + informative;
+                message.resize(at);
+                break;
+            }
+        }
+        Alert::run(appIcon(), message, informative, std::move(buttons), std::move(done));
+    }
+
+    void setupCD()
+    {
+        m_cd.onDisc = [this](bool in) { cdInserted(in); };
+        m_cd.onChanged = [this] {
+            const int row = m_sources->rowForTag(CDTag);
+            if (row >= 0 && m_cd.disc() && m_sources->rows[size_t(row)].title != m_cd.disc()->name) {
+                m_sources->rows[size_t(row)].title = m_cd.disc()->name;
+                m_sources->setNeedsDisplay();
+            }
+            if (selectedPlaylist() == CDTag)
+                loadCD();
+            updateCDButton();
+            refreshCDStatus();
+        };
+        // a track's file made: into the library as any file added from the music folder (section 31)
+        m_cd.onImported = [this](const std::string &path) {
+            m_library.add({path});
+            m_library.save();
+            if (selectedPlaylist() != CDTag)
+                loadSource();
+            return m_library.idForPath(path);
+        };
+        m_cd.onImportEnded = [this](bool completed) {
+            if (completed && m_ejectAfterImport)
+                App::shared().later([this] { m_cd.eject(); });
+            m_ejectAfterImport = false;
+            updateCDButton();
+            refreshCDStatus();
+        };
+        m_cd.onNames = [this](bool found) { cdNamesCame(found); };
+        m_cd.start();
+    }
+
+    // A disc came or went. "When you insert a CD" (General's MENU 1353: Show CD, Begin Playing, Ask To
+    // Import CD, Import CD, Import CD and Eject; Ask the default), after its names are asked for when
+    // "Automatically retrieve CD track names from Internet" is on
+    void cdInserted(bool in)
+    {
+        if (!in && isCDRow(m_current))
+            stop();
+        rebuildSources();
+        if (!in) {
+            loadSource();
+            updateCDButton();
+            refreshCDStatus();
+            return;
+        }
+        Settings s("itunes");
+        const int action = s.integer("CDInsert", 2);
+        m_sources->select(m_sources->rowForTag(CDTag));
+        loadSource();
+        m_cdManualNames = false;
+        if (action == 1)
+            playRow(0);
+        if (s.boolean("CDGetNames", true)) {
+            m_cdPending = action;
+            m_cd.getNames();
+        } else
+            cdAct(action);
+    }
+
+    void cdNamesCame(bool found)
+    {
+        if (m_cdManualNames && !found)   // 148.007: not found (or the service not reached)
+            cdAlert(tr("148.007"), {}, {"OK"}, [](int) {});
+        m_cdManualNames = false;
+        const int pending = m_cdPending;
+        m_cdPending = -1;
+        if (pending >= 0)
+            cdAct(pending);
+    }
+
+    void cdAct(int action)
+    {
+        AudioCD *cd = m_cd.disc();
+        if (!cd)
+            return;
+        if (action == 2) {   // 130.044 Would you like to import the CD “^1” into your iTunes library?
+            std::string q = tr("130.044");
+            const size_t at = q.find("^1");
+            if (at != std::string::npos)
+                q.replace(at, 2, cd->name);
+            cdAlert(q, {}, {"Yes", "No"}, [this](int b) {
+                if (b == 0)
+                    importChecked();
+            });
+        } else if (action == 3 || action == 4) {
+            m_ejectAfterImport = action == 4;
+            importChecked();
+        }
+    }
+
+    // Import CD (FUN_0009932c): the checked tracks not imported yet; none checked: 9003.001
+    void importChecked()
+    {
+        AudioCD *cd = m_cd.disc();
+        if (!cd)
+            return;
+        std::vector<size_t> list;
+        for (size_t i = 0; i < cd->tracks.size(); ++i)
+            if (cd->tracks[i].checked && cd->tracks[i].status != DiscTrack::Done)
+                list.push_back(i);
+        if (list.empty()) {
+            cdAlert(tr("9003.001"), {}, {"OK"}, [](int) {});
+            return;
+        }
+        m_cd.import(list);
+    }
+
+    // The bottom bar's button: Import CD / Stop Importing on the CD, Burn Disc on a playlist with songs
+    void cdButton()
+    {
+        if (selectedPlaylist() == CDTag) {
+            if (m_cd.importing())
+                m_cd.stopImport();
+            else
+                importChecked();
+        } else
+            burnPlaylist();
+    }
+
+    bool burnable()
+    {
+        const int tag = selectedPlaylist();
+        return !eleven() && tag >= 0 && size_t(tag) < m_library.playlists().size() && !m_library.playlists()[size_t(tag)].folder && !m_burn;
+    }
+
+    void updateCDButton()
+    {
+        if (!m_cdButton)
+            return;
+        std::string title;
+        if (selectedPlaylist() == CDTag && m_cd.disc())
+            title = tr(m_cd.importing() ? "9004.002" : "161.001");
+        else if (burnable())
+            title = tr("161.002");
+        m_cdButton->setHidden(title.empty());
+        if (title != m_cdButton->title) {
+            m_cdButton->title = title;
+            layout();
+        }
+    }
+
+    // The CD's tracks as the list's rows (the search field not applied)
+    void loadCD()
+    {
+        AudioCD *cd = m_cd.disc();
+        const std::set<int> sel = m_list->sel;
+        const int focus = m_list->selected;
+        m_list->ids.clear();
+        m_list->rows.clear();
+        m_list->greyedBelow = -1;
+        long long ms = 0, bytes = 0;
+        const size_t n = cd ? cd->tracks.size() : 0;
+        for (size_t i = 0; i < n; ++i) {
+            const Track &t = cd->tracks[i].info;
+            m_list->ids.push_back(cdRow(i));
+            std::vector<std::string> row{std::string()};
+            for (int f : m_columnFields)
+                row.push_back(cellText(t, f));
+            m_list->rows.push_back(std::move(row));
+            ms += t.totalTime;
+            bytes += t.size;
+        }
+        m_list->sel.clear();
+        for (int r : sel)
+            if (r >= 0 && size_t(r) < n)
+                m_list->sel.insert(r);
+        m_list->selected = focus >= 0 && size_t(focus) < n ? focus : -1;
+        markPlaying();
+        m_list->reload();
+        m_bottom->totals = totals(n, ms, bytes);
+        m_bottom->setNeedsDisplay();
+    }
+
+    // Column 0: the track's import status (TrackStatusIcons 306: 8 waiting, 7 importing — iTunes turns
+    // PANI 9904's arrows there, by eye a still one —, 3 done, 4 failed); the Name column: its box (PBUT 310
+    // FlatMetalTinyCheckbox, 11 × 11, row 0 off, row 1 on; FUN_001b4494 loads it with 306) before the name
+    bool drawCDCell(cairo_t *cr, int r, size_t c, const Rect &cell, bool, const AK::TextStyle &st)
+    {
+        AudioCD *cd = m_cd.disc();
+        if (!cd || r < 0 || size_t(r) >= cd->tracks.size())
+            return false;
+        const DiscTrack &d = cd->tracks[size_t(r)];
+        if (c == 0) {
+            if (r == m_list->playing || d.status == DiscTrack::None)
+                return false;
+            const int col = d.status == DiscTrack::Waiting ? 8 : d.status == DiscTrack::Importing ? 7 : d.status == DiscTrack::Done ? 3 : 4;
+            drawCell(cr, 306, col, 0, Rect{cell.x + std::floor((cell.w - 12) / 2), cell.y + std::floor((cell.h - 12) / 2), 12, 12});
+            return true;
+        }
+        if (c - 1 < m_columnFields.size() && m_columnFields[c - 1] == 2) {
+            const Image box = picture(310);   // not in the picture table: its cells cut here
+            if (!box.isNull())
+                box.draw(cr, Rect{0, d.checked ? 11.0 : 0.0, 11, 11}, Rect{cell.x + 4, cell.y + std::floor((cell.h - 11) / 2), 11, 11});
+            drawText(cr, d.info.name, Rect{cell.x + 19, cell.y - 1, cell.w - 23, cell.h}, st);
+            return true;
+        }
+        return false;
+    }
+
+    bool clickCDCell(int r, size_t c, Point at, const Rect &)
+    {
+        AudioCD *cd = m_cd.disc();
+        if (!cd || r < 0 || size_t(r) >= cd->tracks.size() || c == 0 || c - 1 >= m_columnFields.size() || m_columnFields[c - 1] != 2 || at.x > 17)
+            return false;
+        DiscTrack &d = cd->tracks[size_t(r)];
+        d.checked = !d.checked;
+        m_list->body()->setNeedsDisplay();
+        return true;
+    }
+
+    // A CD track played: the test disc's file, or the disc through mpv's cdda:// from the track's start
+    // (its end watched by refreshCDStatus)
+    void playCD(int id)
+    {
+        AudioCD *cd = m_cd.disc();
+        const size_t i = cdIndex(id);
+        if (!cd || i >= cd->tracks.size())
+            return;
+        keepBookmark();
+        m_current = id;
+        m_cdOffset = cd->simulated ? 0 : cd->tracks[i].lsn / 75.0;
+        m_player.play(cd->simulated ? cd->playURL(i) : "cdda://" + cd->device, false, m_cdOffset);
+        showVideo(nullptr);
+        markPlaying();
+        m_list->body()->setNeedsDisplay();
+        refreshLCD();
+    }
+
+    // The LCD's lines while burning, importing or getting names; a disc's track played to its end
+    void refreshCDStatus()
+    {
+        if (eleven())
+            return;
+        std::string a, b;
+        double p = -1;
+        if (m_burn && m_burn->running()) {
+            a = m_burnLines[0];
+            b = m_burnLines[1];
+            p = m_burnProgress;
+        } else if (!m_cd.status(a, b, p)) {
+            a.clear();
+            b.clear();
+            p = -1;
+        }
+        m_lcd->setStatus(a, b, p);
+        if (isCDRow(m_current) && m_cdOffset > 0 && m_player.isPlaying()) {
+            const Track *t = currentTrack();
+            if (t && m_player.position() - m_cdOffset >= t->totalTime / 1000.0)
+                App::shared().later([this] { advance(1, true); });
+        }
+    }
+
+    // File ▸ Burn Playlist to Disc (burn), the Burn Disc button: Burn Settings (DLOG 185), then the burn
+    void burnPlaylist()
+    {
+        if (!burnable())
+            return;
+        const Playlist &p = m_library.playlists()[size_t(selectedPlaylist())];
+        const std::vector<int> ids = p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
+        std::vector<Track> songs;
+        for (int id : ids)
+            if (const Track *t = m_library.track(id))
+                songs.push_back(*t);
+        const std::string name = p.name;
+        burnSettings(m_burnSettings, name, [this, songs, name](const BurnSettings &s) {
+            m_burn = std::make_unique<BurnJob>(songs, s, name);
+            m_burn->onStatus = [this](const std::string &a, const std::string &b, double progress) {
+                m_burnLines[0] = a;
+                m_burnLines[1] = b;
+                m_burnProgress = progress;
+                refreshCDStatus();
+            };
+            m_burn->onAsk = [this](const std::string &m, const std::string &i, std::vector<std::string> buttons, std::function<void(int)> answer) {
+                cdAlert(m, i, std::move(buttons), std::move(answer));
+            };
+            m_burn->onDone = [this](bool ok, const std::string &error) {
+                if (!ok && !error.empty())
+                    cdAlert(error, {}, {"OK"}, [](int) {});
+                App::shared().later([this] {
+                    m_burn.reset();
+                    updateCDButton();
+                    refreshCDStatus();
+                });
+            };
+            updateCDButton();
+            m_burn->start();
+        });
+    }
+
+    // The menus' CD commands: Controls ▸ Eject Disc (ejct, ⌘E), Advanced ▸ Get CD Track Names (gnam),
+    // File ▸ Burn Playlist to Disc (burn); Submit CD Track Names (scdi) and Join CD Tracks (jsel) not done
+    bool cdValidate(const std::string &a, bool &enabled)
+    {
+        if (a == "ejct")
+            enabled = !eleven() && m_cd.disc();
+        else if (a == "gnam")
+            enabled = !eleven() && selectedPlaylist() == CDTag && m_cd.disc() && !m_cd.lookingUp() && !m_cd.importing();
+        else if (a == "burn")
+            enabled = burnable();
+        else if (a == "scdi" || a == "jsel")
+            enabled = false;
+        else
+            return false;
+        return true;
+    }
+
+    bool cdPerform(const std::string &a)
+    {
+        if (eleven())
+            return false;
+        if (a == "ejct")
+            m_cd.eject();
+        else if (a == "gnam") {
+            m_cdManualNames = true;
+            m_cd.getNames();
+        } else if (a == "burn")
+            burnPlaylist();
+        else
+            return false;
+        return true;
     }
 
     void playPause()
@@ -3779,7 +4243,9 @@ private:
 
     void refreshLCD()
     {
-        const bool active = !m_player.isStopped() && m_library.track(m_current);
+        refreshCDStatus();
+        const Track *playing = currentTrack();
+        const bool active = !m_player.isStopped() && playing;
         m_play->setRow(m_player.isPlaying() ? 1 : 0);
         if (m_mini11)
             m_mini11->setPlaying(m_player.isPlaying());
@@ -3789,7 +4255,7 @@ private:
         }
         m_lcd->showing = active;
         if (active) {
-            const Track &t = *m_library.track(m_current);
+            const Track &t = *playing;
             if (t.path != m_artworkPath) {
                 m_artworkPath = t.path;
                 m_lcd->artwork = eleven() ? Image::fromData(artworkData(t.path), {128, 128}) : Image();
@@ -3807,6 +4273,10 @@ private:
                 m_mini11->setSong(t.name, t.artist.empty() ? t.album : t.artist + " — " + t.album, m_lcd->artwork);
             m_lcd->position = m_player.position();
             m_lcd->duration = m_player.duration() > 0 ? m_player.duration() : t.totalTime / 1000.0;
+            if (isCDRow(m_current) && m_cdOffset > 0) {   // the disc's track: its own span of the disc
+                m_lcd->position = std::max(0.0, m_player.position() - m_cdOffset);
+                m_lcd->duration = t.totalTime / 1000.0;
+            }
         }
         m_lcd->setNeedsDisplay();
     }
@@ -4532,6 +5002,8 @@ private:
     {
         const std::string &a = it.action;
         const bool hasSel = !m_list->sel.empty();
+        if (bool enabled = false; cdValidate(a, enabled))
+            return enabled;
         if (a == "plps") {
             v.title = eleven() ? tr(m_player.isPlaying() ? "136.004" : "136.002") : tr(m_player.isPlaying() ? "kMenuItemPause" : "kMenuItemPlay");
             if (v.title.rfind("kMenuItem", 0) == 0)
@@ -4645,6 +5117,8 @@ private:
     void perform(const MainMenuItem &it)
     {
         const std::string &a = it.action;
+        if (cdPerform(a))
+            return;
         if (a == "plps")
             playPause();
         else if (a == "ntrk")
@@ -4819,6 +5293,17 @@ private:
     std::unique_ptr<SmartPlaylistWindow> m_smartWindow;
     std::unique_ptr<ViewOptionsWindow> m_viewOptions;
     PreferencesWindow m_prefs;
+    // the audio CD (section 32): the drive, the Import / Burn button, the dialogs, the burn going on
+    CDDrive m_cd;
+    TitledButton *m_cdButton = nullptr;
+    std::unique_ptr<Window> m_importSettings, m_burnSettings;
+    std::unique_ptr<BurnJob> m_burn;
+    std::string m_burnLines[2];
+    double m_burnProgress = -1;
+    int m_cdPending = -1;     // "When you insert a CD"'s action waiting for the track names
+    bool m_cdManualNames = false;   // Get CD Track Names chosen: "not found" said
+    double m_cdOffset = 0;    // a disc's track playing: its start on the disc (seconds)
+    bool m_ejectAfterImport = false;
     Visualizer *m_visualizer = nullptr;
     std::unique_ptr<Window> m_fullWindow;
     Visualizer *m_fullVisualizer = nullptr;

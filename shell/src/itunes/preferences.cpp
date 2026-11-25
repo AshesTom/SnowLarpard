@@ -17,6 +17,7 @@
 #include "panels.h"
 #include "foundation.h"
 #include "library.h"
+#include "cdui.h"
 #include "musicfolder.h"
 #include "resources.h"
 
@@ -55,6 +56,9 @@ const Kept KeptItems[] = {
     {256, 11, "ShowRingtones", 0},
     // iTunes DJ (+0x2A85) and Genius (box 23; FUN_005790fe) under PLAYLISTS (section 30)
     {256, 10, "ShowiTunesDJ", 1}, {256, 23, "ShowGenius", 1},
+    // When you insert a CD (MENU 1353: Show CD, Begin Playing, Ask To Import CD, Import CD, Import CD and
+    // Eject) and Automatically retrieve CD track names from Internet (section 32)
+    {256, 18, "CDInsert", 2}, {256, 19, "CDGetNames", 1},
     // Podcasts (DITL 254): Check for new episodes (MENU 1374: every hour, day, week, manually), When new
     // episodes are available (1375: download all, the most recent one, do nothing), Keep (1376: all,
     // all unplayed, the most recent, the last 2, 3, 4, 5, 10)
@@ -239,6 +243,9 @@ void PreferencesWindow::select(int pane)
                 });
             };
         }
+        // General's Import Settings… (22): DLOG 183 (section 32)
+        else if (ditl == 256 && n == 22)
+            static_cast<Button *>(v)->action = [this] { importSettings(m_importSettings); };
         // what the port does nothing with stays shown, disabled
         else if (it.type != DialogItem::Text && !k)
             v->setEnabled(false);
