@@ -45,6 +45,9 @@
 #include "librarysources.h"
 #include "podcasts.h"
 #include "podcastui.h"
+#include "dj.h"
+#include "djui.h"
+#include "genius.h"
 #include "video.h"
 #include "radio.h"
 #include "player.h"
@@ -75,6 +78,10 @@ std::string menuText(uint32_t number)
 }
 
 constexpr double TitleBarHeight = 22, TopBandHeight = 54, BottomBandHeight = 29;
+// a placard under the list (FUN_000249e4's +0x140 = 0x2F): the nib's 46-point pane under a line
+constexpr double PlacardHeight = 47;
+// the Genius sidebar's narrowest (+0xF548, the page's own: none now; by eye) and its first width
+constexpr double SidebarMinimum = 150, SidebarWidth = 200;
 // 11.4: the window's top part (5000) and its status bar (5001), no title bar
 constexpr double TopHeight11 = 61, BottomHeight11 = 24;
 
@@ -875,6 +882,11 @@ public:
     std::function<void(Point, bool)> onDragSongs;
     // the place songs dragged in the list would go (a line before that row), -1 none
     int dropLine = -1;
+    // iTunes DJ's songs played (FUN_001ca906: a row flagged 0x800000 and not chosen is drawn disabled):
+    // the rows before this one greyed
+    int greyedBelow = -1;
+    // the contextual menu (xMNU 400 'tcon'): the right button or a Control click on a row
+    std::function<void(int row, Point inWindow)> onContextMenu;
     int insertionAt(Point inWindow) const
     {
         const Point p = m_body->fromWindow(inWindow);
@@ -1006,6 +1018,8 @@ private:
                 const double y = r * h;
                 const bool sel = list->isSelected(r) && size_t(r) < list->rows.size();
                 Color bg = colour(r % 2 == 0 ? 14 : 16), line = Color::gray(217), text = colour(23);
+                if (r < list->greyedBelow)
+                    text = Color::gray(0, 0.5);   // the disabled text (by eye)
                 if (sel) {
                     bg = colour(focused ? 10 : 11);
                     line = colour(focused ? 19 : 20);
@@ -1075,6 +1089,22 @@ private:
                 m_dragging = false;
                 list->onDragSongs(toWindow(e.location), true);
             }
+        }
+        void rightMouseDown(Event &e) override
+        {
+            const int r = int(e.location.y / list->rowHeight);
+            if (!list->onContextMenu || r < 0 || size_t(r) >= list->rows.size()) {
+                View::rightMouseDown(e);
+                return;
+            }
+            window()->makeFirstResponder(list);
+            if (!list->isSelected(r)) {
+                list->selectOnly(r);
+                if (list->onSelect)
+                    list->onSelect(r);
+            }
+            setNeedsDisplay();
+            list->onContextMenu(r, toWindow(e.location));
         }
         void mouseDown(Event &e) override
         {
@@ -1738,6 +1768,32 @@ private:
         m_placard = c->add<PodcastPlacard>();
         m_placard->setHidden(true);
         m_placard->onCommand = [this](const std::string &cmd) { podcastCommand(cmd); };
+        // iTunes DJ's placard and first page, the Genius bar and sidebar (section 30)
+        m_dj.load();
+        m_djPlacard = c->add<DJPlacard>();
+        m_djPlacard->setHidden(true);
+        m_djPlacard->onCommand = [this](const std::string &cmd) { djCommand(cmd); };
+        m_djPlacard->onSource = [this](int i) { chooseDJSource(i); };
+        m_djIntro = c->add<DJIntro>();
+        m_djIntro->setHidden(true);
+        m_djIntro->onCommand = [this](const std::string &cmd) { djCommand(cmd); };
+        m_geniusBar = c->add<GeniusBar>();
+        m_geniusBar->setHidden(true);
+        m_geniusBar->onCommand = [this](const std::string &) { geniusUnavailable(); };
+        m_geniusBar->onLimit = [this](int) { geniusUnavailable(); };
+        m_sidebar = c->add<GeniusSidebar>();
+        m_sidebar->setHidden(true);
+        m_sidebar->onResize = [this](double x) {
+            // FUN_0014dbb4: the width from the line dragged, at most 350; under half the minimum it hides
+            const double W = m_window->contentView()->frame().w;
+            const double w = W - x - 1;
+            if (w < SidebarMinimum / 2) {
+                setSidebar(false);
+                return;
+            }
+            Settings("itunes").set("GeniusSidebarWidth", int(std::clamp(w, SidebarMinimum, GeniusSidebar::MaxWidth)));
+            layout();
+        };
         m_radio.onChanged = [this] {
             if (m_columnKind == RadioKind)
                 loadSource();
@@ -1775,6 +1831,8 @@ private:
         }
         applyColumns();
         m_list->onRate = [this](int row, int rating) { rate(m_list->ids[size_t(row)], rating); };
+        if (!eleven())
+            m_list->onContextMenu = [this](int, Point at) { showTrackMenu(at); };
         m_list->onDoubleClick = [this](int row) {
             if (radioDoubleClick(row))
                 return;
@@ -1836,10 +1894,17 @@ private:
                     if (!p.folder && !p.smart && !p.master)
                         target = tag;
                 }
+                // iTunes DJ takes songs dropped on it, at its end (FUN_0034375e, as Add to iTunes DJ)
+                if (tag == DJTag && selectedPlaylist() != DJTag && canAddToDJ())
+                    target = DJTag;
             }
-            m_sources->setSongDrop(drop || target < 0 ? -1 : row);
-            if (!drop || target < 0)
+            m_sources->setSongDrop(drop || (target < 0 && target != DJTag) ? -1 : row);
+            if (!drop || (target < 0 && target != DJTag))
                 return;
+            if (target == DJTag) {
+                addToDJ(false, false);
+                return;
+            }
             Playlist &p = m_library.playlists()[size_t(target)];
             for (int id : selectedIds())
                 p.items.push_back(id);
@@ -1954,8 +2019,8 @@ private:
         m_repeatButton->onClick = [this] { setRepeat((m_repeat + 1) % 3); };
         m_artwork = m_bottom->add<PictureButton>(654, 0);
         m_artwork->setEnabled(false);
-        m_geniusSidebar = m_bottom->add<PictureButton>(470, 0);
-        m_geniusSidebar->setEnabled(false);
+        m_geniusSidebar = m_bottom->add<PictureButton>(470, 0);   // `Bb25`: case 5 of FUN_0014c872
+        m_geniusSidebar->onClick = [this] { setSidebar(!Settings("itunes").boolean("GeniusSidebar", false)); };
         m_genius = m_bottom->add<PictureButton>(436, 0);
         m_genius->setEnabled(false);
         if (eleven())   // 11.4's status bar has the totals alone (shuffle and repeat: the Controls menu)
@@ -2199,12 +2264,24 @@ private:
 
         // the body: the content between the bands; the source list, a line, the songs
         const double bodyTop = T + TopBandHeight, bodyH = std::max(0.0, H - bodyTop - BottomBandHeight);
-        const double sourceW = std::clamp(m_sourceWidth, 150.0, std::max(150.0, W - 300 - 1));
+        // the Genius sidebar at the right (FUN_000249e4: its width, the preference +0xF54E, and a point
+        // for its line taken from the songs' right, the whole height between the bands); the songs keep
+        // their 300 (+0x1A9FA) by narrowing the source list, and at its 150 the sidebar
+        const bool sidebar = sidebarAvailable() && Settings("itunes").boolean("GeniusSidebar", false);
+        double sideW = sidebar ? sidebarWidth() + 1 : 0;
+        if (sidebar && W - sideW - std::max(150.0, m_sourceWidth) - 1 < 300)
+            sideW = std::max(0.0, std::min(sideW, W - 300 - 150 - 1));
+        m_sidebar->setHidden(!sidebar);
+        if (sidebar)
+            m_sidebar->setFrame({W - sideW, bodyTop, sideW, bodyH});
+        m_geniusSidebar->setEnabled(sidebarAvailable());
+        m_geniusSidebar->setRow(sidebar ? 1 : 0);
+        const double sourceW = std::clamp(m_sourceWidth, 150.0, std::max(150.0, W - 300 - 1 - sideW));
         m_sourceScroll->setFrame({0, bodyTop, sourceW, bodyH});
         m_sources->setFrame({0, 0, sourceW - 15, std::max(bodyH, m_sources->contentHeight())});
         m_sourceScroll->setDocumentHeight(m_sources->frame().h);
         m_divider->setFrame({sourceW, bodyTop, 1, bodyH});
-        layoutBrowser({sourceW + 1, bodyTop, W - sourceW - 1, bodyH});
+        layoutBrowser({sourceW + 1, bodyTop, std::max(0.0, W - sourceW - 1 - sideW), bodyH});
         if (m_visualizer)
             m_visualizer->setFrame({0, bodyTop, W, bodyH});
 
@@ -2223,17 +2300,48 @@ private:
     // The list's room: the browser over the songs when shown (FUN_000249e4, FUN_0013cbbe)
     void layoutBrowser(Rect area)
     {
-        // the Podcasts' placard (Placards.nib's window 216), 46 high under the list
+        // the placards under the list (FUN_000249e4: FUN_0013864e's placard takes 0x2F, 47 points: the
+        // nib's 46-point pane and a line): the Podcasts' (Placards.nib's window 216), iTunes DJ's
+        const int tag = selectedPlaylist();
+        const bool dj = !eleven() && tag == DJTag && !m_store8 && !m_mini;
         const bool placard = !eleven() && m_columnKind == 10 && !m_store8 && !m_mini;
         m_placard->setHidden(!placard);
         if (placard) {
-            area.h = std::max(0.0, area.h - PodcastPlacard::Height);
-            m_placard->setFrame({area.x, area.y + area.h, area.w, PodcastPlacard::Height});
+            area.h = std::max(0.0, area.h - PlacardHeight);
+            m_placard->setFrame({area.x, area.y + area.h, area.w, PlacardHeight});
+        }
+        // iTunes DJ's first page in the list's place until its Continue (FUN_0014b940: mode 10 while
+        // +0x2A96 is clear), then its placard
+        m_djIntro->setHidden(!(dj && !m_dj.introSeen));
+        m_djPlacard->setHidden(!(dj && m_dj.introSeen));
+        if (dj && !m_dj.introSeen) {
+            for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2], m_geniusBar})
+                v->setHidden(true);
+            m_djIntro->setFrame(area);
+            return;
+        }
+        if (dj) {
+            area.h = std::max(0.0, area.h - PlacardHeight);
+            m_djPlacard->setFrame({area.x, area.y + area.h, area.w, PlacardHeight});
+        }
+        // a Genius playlist (+0x12F): the Genius bar over the list, 24 and a line (the short at 0xaafb24)
+        const bool genius = !eleven() && !m_store8 && !m_mini && tag >= 0 && size_t(tag) < m_library.playlists().size() &&
+                            m_library.playlists()[size_t(tag)].geniusTrack;
+        m_geniusBar->setHidden(!genius);
+        if (genius) {
+            // "Based On:" the song it was made from (Genius Track ID); a playlist kept already: nothing to save
+            const Track *seed = m_library.track(m_library.playlists()[size_t(tag)].geniusTrack);
+            m_geniusBar->set(seed ? seed->name : std::string(), seed ? seed->artist : std::string(),
+                             Settings("itunes").integer("GeniusLimit", 25), false);
+            m_geniusBar->setFrame({area.x, area.y, area.w, GeniusBar::Height + 1});
+            area.y += GeniusBar::Height + 1;
+            area.h = std::max(0.0, area.h - GeniusBar::Height - 1);
         }
         // a movie in the iTunes window: in the list's place
         m_videoView->setHidden(!m_videoInWindow || m_mini);
         if (m_videoInWindow && !m_mini) {
-            for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2], m_placard})
+            for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2], m_placard,
+                                                         m_djPlacard, m_djIntro, m_geniusBar})
                 v->setHidden(true);
             if (m_store) {
                 m_store->setHidden(true);
@@ -2247,7 +2355,8 @@ private:
             m_store->setHidden(!store);
             m_storeBar->setHidden(!store);
             if (store) {
-                for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2]})
+                for (View *v : std::initializer_list<View *>{m_list, m_grid, m_flow, m_splitter, m_browse[0], m_browse[1], m_browse[2],
+                                                             m_djPlacard, m_djIntro, m_geniusBar})
                     v->setHidden(true);
                 m_storeBar->setFrame({area.x, area.y, area.w, StoreBar::Height});
                 m_store->setFrame({area.x, area.y + StoreBar::Height, area.w, std::max(0.0, area.h - StoreBar::Height)});
@@ -2459,6 +2568,22 @@ private:
         store.tag = -2;
         m_sources->rows.push_back(store);
         header(e ? "135.009" : "135.014");
+        // iTunes DJ (group 0x82, unless hidden: +0x2A85, the General pane's box 10) and Genius (0x83: the
+        // distinguished kind 0x1A, there while FUN_005790fe says so — the Store there, not barred; box 23)
+        if (!e && Settings("itunes").boolean("ShowiTunesDJ", true)) {
+            SourceRow r;
+            r.title = tr("9000.029");
+            r.icon = 23;
+            r.tag = DJTag;
+            m_sources->rows.push_back(r);
+        }
+        if (!e && StoreView::available() && Settings("itunes").boolean("ShowGenius", true)) {
+            SourceRow r;
+            r.title = tr("9000.099");
+            r.icon = 28;
+            r.tag = GeniusTag;
+            m_sources->rows.push_back(r);
+        }
         // the playlists by their folders (Parent Persistent ID), a folder's own below it when it is open
         const std::vector<Playlist> &lists = m_library.playlists();
         std::set<std::string> ids;
@@ -2477,7 +2602,7 @@ private:
                 if (!p.master && up == parent)
                     order.push_back(i);
             }
-            auto group = [](const Playlist &p) { return p.folder ? 0x84 : p.smart ? 0x86 : 0x88; };
+            auto group = [](const Playlist &p) { return p.folder ? 0x84 : p.geniusTrack ? 0x87 : p.smart ? 0x86 : 0x88; };
             std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
                 const int ga = group(lists[a]), gb = group(lists[b]);
                 if (ga != gb)
@@ -2490,7 +2615,7 @@ private:
                 SourceRow r;
                 r.title = p.name;
                 // 441's rows: a playlist, a smart playlist (the gear), a folder
-                r.icon = p.folder ? 20 : p.smart ? 16 : 15;
+                r.icon = p.folder ? 20 : p.geniusTrack ? 28 : p.smart ? 16 : 15;   // 28: Genius's atom
                 r.tag = int(i);
                 r.level = level;
                 r.folder = p.folder;
@@ -2535,7 +2660,20 @@ private:
         const int sel = m_sources->selected();
         const int tag = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
         useSourceColumns(eleven() ? 0 : kindForTag(tag));
-        if (tag >= 0 && size_t(tag) < m_library.playlists().size()) {
+        if (tag != m_layoutTag) {   // iTunes DJ's placard or first page, the Genius bar (section 30)
+            m_layoutTag = tag;
+            layout();
+            if (tag == GeniusTag && !eleven())
+                askForGenius();
+        }
+        if (tag == DJTag) {
+            loadDJ();
+            return;
+        }
+        if (tag == GeniusTag) {
+            // Genius off (Apple never turns it on now): FUN_0014b940 shows the Store's genius-welcome
+            // there; the port asks for it (Store ▸ Turn On Genius) and leaves the list empty
+        } else if (tag >= 0 && size_t(tag) < m_library.playlists().size()) {
             const Playlist &p = m_library.playlists()[size_t(tag)];
             // a smart playlist's songs: its rules applied now when it updates live, else as they were
             ids = p.folder ? m_library.folderItems(p) : p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
@@ -2596,6 +2734,7 @@ private:
                 chosenIds.insert(m_list->ids[size_t(r)]);
         const int focusId = m_list->selected >= 0 && size_t(m_list->selected) < m_list->ids.size() ? m_list->ids[size_t(m_list->selected)] : -1;
         m_list->ids = shown;
+        m_list->greyedBelow = -1;
         m_list->sel.clear();
         m_list->selected = -1;
         for (size_t r = 0; r < shown.size(); ++r) {
@@ -3220,9 +3359,254 @@ private:
 
     // ---- playback
 
+    // ---- iTunes DJ (section 30)
+
+    // Its songs in its own order, the played ones greyed (FUN_00342bd2's 0x800000), its placard's source
+    void loadDJ()
+    {
+        if (m_dj.introSeen)
+            m_dj.refill();   // filled on being shown (FUN_0013e0b6 when chosen; by eye)
+        const std::vector<std::string> words = searchWords(m_search ? m_search->text : std::string());
+        m_djRows.clear();
+        std::vector<int> shown;
+        int greyed = 0;
+        for (size_t i = 0; i < m_dj.items.size(); ++i) {
+            const Track *t = m_library.track(m_dj.items[i].track);
+            if (!t || (!words.empty() && !searchMatches(*t, words)))
+                continue;
+            m_djRows.push_back(int(i));
+            shown.push_back(t->id);
+            if (m_dj.played(int(i)))
+                ++greyed;
+        }
+        m_list->ids = shown;
+        m_list->greyedBelow = greyed;
+        m_list->sel.clear();
+        m_list->selected = -1;
+        m_list->rows.clear();
+        long long ms = 0, bytes = 0;
+        for (int id : shown) {
+            const Track &t = *m_library.track(id);
+            std::vector<std::string> row{std::string()};
+            for (int f : m_columnFields)
+                row.push_back(cellText(t, f));
+            m_list->rows.push_back(std::move(row));
+            ms += t.totalTime;
+            bytes += t.size;
+        }
+        markPlaying();
+        m_list->reload();
+        refreshDJSources();
+        m_bottom->totals = totals(shown.size(), ms, bytes);
+        m_bottom->setNeedsDisplay();
+    }
+
+    // The placard's popup: Music, then the playlists (not the folders), as the sources list them
+    void refreshDJSources()
+    {
+        std::vector<std::string> names{tr("9000.036")};
+        m_djSourceIds = {std::string()};
+        int chosen = 0;
+        for (const SourceRow &r : m_sources->rows)
+            if (!r.header && r.tag >= 0 && size_t(r.tag) < m_library.playlists().size() && !m_library.playlists()[size_t(r.tag)].folder &&
+                !m_library.playlists()[size_t(r.tag)].master) {
+                const Playlist &p = m_library.playlists()[size_t(r.tag)];
+                if (p.persistentId == m_dj.source)
+                    chosen = int(names.size());
+                names.push_back(p.name);
+                m_djSourceIds.push_back(p.persistentId);
+            }
+        m_djPlacard->setSources(names, chosen);
+    }
+
+    // `PSSP`: a playlist with nothing iTunes DJ plays asks first (163.040; the answer kept at +0x2A91:
+    // the alert's box "Do not ask me again" not in the port, the question asked each time)
+    void chooseDJSource(int i)
+    {
+        if (i < 0 || size_t(i) >= m_djSourceIds.size())
+            return;
+        const std::string id = m_djSourceIds[size_t(i)];
+        auto choose = [this, id] {
+            m_dj.source = id;
+            m_dj.refresh();   // FUN_00343558, then FUN_003433fc
+            loadSource();
+        };
+        if (!id.empty() && !m_dj.sourceHasPlayable(id)) {
+            std::string m = tr("163.040");
+            const size_t at = m.find("^1");
+            for (const Playlist &p : m_library.playlists())
+                if (p.persistentId == id && at != std::string::npos)
+                    m.replace(at, 2, p.name);
+            Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), m, {}, {"OK", "Cancel"},
+                       [choose, this](int b) {
+                           if (b == 0)
+                               choose();
+                           else
+                               refreshDJSources();
+                       });
+            return;
+        }
+        choose();
+    }
+
+    void djCommand(const std::string &cmd)
+    {
+        if (cmd == "PDon") {   // the first page's Continue (+0x2A96), then the list filled
+            m_dj.introSeen = true;
+            m_dj.save();
+            layout();
+            loadSource();
+            m_window->makeFirstResponder(m_list);
+        } else if (cmd == "PInf")   // STR# 131.014
+            Task::launchDetached({"xdg-open", tr("131.014")});
+        else if (cmd == "PSRB") {
+            m_dj.refresh();
+            loadSource();
+        } else if (cmd == "PSSS")
+            m_djSettings.show(m_dj.settings, [this](const DJSettings &s) {
+                // FUN_002b0286: fewer to come takes its own ones off the end (FUN_00342adc); filled again
+                const int was = m_dj.settings.upcoming;
+                m_dj.settings = s;
+                if (s.upcoming < was)
+                    m_dj.trimUpcoming(s.upcoming);
+                m_dj.refill();
+                m_dj.save();
+                if (selectedPlaylist() == DJTag)
+                    loadSource();
+            });
+    }
+
+    // the song at iTunes DJ's index playing: the ones before it played, the list filled again
+    void playDJ(int index)
+    {
+        if (index < 0 || size_t(index) >= m_dj.items.size())
+            return;
+        const int id = m_dj.items[size_t(index)].track;
+        m_dj.setCurrent(index);
+        m_playingDJ = true;
+        m_queue = {id};
+        m_queuePos = 0;
+        playTrack(id);
+        if (selectedPlaylist() == DJTag)
+            loadSource();
+    }
+
+    // Play in iTunes DJ (`psnw`), Play Next in iTunes DJ (`pspn`), Add to iTunes DJ (`psad`):
+    // FUN_00554872 → FUN_0034375e
+    void addToDJ(bool next, bool now)
+    {
+        const int first = m_dj.add(selectedIds(), next || now);
+        // `psnw` plays the first one added (FUN_000c4416)
+        if (now && first >= 0)
+            playDJ(first);
+        else if (selectedPlaylist() == DJTag)
+            loadSource();
+    }
+    bool canAddToDJ()
+    {
+        // FUN_0055a390: iTunes DJ shown and set up (+0x2A85 clear, +0x2A96 set), a song chosen it plays
+        if (!Settings("itunes").boolean("ShowiTunesDJ", true) || !m_dj.introSeen || selectedPlaylist() == GeniusTag)
+            return false;
+        for (int id : selectedIds())
+            if (const Track *t = m_library.track(id); t && m_dj.playable(*t, true))
+                return true;
+        return false;
+    }
+
+    // The songs' contextual menu (xMNU 400 'tcon'): its items as the resource has them; those the port
+    // does enabled (FUN_001a7610), the others shown disabled
+    void showTrackMenu(Point inWindow)
+    {
+        const std::vector<MainMenuItem> tcon = menuItems(400);
+        std::vector<MenuItem> items;
+        std::vector<std::string> actions;
+        for (const MainMenuItem &it : tcon) {
+            if (it.alternate || it.hidden)
+                continue;
+            if (it.separator || it.title.empty()) {
+                if (!items.empty() && !items.back().separator)
+                    items.push_back(MenuItem::line());
+                actions.push_back({});
+                continue;
+            }
+            MenuValidation v;
+            v.title = it.title;
+            bool on = false;
+            const std::string &a = it.action;
+            if (a == "psnw" || a == "pspn" || a == "psad")
+                on = canAddToDJ();
+            else if (a == "geti" || a == "revl" || a == "clea" || a == "SBro" || a == "shgb")
+                on = validate(it, v);
+            items.emplace_back(v.title, false, on);
+            actions.push_back(a);
+        }
+        while (!items.empty() && items.back().separator) {
+            items.pop_back();
+            actions.pop_back();
+        }
+        Menu::popUp(m_window.get(), inWindow, items, 0, Font::system(13), [this, actions, tcon](int c) {
+            if (c < 0 || size_t(c) >= actions.size())
+                return;
+            const std::string a = actions[size_t(c)];
+            if (a == "psnw" || a == "pspn" || a == "psad")
+                addToDJ(a == "pspn", a == "psnw");
+            else
+                for (const MainMenuItem &it : tcon)
+                    if (it.action == a)
+                        perform(it);
+        });
+    }
+
+    // ---- Genius (section 30)
+
+    // Store ▸ Turn On Genius (`TGen`, FUN_0057a542: the Genius source chosen, the Store's welcome page):
+    // Apple's answer now is its upgrade page
+    void turnOnGenius()
+    {
+        const int row = m_sources->rowForTag(GeniusTag);
+        if (row >= 0 && m_sources->selected() != row)
+            m_sources->select(row, true);   // which asks
+        else
+            askForGenius();
+    }
+    // The Genius source chosen with Genius off: the Store's genius-welcome (FUN_0057a65a → mode 2)
+    void askForGenius()
+    {
+        m_geniusService.turnOn([this](const std::string &message, const std::string &informative) {
+            Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), message, informative,
+                       {"OK"}, [](int) {});
+        });
+    }
+    // The Genius bar's Refresh, limit and Save Playlist, the Genius button: no Genius results came from
+    // Apple (genius_similarities empty: FUN_0057f884's 0x1194), so iTunes' 9009.002 and 9009.026
+    void geniusUnavailable()
+    {
+        Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), tr("9009.002"),
+                   tr("9009.026"), {"OK"}, [](int) {});
+    }
+
+    // FUN_0013a356: the sidebar has a place (Genius not barred, the Store there, not the mini player)
+    bool sidebarAvailable() const { return !eleven() && !m_mini && StoreView::available(); }
+    double sidebarWidth() const
+    {
+        return std::clamp(double(Settings("itunes").integer("GeniusSidebarWidth", int(SidebarWidth))), SidebarMinimum, GeniusSidebar::MaxWidth);
+    }
+    // View ▸ Show / Hide Genius Sidebar (`shgb`), the bottom bar's button: +0xF54A
+    void setSidebar(bool on)
+    {
+        Settings("itunes").set("GeniusSidebar", on);
+        layout();
+    }
+
     void markPlaying()
     {
         m_list->playing = -1;
+        if (selectedPlaylist() == DJTag) {   // iTunes DJ's own current song
+            for (size_t i = 0; i < m_djRows.size(); ++i)
+                if (m_playingDJ && m_djRows[i] == m_dj.current && m_current >= 0)
+                    m_list->playing = int(i);
+            return;
+        }
         for (size_t i = 0; i < m_list->ids.size(); ++i)
             if (m_list->ids[i] == m_current && m_current >= 0)
                 m_list->playing = int(i);
@@ -3232,6 +3616,11 @@ private:
     {
         if (row < 0 || size_t(row) >= m_list->ids.size() || m_list->ids[size_t(row)] < 0)
             return;
+        if (selectedPlaylist() == DJTag && size_t(row) < m_djRows.size()) {
+            playDJ(m_djRows[size_t(row)]);
+            return;
+        }
+        m_playingDJ = false;
         // the songs of the list (not the Podcasts' podcast rows)
         m_queue.clear();
         for (size_t i = 0; i < m_list->ids.size(); ++i) {
@@ -3307,6 +3696,26 @@ private:
                 t->bookmark = 0;
                 m_library.save();
             }
+        if (m_playingDJ) {   // iTunes DJ: its next song (it fills itself), the one before it
+            if (atEnd && m_repeat == 2 && m_dj.current >= 0) {
+                playTrack(m_dj.items[size_t(m_dj.current)].track);
+                return;
+            }
+            const int next = m_dj.current + step;
+            if (next >= 0 && size_t(next) < m_dj.items.size()) {
+                playDJ(next);
+                return;
+            }
+            if (!atEnd)
+                return;
+            showVideo(nullptr);
+            m_player.stop();
+            m_current = -1;
+            markPlaying();
+            m_list->body()->setNeedsDisplay();
+            refreshLCD();
+            return;
+        }
         if (m_queue.empty()) {
             if (!atEnd)
                 playPause();
@@ -3806,6 +4215,18 @@ private:
     {
         const int sel = m_sources->selected();
         const int tag = sel >= 0 ? m_sources->rows[size_t(sel)].tag : -1;
+        if (tag == DJTag) {   // out of iTunes DJ (not the library), which fills itself again
+            std::set<int> rows;
+            for (int r : m_list->sel)
+                if (r >= 0 && size_t(r) < m_djRows.size())
+                    rows.insert(m_djRows[size_t(r)]);
+            m_dj.remove(rows);
+            m_list->selectNone();
+            loadSource();
+            return;
+        }
+        if (tag == GeniusTag)
+            return;
         // a smart playlist's songs are its rules': nothing to take out of it
         const std::vector<int> ids = selectedIds();
         if (ids.empty() || (tag >= 0 && m_library.playlists()[size_t(tag)].smart))
@@ -4088,6 +4509,17 @@ private:
             a == "zoom" || a == "smin" || a == "minp" || (eleven() && (a == "PQsh" || a == "PQcl")) || a == "brwn" || a == "batf" || a == "abou" || a == "terminate:" || a == "hide:" ||
             a == "hideOtherApplications:" || a == "unhideAllApplications:" || a == "clos" || a == "CLOS")
             return true;
+        if (a == "TGen")   // Store ▸ Turn On Genius (FUN_000b5314: the Store there; Genius never on now)
+            return !eleven() && StoreView::available() && !m_geniusService.busy();
+        if (a == "UGen" || a == "sgen")   // Update Genius, Start Genius: only with Genius on
+            return false;
+        if (a == "shgb") {   // View ▸ Show / Hide Genius Sidebar (FUN_00140f50)
+            v.title = tr(Settings("itunes").boolean("GeniusSidebar", false) && sidebarAvailable() ? "kMenuItemHideGeniusSidebar"
+                                                                                                    : "kMenuItemShowGeniusSidebar");
+            return sidebarAvailable();
+        }
+        if (a == "psnw" || a == "pspn" || a == "psad")
+            return canAddToDJ();
         if (a == "eqwn")   // Window ▸ Equalizer: 8.2.1's EQWindow
             return !eleven();
         if (a.size() == 4 && a.rfind("SRT", 0) == 0 && a[3] >= '0' && a[3] <= '5') {   // File ▸ Rating
@@ -4232,6 +4664,12 @@ private:
             showAbout();
         else if (a == "eqwn")
             m_equalizer.show();
+        else if (a == "TGen")
+            turnOnGenius();
+        else if (a == "shgb")
+            setSidebar(!Settings("itunes").boolean("GeniusSidebar", false));
+        else if (a == "psnw" || a == "pspn" || a == "psad")
+            addToDJ(a == "pspn", a == "psnw");
         else if (a == "SBro")
             toggleBrowser();
         else if (a == "lisv" || a == "thmv" || a == "covv")
@@ -4302,6 +4740,18 @@ private:
     Library m_library;
     Podcasts m_podcasts{m_library};
     PodcastPlacard *m_placard = nullptr;
+    std::vector<int> m_djRows;   // the list's rows: their index in iTunes DJ
+    int m_layoutTag = -9999;     // the source the views were placed for
+    // iTunes DJ and Genius (section 30)
+    ITunesDJ m_dj{m_library};
+    DJPlacard *m_djPlacard = nullptr;
+    DJIntro *m_djIntro = nullptr;
+    DJSettingsWindow m_djSettings;
+    bool m_playingDJ = false;                 // the song playing is iTunes DJ's
+    std::vector<std::string> m_djSourceIds;   // the placard's popup: "" Music, then the playlists
+    GeniusBar *m_geniusBar = nullptr;
+    GeniusSidebar *m_sidebar = nullptr;
+    GeniusService m_geniusService;
     RadioTuner m_radio;
     std::set<size_t> m_openGenres;
     bool m_radioAsked = false;

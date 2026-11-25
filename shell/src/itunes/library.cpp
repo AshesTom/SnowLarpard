@@ -539,6 +539,14 @@ bool Library::load()
             // the distinguished ones (Music, Movies, TV Shows, Podcasts, Audiobooks) made again from the
             // media kinds on saving: their IDs kept
             if (const Node *d = p.get("Distinguished Kind")) {
+                if (std::atoi(d->text.c_str()) == 22 || p.get("Party Shuffle")) {   // iTunes DJ
+                    djId = p.str("Playlist Persistent ID");
+                    djItems.clear();
+                    if (const Node *items = p.get("Playlist Items"))
+                        for (const Node &i : items->array)
+                            djItems.push_back(int(i.num("Track ID")));
+                    continue;
+                }
                 m_distinguishedIds[std::atoi(d->text.c_str())] = p.str("Playlist Persistent ID");
                 continue;
             }
@@ -550,6 +558,7 @@ bool Library::load()
             pl.folder = f && f->text == "true";
             pl.persistentId = p.str("Playlist Persistent ID");
             pl.parentId = p.str("Parent Persistent ID");
+            pl.geniusTrack = int(p.num("Genius Track ID"));
             if (pl.persistentId.empty())
                 pl.persistentId = newPersistentId();
             if (const Node *items = p.get("Playlist Items"))
@@ -662,6 +671,8 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
             o << "\t\t\t<key>Parent Persistent ID</key><string>" << p.parentId << "</string>\n";
         if (p.folder)
             o << "\t\t\t<key>Folder</key><true/>\n";
+        if (p.geniusTrack)
+            o << "\t\t\t<key>Genius Track ID</key><integer>" << p.geniusTrack << "</integer>\n";
         if (p.smart) {
             const SmartInfo &s = p.info;
             auto b = [](bool v) { return v ? "<true/>" : "<false/>"; };
@@ -723,6 +734,23 @@ void Library::writeDistinguished(std::ostream &o, const std::set<int> *songs) co
                 o << "\t\t\t\t<dict>\n\t\t\t\t\t<key>Track ID</key><integer>" << id << "</integer>\n\t\t\t\t</dict>\n";
         o << "\t\t\t</array>\n\t\t</dict>\n";
     }
+    // iTunes DJ (FUN_000ab536: Distinguished Kind 22, "Party Shuffle"; its name STR# 9000.029)
+    if (djId.empty())
+        djId = newPersistentId();
+    o << "\t\t<dict>\n\t\t\t<key>Name</key><string>" << xmlEscape(tr("9000.029")) << "</string>\n"
+      << "\t\t\t<key>Playlist Persistent ID</key><string>" << djId << "</string>\n"
+      << "\t\t\t<key>Distinguished Kind</key><integer>22</integer>\n\t\t\t<key>Party Shuffle</key><true/>\n";
+    std::vector<int> dj;
+    for (int id : djItems)
+        if (m_tracks.count(id) && (!songs || songs->count(id)))
+            dj.push_back(id);
+    if (!dj.empty()) {
+        o << "\t\t\t<key>Playlist Items</key>\n\t\t\t<array>\n";
+        for (int id : dj)
+            o << "\t\t\t\t<dict>\n\t\t\t\t\t<key>Track ID</key><integer>" << id << "</integer>\n\t\t\t\t</dict>\n";
+        o << "\t\t\t</array>\n";
+    }
+    o << "\t\t</dict>\n";
 }
 
 namespace {

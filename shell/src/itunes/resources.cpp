@@ -477,6 +477,10 @@ PictureInfo pictureInfo(int id)
         // the Store bar (MusicStoreBar.nib)
         {600, {3, 1, 0, 0, 3}},    {602, {3, 1, 0, 0, 3}},   {606, {3, 1, 11, 11, 3}}, {612, {1, 1, 0, 0, 0}},
         {626, {3, 1, 0, 0, 3}},    {644, {1, 1, 3, 3, 0}},
+        // iTunes DJ's and Genius's (section 30): the link arrow 671 (kind 2), the Genius bar 1200, its
+        // buttons 1202 and popup 1204 (kind 3), the DJ's marks 9900
+        {671, {2, 1, 0, 0, 2}},    {1200, {1, 1, 0, 0, 0}},  {1202, {3, 1, 8, 8, 3}},  {1204, {3, 1, 8, 16, 3}},
+        {9900, {3, 1, 0, 0, 0}},
     };
     auto it = table.find(id);
     return it == table.end() ? PictureInfo{} : it->second;

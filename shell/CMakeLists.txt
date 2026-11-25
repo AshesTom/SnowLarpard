@@ -187,7 +187,7 @@ pkg_check_modules(ITUNES_DEPS IMPORTED_TARGET mpv taglib)
 if(ITUNES_DEPS_FOUND)
     add_executable(iTunes src/itunes/main.cpp src/itunes/resources.cpp src/itunes/resources.h
                    src/itunes/library.cpp src/itunes/library.h src/itunes/media.cpp src/itunes/librarysources.cpp src/itunes/librarysources.h
-                   src/itunes/podcasts.cpp src/itunes/podcasts.h src/itunes/podcastui.cpp src/itunes/podcastui.h src/itunes/video.cpp src/itunes/video.h src/itunes/radio.cpp src/itunes/radio.h
+                   src/itunes/podcasts.cpp src/itunes/podcasts.h src/itunes/podcastui.cpp src/itunes/podcastui.h src/itunes/dj.cpp src/itunes/dj.h src/itunes/djui.cpp src/itunes/djui.h src/itunes/genius.cpp src/itunes/genius.h src/itunes/video.cpp src/itunes/video.h src/itunes/radio.cpp src/itunes/radio.h
                    src/itunes/player.cpp src/itunes/player.h
                    src/itunes/store.cpp src/itunes/store.h src/itunes/frame.cpp src/itunes/frame.h
                    src/itunes/equalizer.cpp src/itunes/equalizer.h src/itunes/dialogs.cpp src/itunes/dialogs.h

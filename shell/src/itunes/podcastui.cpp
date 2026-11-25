@@ -78,18 +78,19 @@ void PodcastPlacard::setFrame(const Rect &r)
 {
     View::setFrame(r);
     const double W = r.w;
-    m_unsubscribe->setFrame({20, 12, 88, 22});
-    m_settings->setFrame({118, 12, 80, 22});
+    // the pane a point down, under the line (FUN_000249e4's 47 points)
+    m_unsubscribe->setFrame({20, 13, 88, 22});
+    m_settings->setFrame({118, 13, 80, 22});
     // bound to the right: as far from the right as in the nib's 594-point pane
-    m_directory->setFrame({W - (594 - 300), 13, 485 - 300, 18});   // its text right-aligned on 366…468
-    m_refresh->setFrame({W - (594 - 500), 12, 76, 22});
+    m_directory->setFrame({W - (594 - 300), 14, 485 - 300, 18});   // its text right-aligned on 366…468
+    m_refresh->setFrame({W - (594 - 500), 13, 76, 22});
 }
 
 void PodcastPlacard::draw(cairo_t *cr)
 {
     const Image g = picture(1034);   // the placard gradient, 1 × 63, stretched (by eye: its top 46 rows)
     if (!g.isNull())
-        g.draw(cr, Rect{0, 0, 1, std::min(Height, g.size().h)}, bounds());
+        g.draw(cr, Rect{0, 0, 1, std::min(Height + 1, g.size().h)}, bounds());
     else
         fill(cr, bounds(), Color::gray(220));
     fill(cr, Rect{0, 0, frame().w, 1}, Color::gray(150));

@@ -86,6 +86,9 @@ struct Playlist {
     // playlists in it; the plist's Folder, Playlist Persistent ID and Parent Persistent ID
     bool folder = false;
     std::string persistentId, parentId;
+    // a Genius playlist (smart, +0x12F set: FUN_000ab536 writes "Genius Track ID", the song it was made
+    // from, in place of Smart Info; kind 0x19, row group 0x87)
+    int geniusTrack = 0;
 };
 
 class Library {
@@ -122,6 +125,10 @@ public:
     // already there with that URL or a new one named by the URL's file name (its last path component,
     // the query left out), else its path, else the whole URL; its Track ID
     int addURL(const std::string &url);
+
+    // iTunes DJ's playlist (kind 0x16: FUN_000ab536 writes Distinguished Kind 22 and "Party Shuffle")
+    std::vector<int> djItems;
+    mutable std::string djId;
 
     const std::map<int, Track> &tracks() const { return m_tracks; }
     const Track *track(int id) const;
