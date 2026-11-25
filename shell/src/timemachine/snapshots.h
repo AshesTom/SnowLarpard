@@ -75,6 +75,8 @@ QImage paintWindow(const WindowPicture &w, QSize size);
 // the items in the picture (y down): item i's rectangle; -1 from itemAt outside them
 QRect itemRect(QSize size, int item, bool icons);
 int itemAt(QSize size, QPoint p, int count, bool icons);
+// restoreImageForNode:outRect: item's icon and name over nothing, its frame in the picture (y down)
+QImage restoreImage(const Entry &e, QSize size, int item, bool icons, QRect *frame);
 // An unavailable snapshot (invalidTargetImage): Invalid*.png's 9-slice frame filled with 0.149 grey at 0.85
 QImage invalidPicture(QSize size);
 

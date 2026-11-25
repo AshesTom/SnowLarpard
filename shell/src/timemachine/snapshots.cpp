@@ -356,6 +356,39 @@ QRect itemRect(QSize size, int item, bool icons)
     return QRect(x, Top + Header + item * Row, size.width() - x, Row);
 }
 
+QImage restoreImage(const Entry &e, QSize size, int item, bool icons, QRect *frame)
+{
+    // restoreImageForNode:outRect: the item's cell (its icon and name) over nothing, in its frame
+    const QRect cell = itemRect(size, item, icons);
+    const QFont f = font(12);
+    const QFontMetrics fm(f);
+    const QImage ic = icon(!e.icon.isEmpty() ? e.icon : e.dir ? "GenericFolderIcon.icns" : "GenericDocumentIcon.icns", icons ? 64 : 16);
+    QRect r, iconRect, textRect;
+    QString label = e.name;
+    if (icons) {
+        label = fm.elidedText(e.name, Qt::ElideMiddle, cell.width() - 6);
+        const int tw = fm.horizontalAdvance(label) + 10;
+        iconRect = QRect(cell.center().x() - 32, cell.y() + 4, 64, 64);
+        textRect = QRect(cell.center().x() - tw / 2, iconRect.bottom() + 6, tw, 16);
+    } else {
+        iconRect = QRect(cell.x() + 18, cell.y() + 1, 16, 16);
+        textRect = QRect(cell.x() + 38, cell.y(), fm.horizontalAdvance(label) + 4, Row);
+    }
+    r = iconRect.united(textRect);
+    QImage img(r.size(), QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.translate(-r.topLeft());
+    p.drawImage(iconRect, ic);
+    p.setFont(f);
+    p.setPen(Qt::black);
+    Aqua::drawText(p, QRectF(textRect), (icons ? Qt::AlignCenter : Qt::AlignLeft | Qt::AlignVCenter), label);
+    p.end();
+    if (frame)
+        *frame = r;
+    return img;
+}
+
 int itemAt(QSize size, QPoint p, int count, bool icons)
 {
     if (p.x() <= sidebarWidth(size) || p.y() < Top + (icons ? 0 : Header) || p.y() >= size.height() - StatusBar)

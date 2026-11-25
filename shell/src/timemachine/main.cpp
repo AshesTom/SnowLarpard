@@ -330,6 +330,16 @@ protected:
             const QColor c = shading(t);
             drawTexture(layerTexture(k), r, opacity, c);
         }
+        // the restored items' layers (fRestoreLayers, showRestoreAnimationStartingAt:withDuration:):
+        // over the front window where they were, during the flight to Now, opacity 1, 1, 0 at 0, 0.99,
+        // 1 of n·p + 2 s; hidden when the exit starts
+        if (m_phase == Browsing)
+            for (const RestoreLayer &r : m_restoreLayers) {
+                const double u = (now - m_restoreStart) / m_restoreDuration;
+                const double opacity = u < 0.99 ? 1 : u < 1 ? (1 - u) / 0.01 : 0;
+                if (opacity > 0)
+                    drawTexture(r.texture, r.frame, opacity);
+            }
         // the controls
         if (m_toolbarDirty)
             rebuildToolbar();
@@ -574,6 +584,7 @@ private:
 
     void advance(double now)
     {
+        autoScrollTimeline(now);
         if ((m_phase == Entering || m_phase == Exiting) && now >= m_revealStart + m_revealDuration) {
             if (m_phase == Entering) {
                 m_phase = Browsing;   // revealInAnimationComplete:
@@ -958,16 +969,58 @@ private:
         for (int i = 0; i < n; ++i)
             y[size_t(i)] = colBottom - colH + (i + 0.5) * slot;
         if (h > 0) {
-            // the spacing grows to 16; the item under the mouse stays where it is
+            // the spacing grows to 16; the item under the mouse when the magnification began stays
+            // where it is (FUN_000493bc), the rest reached by the auto-scroll
             int anchor = 0;
             for (int i = 0; i < n; ++i)
                 if (std::fabs(y[size_t(i)] - mouseY) < std::fabs(y[size_t(anchor)] - mouseY))
                     anchor = i;
+            if (m_tlAnchor >= 0 && m_tlAnchor < n)
+                anchor = m_tlAnchor;
             const double sp = slot + (16 - slot) * h, ay = y[size_t(anchor)];
             for (int i = 0; i < n; ++i)
-                y[size_t(i)] = ay + (i - anchor) * sp;
+                y[size_t(i)] = ay + (i - anchor) * sp + m_tlScroll;
         }
         return y;
+    }
+
+    // FUN_00049620: near either end of the column (30 points) the magnified column auto-scrolls by
+    // ±(1 + 39f) points every 0.04 s, f the depth into the zone, as far as its ends
+    void autoScrollTimeline(double now)
+    {
+        const double dt = std::clamp(now - m_tlScrollTime, 0.0, 0.1);
+        m_tlScrollTime = now;
+        const double h = m_hover.value(now);
+        if (h <= 0 || m_phase != Browsing || m_items.empty()) {
+            m_tlScroll = 0;
+            m_tlAnchor = -1;
+            return;
+        }
+        if (m_tlAnchor < 0) {
+            const std::vector<double> y = timelineLayout(0, m_mouse.y());
+            int a = 0;
+            for (int i = 0; i < int(y.size()); ++i)
+                if (std::fabs(y[size_t(i)] - m_mouse.y()) < std::fabs(y[size_t(a)] - m_mouse.y()))
+                    a = i;
+            m_tlAnchor = a;
+        }
+        const double H = m_view.height() - 50, colTop = 30, colBottom = H - 30, my = m_mouse.y();
+        double v = 0;
+        if (my >= 0 && my < colTop + 30)
+            v = 1 + 39 * std::clamp((colTop + 30 - my) / 30, 0.0, 1.0);    // towards the older items
+        else if (my > colBottom - 30 && my <= H)
+            v = -(1 + 39 * std::clamp((my - (colBottom - 30)) / 30, 0.0, 1.0));
+        if (v == 0)
+            return;
+        const double before = m_tlScroll;
+        m_tlScroll += v * dt / 0.04;
+        // as far as the first item reaching the column's top, the last its bottom
+        const double s = m_tlScroll;
+        m_tlScroll = 0;
+        const std::vector<double> y = timelineLayout(h, my);
+        m_tlScroll = std::clamp(s, std::min(0.0, colBottom - y.back()), std::max(0.0, colTop - y.front()));
+        if (m_tlScroll != before)
+            m_timelineDirty = true;
     }
 
     int timelineItemAt(double screenY) const
@@ -1072,11 +1125,38 @@ private:
         m_pendingFrom = l.folder;
         m_pendingNames = names;
         m_pendingTo = m_target;
+        // restoreImages: every visible selected item's cell (icon and name) and its frame in the window
+        const QRect visible(0, 0, m_B.width(), m_B.height() - 23);   // above the status bar
+        for (int i = 0; i < l.entries.size(); ++i) {
+            if (!m_selection.contains(l.entries[i].name))
+                continue;
+            QRect cell;
+            const QImage img = restoreImage(l.entries[i], m_B, i, m_icons, &cell);
+            if (!visible.contains(cell))
+                continue;
+            RestoreLayer r;
+            r.texture = uploadTexture(m_f, img);
+            // y up: the window's bottom-left corner is m_front's
+            r.frame = QRectF(m_front.x() + cell.x(), m_front.y() + m_B.height() - cell.bottom() - 1, cell.width(), cell.height());
+            m_restoreLayers.push_back(r);
+        }
         // the flight back to Now, then the exit; the copy after the dismissal
+        {
+            const int n = std::min(m_current, 10);
+            const double d = n / (std::log2(double(std::max(n, 1))) + 1);
+            m_restoreStart = time();
+            m_restoreDuration = n * (0.5 / d) * slow() + 2;
+        }
         gotoSnapshot(0, {});
         m_afterFlight = [this] { startExit(); };
     }
 
+    struct RestoreLayer {
+        GLuint texture = 0;
+        QRectF frame;
+    };
+    QVector<RestoreLayer> m_restoreLayers;
+    double m_restoreStart = 0, m_restoreDuration = 1;
     QString m_target;
     QString m_volumeHint;                     // the volume folder entered from the Computer
     QHash<QString, QString> m_computerPaths;  // the Computer's volumes: name -> mount point
@@ -1092,6 +1172,8 @@ private:
     Phase m_phase = Entering;
     double m_revealStart = 0, m_revealDuration = 1.5;
     Anim m_top, m_galaxy, m_zOffset, m_hover;
+    double m_tlScroll = 0, m_tlScrollTime = 0;   // the magnified timeline's auto-scroll
+    int m_tlAnchor = -1;                         // the item kept in place while magnified
     std::function<void()> m_afterFlight;
     QString m_pendingFrom, m_pendingTo;
     QStringList m_pendingNames;
