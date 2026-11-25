@@ -357,6 +357,41 @@ static Image maskedArt(const char *type, int id)
     return img;
 }
 
+// A PBUT of Localized.rsrc (its text in the picture: Get, Get All… section 29): its PICT through its
+// mask, as maskedArt reads a PSLD's
+Image localizedButton(int id)
+{
+    static std::map<int, Image> cache;
+    auto it = cache.find(id);
+    if (it != cache.end())
+        return it->second;
+    Image img;
+    const std::string *pbut = localized().get("PBUT", id);
+    if (pbut && pbut->size() >= 4) {
+        const int pictureId = int16_t((uint8_t((*pbut)[0]) << 8) | uint8_t((*pbut)[1]));
+        const int maskId = int16_t((uint8_t((*pbut)[2]) << 8) | uint8_t((*pbut)[3]));
+        const std::string *pic = localized().get("PICT", pictureId), *mask = localized().get("PICT", maskId);
+        const Pixels colour = pic ? pictPixels(*pic) : Pixels{}, alpha = mask ? pictPixels(*mask) : Pixels{};
+        if (colour.width > 0 && colour.width == alpha.width && colour.height == alpha.height) {
+            cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, colour.width, colour.height);
+            cairo_surface_flush(s);
+            unsigned char *data = cairo_image_surface_get_data(s);
+            const int stride = cairo_image_surface_get_stride(s);
+            for (int y = 0; y < colour.height; ++y)
+                for (int x = 0; x < colour.width; ++x) {
+                    const size_t i = (size_t(y) * colour.width + x) * 3;
+                    const unsigned a = 255 - alpha.rgb[i];
+                    auto *p = reinterpret_cast<uint32_t *>(data + y * stride) + x;
+                    *p = (a << 24) | ((colour.rgb[i] * a / 255) << 16) | ((colour.rgb[i + 1] * a / 255) << 8) | (colour.rgb[i + 2] * a / 255);
+                }
+            cairo_surface_mark_dirty(s);
+            img = Image(s);
+        }
+    }
+    cache[id] = img;
+    return img;
+}
+
 Image picture(int id)
 {
     static std::map<int, Image> cache;

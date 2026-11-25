@@ -43,6 +43,8 @@
 #include "preferences.h"
 #include "library.h"
 #include "librarysources.h"
+#include "podcasts.h"
+#include "podcastui.h"
 #include "player.h"
 #include "resources.h"
 #include "store.h"
@@ -862,6 +864,10 @@ public:
     bool statusColumn = true;            // column 0 the speaker's (the songs'); the browser's have none
     int ratingColumn = -1;               // its cells the rating (0 to 100) drawn as stars
     std::function<void(int, int)> onRate;   // a click on the selected row's stars: row, rating
+    // A source's own cells (the Podcasts': section 29): drawn by it when it returns true; a click in a
+    // cell it takes (a triangle, a GET button), true when taken
+    std::function<bool(cairo_t *, int row, size_t column, const Rect &cell, bool selected, const AK::TextStyle &)> drawCellHook;
+    std::function<bool(int row, size_t column, Point inCell, const Rect &cell)> clickCellHook;
     // The songs chosen dragged (FUN_002fc392's click loop starting the drag): the pointer in the
     // window, and whether the button is up (the drop)
     std::function<void(Point, bool)> onDragSongs;
@@ -1007,7 +1013,12 @@ private:
                 double x = 0;
                 for (size_t c = 0; c < list->columns.size(); ++c) {
                     const Column &col = list->columns[c];
-                    if (size_t(r) < list->rows.size()) {
+                    AK::TextStyle hookStyle;
+                    hookStyle.font = body.font;
+                    hookStyle.align = col.align;
+                    hookStyle.color = text;
+                    if (size_t(r) < list->rows.size() &&
+                        !(list->drawCellHook && list->drawCellHook(cr, r, c, Rect{x, y, col.width, h}, sel, hookStyle))) {
                         if (c == 0 && list->statusColumn) {
                             if (r == list->playing && eleven()) {   // 8455: playing row 0, paused row 1
                                 const double side = std::min(cellSize(8455).h, h);
@@ -1069,6 +1080,21 @@ private:
             m_downAt = e.location;
             m_dragging = false;
             window()->makeFirstResponder(list);
+            if (r >= 0 && size_t(r) < list->rows.size() && list->clickCellHook) {
+                double x = 0;
+                for (size_t c = 0; c < list->columns.size(); ++c) {
+                    const double w = list->columns[c].width;
+                    if (e.location.x >= x && e.location.x < x + w) {
+                        const Rect cell{x, r * list->rowHeight, w, list->rowHeight};
+                        if (list->clickCellHook(r, c, Point{e.location.x - x, e.location.y - cell.y}, cell)) {
+                            setNeedsDisplay();
+                            return;
+                        }
+                        break;
+                    }
+                    x += w;
+                }
+            }
             // a click on the selected row's stars rates it: the star under the pointer, none left of
             // the first
             if (r >= 0 && r == list->selected && list->isSelected(r) && !(e.modifiers & (Shift | Command)) &&
@@ -1486,6 +1512,10 @@ public:
         buildMenus();
         loadSource();
         m_timer = App::shared().addTimer(0.25, true, [this] { refreshLCD(); });
+        if (!eleven()) {   // the podcasts checked as the Podcasts pane says (section 29)
+            App::shared().addTimer(60, true, [this] { m_podcasts.tick(); });
+            App::shared().later([this] { m_podcasts.tick(); });
+        }
         m_player.onEnd = [this] { advance(1, true); };
         m_player.onError = [this](const std::string &) { advance(1, true); };
         if (!eleven())
@@ -1692,6 +1722,27 @@ private:
         m_divider = c->add<View>();
 
         m_list = c->add<TrackList>();
+        // the Podcasts' placard under the list (section 29)
+        m_placard = c->add<PodcastPlacard>();
+        m_placard->setHidden(true);
+        m_placard->onCommand = [this](const std::string &cmd) { podcastCommand(cmd); };
+        m_podcasts.onChanged = [this] {
+            if (m_columnKind == 10)
+                loadSource();
+        };
+        m_podcasts.onError = [this](const std::string &message) {
+            Alert::run(Image::load(Assets::path(std::string(Bundle) + "/Contents/Resources/iTunes.icns"), {64, 64}), message, {}, {"OK"},
+                       [](int) {});
+        };
+        for (const std::string &url : Settings("itunes").list("PodcastOpen"))
+            m_openPodcasts.insert(url);
+        m_podcasts.onSubscribed = [this](const std::string &url) {
+            m_openPodcasts.insert(url);
+            Settings("itunes").set("PodcastOpen", std::vector<std::string>(m_openPodcasts.begin(), m_openPodcasts.end()));
+            const int row = m_sources->rowForTag(sourceTag(10));
+            if (row >= 0)
+                m_sources->select(row, true);
+        };
         // the status column (Play Status, the speaker), then the columns View Options chose (at first
         // Name, Time, Artist, Album, Genre, Play Count, My Rating): STR# 9006's titles, CWid 9000's widths
         {
@@ -1704,7 +1755,16 @@ private:
         }
         applyColumns();
         m_list->onRate = [this](int row, int rating) { rate(m_list->ids[size_t(row)], rating); };
-        m_list->onDoubleClick = [this](int row) { playRow(row); };
+        m_list->onDoubleClick = [this](int row) {
+            if (const std::string *url = podcastOfRow(row))   // a podcast's row: opened or closed
+                togglePodcast(*url);
+            else
+                playRow(row);
+        };
+        m_list->drawCellHook = [this](cairo_t *cr, int r, size_t c, const Rect &cell, bool sel, const AK::TextStyle &st) {
+            return drawPodcastCell(cr, r, c, cell, sel, st);
+        };
+        m_list->clickCellHook = [this](int r, size_t c, Point at, const Rect &cell) { return clickPodcastCell(r, c, at, cell); };
         // songs dragged from the list onto a playlist of the sources (FUN_000e894e): one that takes
         // songs (not smart, not a folder) and is not the list's own; added at its end (FUN_000e051a)
         m_list->onDragSongs = [this](Point inWindow, bool drop) {
@@ -1766,6 +1826,8 @@ private:
         m_list->onSelect = [this](int row) {
             if (m_viewMode == 2 && row >= 0 && size_t(row) < m_list->ids.size())
                 m_flow->showSong(m_list->ids[size_t(row)]);
+            if (!eleven() && m_columnKind == 10)
+                updatePlacard();
         };
         m_list->onSort = [this](int c) {
             if (c < 0 || size_t(c) > m_columnFields.size())
@@ -2137,8 +2199,15 @@ private:
     }
 
     // The list's room: the browser over the songs when shown (FUN_000249e4, FUN_0013cbbe)
-    void layoutBrowser(const Rect &area)
+    void layoutBrowser(Rect area)
     {
+        // the Podcasts' placard (Placards.nib's window 216), 46 high under the list
+        const bool placard = !eleven() && m_columnKind == 10 && !m_store8 && !m_mini;
+        m_placard->setHidden(!placard);
+        if (placard) {
+            area.h = std::max(0.0, area.h - PodcastPlacard::Height);
+            m_placard->setFrame({area.x, area.y + area.h, area.w, PodcastPlacard::Height});
+        }
         if (m_store && !eleven()) {
             const bool store = m_store8 && !m_mini;
             m_store->setHidden(!store);
@@ -2480,6 +2549,10 @@ private:
             const std::string x = cellKey(ta, field), y = cellKey(tb, field);
             return asc ? x < y : y < x;
         });
+        if (m_columnKind == 10) {
+            shown = podcastRows(shown);
+            App::shared().later([this] { updatePlacard(); });
+        }
         // the selection kept by song: the rows chosen and the last click follow their songs
         std::set<int> chosenIds;
         for (int r : m_list->sel)
@@ -2500,6 +2573,10 @@ private:
         m_list->rows.clear();
         long long ms = 0, bytes = 0;
         for (int id : shown) {
+            if (id < 0) {   // a podcast's row
+                m_list->rows.push_back(podcastCells(id));
+                continue;
+            }
             const Track &t = *m_library.track(id);
             std::vector<std::string> row{std::string()};
             for (int f : m_columnFields)
@@ -2515,7 +2592,7 @@ private:
             if (m_list->selected >= 0)
                 m_flow->showSong(m_list->ids[size_t(m_list->selected)]);
         }
-        m_bottom->totals = totals(shown.size(), ms, bytes);
+        m_bottom->totals = totals(size_t(std::count_if(shown.begin(), shown.end(), [](int id) { return id >= 0; })), ms, bytes);
         m_bottom->setNeedsDisplay();
     }
 
@@ -2755,22 +2832,217 @@ private:
         return std::to_string(n) + (n == 1 ? " song, " : " songs, ") + time + ", " + buf;
     }
 
+    // ---- the Podcasts source (section 29): each podcast a row with its triangle (its episodes under it
+    // when open, by the list's sort), the podcast's row its title, the newest episode's release date and
+    // the feed's description
+
+    const std::string *podcastOfRow(int row) const
+    {
+        if (row < 0 || size_t(row) >= m_list->ids.size() || m_list->ids[size_t(row)] >= 0)
+            return nullptr;
+        const size_t i = size_t(-m_list->ids[size_t(row)] - 1);
+        return i < m_podcastRows.size() ? &m_podcastRows[i] : nullptr;
+    }
+
+    std::vector<int> podcastRows(const std::vector<int> &episodes)
+    {
+        std::map<std::string, std::vector<int>> by;
+        for (int id : episodes)
+            by[m_library.track(id)->podcastURL].push_back(id);
+        for (const Podcasts::Info &f : m_podcasts.feeds())
+            by[f.url];   // a podcast with none of its episodes left is still there
+        if (m_search && !m_search->text.empty())   // searching: the podcasts with episodes found
+            for (auto it = by.begin(); it != by.end();)
+                it = it->second.empty() ? by.erase(it) : std::next(it);
+        auto title = [&](const std::string &url) {
+            const Podcasts::Info *f = m_podcasts.feed(url);
+            if (f && !f->title.empty())
+                return f->title;
+            const auto &ids = by[url];
+            return ids.empty() ? url : m_library.track(ids.front())->album;
+        };
+        std::vector<std::string> urls;
+        for (const auto &[url, ids] : by)
+            urls.push_back(url);
+        std::stable_sort(urls.begin(), urls.end(), [&](const std::string &a, const std::string &b) { return compareNames(title(a), title(b)) < 0; });
+        m_podcastRows = urls;
+        std::vector<int> out;
+        for (size_t i = 0; i < urls.size(); ++i) {
+            out.push_back(-int(i) - 1);
+            if (m_openPodcasts.count(urls[i]))
+                for (int id : by[urls[i]])
+                    out.push_back(id);
+        }
+        return out;
+    }
+
+    std::vector<std::string> podcastCells(int rowId)
+    {
+        const std::string &url = m_podcastRows[size_t(-rowId - 1)];
+        const Podcasts::Info *f = m_podcasts.feed(url);
+        const Track *newest = nullptr;
+        for (const auto &[id, t] : m_library.tracks())
+            if ((t.mediaKind & 4) && t.podcastURL == url && (!newest || t.releaseDate > newest->releaseDate))
+                newest = &t;
+        std::vector<std::string> row{std::string()};
+        for (int field : m_columnFields)
+            row.push_back(field == 2 ? (f && !f->title.empty() ? f->title : newest ? newest->album : url)
+                          : field == 54 ? (f ? f->description : std::string())
+                          : field == 34 && newest ? cellText(*newest, 34)
+                                                  : std::string());
+        return row;
+    }
+
+    void togglePodcast(const std::string &url)
+    {
+        if (!m_openPodcasts.erase(url))
+            m_openPodcasts.insert(url);
+        Settings("itunes").set("PodcastOpen", std::vector<std::string>(m_openPodcasts.begin(), m_openPodcasts.end()));
+        loadSource();
+    }
+
+    // its GET button: GET ALL on a podcast with episodes not downloaded, GET on such an episode
+    int podcastButtonOf(int row) const
+    {
+        if (const std::string *url = podcastOfRow(row)) {
+            for (const auto &[id, t] : m_library.tracks())
+                if ((t.mediaKind & 4) && t.podcastURL == *url && isStream(t) && !m_podcasts.downloading(id))
+                    return GetAll;
+            return NoButton;
+        }
+        const int id = row >= 0 && size_t(row) < m_list->ids.size() ? m_list->ids[size_t(row)] : -1;
+        const Track *t = m_library.track(id);
+        return t && isStream(*t) && !m_podcasts.downloading(id) ? Get : NoButton;
+    }
+
+    bool drawPodcastCell(cairo_t *cr, int r, size_t c, const Rect &cell, bool sel, const AK::TextStyle &st)
+    {
+        if (eleven() || m_columnKind != 10 || size_t(r) >= m_list->ids.size())
+            return false;
+        const int id = m_list->ids[size_t(r)];
+        const std::string *url = podcastOfRow(r);
+        if (c == 0) {
+            if (r == m_list->playing)
+                return false;
+            int mark = -1;
+            if (url) {
+                for (const auto &[tid, t] : m_library.tracks())
+                    if ((t.mediaKind & 4) && t.podcastURL == *url && t.unplayed)
+                        mark = 12;
+            } else if (m_podcasts.downloading(id))
+                mark = 7;
+            else if (const Track *t = m_library.track(id); t && t->unplayed)
+                mark = 12;
+            if (mark >= 0)
+                drawPodcastStatus(cr, cell, mark, sel);
+            return true;
+        }
+        if (c - 1 < m_columnFields.size() && m_columnFields[c - 1] == 2) {
+            AK::TextStyle t = st;
+            const Track *tr = m_library.track(id);
+            if (tr && isStream(*tr) && !sel)
+                t.color = Color::gray(128);   // not downloaded: grey (by eye)
+            const std::string &text = c < m_list->rows[size_t(r)].size() ? m_list->rows[size_t(r)][c] : std::string();
+            drawPodcastName(cr, cell, text, url != nullptr, url && m_openPodcasts.count(*url), sel, podcastButtonOf(r), r == m_podcastPressed, t);
+            return true;
+        }
+        return false;
+    }
+
+    bool clickPodcastCell(int r, size_t c, Point at, const Rect &cell)
+    {
+        if (eleven() || m_columnKind != 10 || c == 0 || c - 1 >= m_columnFields.size() || m_columnFields[c - 1] != 2)
+            return false;
+        const Rect local{0, 0, cell.w, cell.h};
+        const std::string *url = podcastOfRow(r);
+        if (url && podcastTriangle(local).inset(-3, -3).contains(at)) {
+            togglePodcast(*url);
+            return true;
+        }
+        const int button = podcastButtonOf(r);
+        if (button && podcastButton(local, button).contains(at)) {
+            if (url) {
+                for (const auto &[id, t] : m_library.tracks())
+                    if ((t.mediaKind & 4) && t.podcastURL == *url && isStream(t))
+                        m_podcasts.download(id);
+            } else
+                m_podcasts.download(m_list->ids[size_t(r)]);
+            return true;
+        }
+        return false;
+    }
+
+    // the podcast of the row chosen
+    std::string chosenPodcast() const
+    {
+        if (const std::string *url = podcastOfRow(m_list->selected))
+            return *url;
+        const Track *t = m_list->selected >= 0 && size_t(m_list->selected) < m_list->ids.size() ? m_library.track(m_list->ids[size_t(m_list->selected)]) : nullptr;
+        return t && (t->mediaKind & 4) ? t->podcastURL : std::string();
+    }
+
+    void podcastCommand(const std::string &cmd)
+    {
+        const std::string url = chosenPodcast();
+        if (cmd == "PCRB")   // Refresh: every podcast subscribed to
+            m_podcasts.refresh();
+        else if (cmd == "PCSB" && !url.empty()) {
+            const Podcasts::Info *f = m_podcasts.feed(url);
+            if (f && !f->subscribed)
+                m_podcasts.subscribe(url);
+            else
+                m_podcasts.unsubscribe(url);
+            updatePlacard();
+        } else if (cmd == "STPD" && m_store) {   // the Podcast Directory: the Store
+            const int row = m_sources->rowForTag(-2);
+            if (row >= 0)
+                m_sources->select(row, true);
+        }
+    }
+
+    void updatePlacard()
+    {
+        const std::string url = chosenPodcast();
+        const Podcasts::Info *f = url.empty() ? nullptr : m_podcasts.feed(url);
+        m_placard->setPodcastChosen(!url.empty());
+        m_placard->setSubscribed(!f || f->subscribed);
+    }
+
+    // Advanced ▸ Subscribe to Podcast… (pcsb: FUN_000b20dc's box, the last URL kept)
+    void subscribeToPodcast()
+    {
+        iTunes::getString(m_askWindow, 10003, tr("130.034"), tr("130.003"), Settings("itunes").string("PodcastLastURL"), [this](std::string url) {
+            const size_t from = url.find_first_not_of(" \t\r\n"), to = url.find_last_not_of(" \t\r\n");
+            if (from == std::string::npos)
+                return;
+            url = url.substr(from, to - from + 1);
+            Settings("itunes").set("PodcastLastURL", url);
+            m_podcasts.subscribe(url);
+        });
+    }
+
     // ---- playback
 
     void markPlaying()
     {
         m_list->playing = -1;
         for (size_t i = 0; i < m_list->ids.size(); ++i)
-            if (m_list->ids[i] == m_current)
+            if (m_list->ids[i] == m_current && m_current >= 0)
                 m_list->playing = int(i);
     }
 
     void playRow(int row)
     {
-        if (row < 0 || size_t(row) >= m_list->ids.size())
+        if (row < 0 || size_t(row) >= m_list->ids.size() || m_list->ids[size_t(row)] < 0)
             return;
-        m_queue = m_list->ids;
-        m_queuePos = row;
+        // the songs of the list (not the Podcasts' podcast rows)
+        m_queue.clear();
+        for (size_t i = 0; i < m_list->ids.size(); ++i) {
+            if (int(i) == row)
+                m_queuePos = int(m_queue.size());
+            if (m_list->ids[i] >= 0)
+                m_queue.push_back(m_list->ids[i]);
+        }
         if (m_shuffle)
             shuffleQueue(row);
         playTrack(m_queue[size_t(m_queuePos)]);
@@ -2793,6 +3065,7 @@ private:
         m_current = id;
         m_player.play(t->path);
         t->playCount++;
+        t->unplayed = false;   // the podcasts' blue dot
         m_library.save();
         updateCells(id, 22);
         markPlaying();
@@ -3294,8 +3567,15 @@ private:
     {
         std::vector<int> ids;
         for (int r : m_list->sel)
-            if (r >= 0 && size_t(r) < m_list->ids.size())
-                ids.push_back(m_list->ids[size_t(r)]);
+            if (r >= 0 && size_t(r) < m_list->ids.size()) {
+                const int id = m_list->ids[size_t(r)];
+                if (id >= 0)
+                    ids.push_back(id);
+                else if (const std::string *url = podcastOfRow(r))   // a podcast: its episodes
+                    for (const auto &[tid, t] : m_library.tracks())
+                        if ((t.mediaKind & 4) && t.podcastURL == *url && std::find(ids.begin(), ids.end(), tid) == ids.end())
+                            ids.push_back(tid);
+            }
         return ids;
     }
 
@@ -3380,6 +3660,7 @@ private:
         m_sortField = kind ? sourceSortField(kind, asc) : m_musicSort;
         m_list->ascending = kind ? asc : m_musicAscending;
         applyColumns();
+        layout();   // the Podcasts' placard
     }
 
     // The list's columns from the fields chosen (View Options), the sorted one kept
@@ -3610,6 +3891,8 @@ private:
             return !m_store8 && !m_list->sel.empty();
         if (a == "ourl")   // Advanced ▸ Open Audio Stream… (enabled unless +0x109bf)
             return !eleven();
+        if (a == "pcsb")   // Advanced ▸ Subscribe to Podcast… (FUN_000b5314: unless the podcasts are hidden)
+            return !eleven() && Settings("itunes").boolean("ShowPodcasts", true);
         if (a == "SDup") {   // FUN_00140f50: "Show All" while they are shown
             const auto d = m_dups.find(selectedPlaylist());
             if (d != m_dups.end() && d->second)
@@ -3743,6 +4026,8 @@ private:
             setViewMode(a == "lisv" ? 0 : a == "thmv" ? 1 : 2);
         else if (a == "ourl")
             openStream();
+        else if (a == "pcsb")
+            subscribeToPodcast();
         else if (a == "sall" && dynamic_cast<TextField *>(m_window->firstResponder())) {
             auto *f = dynamic_cast<TextField *>(m_window->firstResponder());   // the search field's text
             f->selectAll();
@@ -3801,6 +4086,11 @@ private:
     }
 
     Library m_library;
+    Podcasts m_podcasts{m_library};
+    PodcastPlacard *m_placard = nullptr;
+    std::set<std::string> m_openPodcasts;   // the podcasts whose episodes are shown
+    std::vector<std::string> m_podcastRows;  // the podcasts' rows: their feeds (the row's id -1, -2…)
+    int m_podcastPressed = -1;
     Player m_player;
     Equalizer m_equalizer{m_player};
     InfoWindow m_info{m_library};

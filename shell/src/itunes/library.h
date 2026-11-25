@@ -45,7 +45,9 @@ struct Track {
 
 // The library's distinguished kinds (+0xE8; FUN_002e68aa makes their smart playlists): 2 Movies, 3 TV
 // Shows, 4 Music, 5 Audiobooks, 6 Ringtones, 7 Rented Movies, 10 Podcasts, 0x12 Applications
-enum Distinguished { Movies = 2, TVShows = 3, Music = 4, Audiobooks = 5, Ringtones = 6, Rentals = 7, Podcasts = 10, Applications = 0x12 };
+namespace Kind {
+enum : int { Movies = 2, TVShows = 3, Music = 4, Audiobooks = 5, Ringtones = 6, Rentals = 7, Podcasts = 10, Applications = 0x12 };
+}
 // A track in a distinguished kind's playlist (FUN_002e68aa's rule on the media kind, field 0x3c): Music
 // any of 0x1121b1; Movies (kind & 0x8006) == 2; TV Shows (& 0x8044) == 0x40; Audiobooks (& 0x800c) == 8;
 // Ringtones 0x4000; Rented Movies (& 0x8002) == 0x8002; Podcasts the podcast bit 4

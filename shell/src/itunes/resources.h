@@ -57,6 +57,9 @@ AK::Image slider(int psld);
 // A PSCR scroller's art the same way (its PICT through its mask): the track, then the thumb beside it
 AK::Image scroller(int pscr);
 
+// A PBUT of Localized.rsrc (the localized buttons: 672 Get All Podcasts, 674 Get Podcast, 676
+// Subscribe, 677 Get Episode…): its PICT through its mask, the cells side by side
+AK::Image localizedButton(int pbut);
 // The picture table's entry (FUN_0000ebe4): its grid of states and its fixed sides
 struct PictureInfo {
     int columns = 1, rows = 1;

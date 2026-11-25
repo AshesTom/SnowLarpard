@@ -123,14 +123,14 @@ bool inDistinguished(const Track &t, int kind)
 {
     const int k = t.mediaKind;
     switch (kind) {
-    case Music: return (k & 0x1121b1) != 0 && !(k & 4);
-    case Movies: return (k & 0x8006) == 2;
-    case TVShows: return (k & 0x8044) == 0x40;
-    case Audiobooks: return (k & 0x800c) == 8;
-    case Ringtones: return (k & 0x4000) != 0;
-    case Rentals: return (k & 0x8002) == 0x8002;
-    case Podcasts: return (k & 4) != 0;
-    case Applications: return (k & 0x20000) != 0;
+    case Kind::Music: return (k & 0x1121b1) != 0 && !(k & 4);
+    case Kind::Movies: return (k & 0x8006) == 2;
+    case Kind::TVShows: return (k & 0x8044) == 0x40;
+    case Kind::Audiobooks: return (k & 0x800c) == 8;
+    case Kind::Ringtones: return (k & 0x4000) != 0;
+    case Kind::Rentals: return (k & 0x8002) == 0x8002;
+    case Kind::Podcasts: return (k & 4) != 0;
+    case Kind::Applications: return (k & 0x20000) != 0;
     }
     return false;
 }

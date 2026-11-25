@@ -705,8 +705,8 @@ void Library::writeDistinguished(std::ostream &o, const std::set<int> *songs) co
     // FUN_002e68aa's names (STR# 9000: 36 Music, 34 Movies, 35 TV Shows, 37 Audiobooks; 30 Podcasts) and
     // the plist's own key for each
     static const struct { int kind; const char *name, *key; } kinds[] = {
-        {Music, "9000.036", nullptr},     {Movies, "9000.034", "Movies"},       {TVShows, "9000.035", "TV Shows"},
-        {Podcasts, "9000.030", "Podcasts"}, {Audiobooks, "9000.037", "Audiobooks"},
+        {Kind::Music, "9000.036", nullptr},     {Kind::Movies, "9000.034", "Movies"},       {Kind::TVShows, "9000.035", "TV Shows"},
+        {Kind::Podcasts, "9000.030", "Podcasts"}, {Kind::Audiobooks, "9000.037", "Audiobooks"},
     };
     for (const auto &k : kinds) {
         std::string &pid = m_distinguishedIds[k.kind];
