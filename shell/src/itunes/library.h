@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <iosfwd>
 #include <map>
 #include <set>
 #include <string>
@@ -24,7 +25,31 @@ struct Track {
     // Disc Count, BPM; Rating 0 to 100 (20 a star)
     std::string composer, albumArtist, grouping, comments;
     int trackCount = 0, discNumber = 0, discCount = 0, bpm = 0, rating = 0;
+    // The media kind (FUN_0017b984's bits; docs/itunes-reverse.md section 29): 1 music, 2 movie, 4 podcast,
+    // 8 audiobook, 0x10 booklet, 0x20 music video, 0x40 TV show, 0x4000 ringtone, 0x8000 rental; the
+    // plist's Has Video, Video Width / Height, Movie, Music Video, TV Show, Podcast, Unplayed
+    int mediaKind = 1;
+    bool hasVideo = false;
+    int videoWidth = 0, videoHeight = 0;
+    bool unplayed = false;
+    // a TV show's: Series (the Show column, 62), Season (63), Episode (the Episode ID, 64), Episode Order;
+    // a podcast's: Podcast URL (its feed), External GUID (the episode's guid), Description (54), Long
+    // Description, Category (55), Release Date (34, ISO 8601)
+    std::string series, episode, description, longDescription, category, releaseDate;
+    int season = 0, episodeOrder = 0;
+    std::string podcastURL, guid;
+    // Remember Bookmark / Bookmark Time: where it was left (milliseconds), played from there next time
+    bool rememberBookmark = false;
+    int bookmark = 0;
 };
+
+// The library's distinguished kinds (+0xE8; FUN_002e68aa makes their smart playlists): 2 Movies, 3 TV
+// Shows, 4 Music, 5 Audiobooks, 6 Ringtones, 7 Rented Movies, 10 Podcasts, 0x12 Applications
+enum Distinguished { Movies = 2, TVShows = 3, Music = 4, Audiobooks = 5, Ringtones = 6, Rentals = 7, Podcasts = 10, Applications = 0x12 };
+// A track in a distinguished kind's playlist (FUN_002e68aa's rule on the media kind, field 0x3c): Music
+// any of 0x1121b1; Movies (kind & 0x8006) == 2; TV Shows (& 0x8044) == 0x40; Audiobooks (& 0x800c) == 8;
+// Ringtones 0x4000; Rented Movies (& 0x8002) == 0x8002; Podcasts the podcast bit 4
+bool inDistinguished(const Track &t, int kind);
 
 // A smart playlist's rules (SmartPlaylist.nib; docs/itunes-reverse.md section 11): a rule is a field
 // (iTunes' field numbers: 2 Name, 3 Album, 4 Artist…), an operator (its codes: 0x01000002 contains…)
@@ -78,9 +103,19 @@ public:
     // songs) or one named by the file
     bool importPlaylist(const std::string &path, std::vector<std::pair<std::string, std::vector<int>>> &lists);
 
-    // Files and folders (their audio files, recursively) added: the tracks new to the library
+    // Files and folders (their audio and video files, recursively) added: the tracks new to the library
     int add(const std::vector<std::string> &paths);
-    bool isAudio(const std::string &path) const;
+    bool isAudio(const std::string &path) const;   // a file iTunes takes (audio, MPEG-4 and QuickTime video)
+    // The media kinds added since last asked (the General pane's Show boxes turned on for them:
+    // FUN_002045c4, FUN_001517f8), then cleared
+    int takeAddedKinds() { const int k = m_addedKinds; m_addedKinds = 0; return k; }
+    // A distinguished kind's tracks, in the library's order
+    std::vector<int> items(int distinguishedKind) const;
+    // A podcast episode (the feed's item): added as a URL track (Track Type URL, Location its
+    // enclosure) the first time its guid is seen; its Track ID, 0 when it was there already
+    int addEpisode(const Track &episode);
+    // The track's file put in place of its URL (a podcast episode downloaded)
+    void setFile(int id, const std::string &path);
     // Advanced ▸ Open Audio Stream (FUN_0017fd64): the URL's track ('HTTP', Track Type URL), the one
     // already there with that URL or a new one named by the URL's file name (its last path component,
     // the query left out), else its path, else the whole URL; its Track ID
@@ -104,9 +139,16 @@ public:
 
 private:
     void addFile(const std::string &path);
+    void readMedia(Track &t) const;   // the media kind, video, TV and podcast tags
     std::map<int, Track> m_tracks;
     std::vector<Playlist> m_playlists;
+    // the distinguished playlists' Persistent IDs, as the plist had them (they are made again on saving)
+    mutable std::map<int, std::string> m_distinguishedIds;
+    // the plist's distinguished playlists: Distinguished Kind, their key (Movies, TV Shows, Podcasts,
+    // Audiobooks true), All Items, the tracks of their kind
+    void writeDistinguished(std::ostream &o, const std::set<int> *songs) const;
     int m_nextId = 100;
+    int m_addedKinds = 0;
 };
 
 // File ▸ Show Duplicates (FUN_00138cea): the songs sorted by name, each compared with those after it

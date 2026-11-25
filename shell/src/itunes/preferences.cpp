@@ -42,11 +42,23 @@ const Pane Panes[9] = {
 struct Kept {
     int ditl, item;
     const char *key;
+    int fallback = 0;   // its value until one is kept
 };
 const Kept KeptItems[] = {
     {256, 2, "LibraryName"},      // General: Library Name
     {256, 15, "ListTextLarge"},   // General: List Text (MENU 1350: Small, Large)
+    // General's Show boxes: the LIBRARY sources (section 29; FUN_000dc5be's hide flags)
+    {256, 4, "ShowMovies", 1},   {256, 5, "ShowTVShows", 1},       {256, 6, "ShowPodcasts", 1},
+    {256, 7, "ShowAudiobooks", 0}, {256, 8, "ShowApplications", 0}, {256, 9, "ShowRadio", 1},
+    {256, 11, "ShowRingtones", 0},
+    // Podcasts (DITL 254): Check for new episodes (MENU 1374: every hour, day, week, manually), When new
+    // episodes are available (1375: download all, the most recent one, do nothing), Keep (1376: all,
+    // all unplayed, the most recent, the last 2, 3, 4, 5, 10)
+    {254, 2, "PodcastCheck", 1}, {254, 5, "PodcastNew", 1}, {254, 7, "PodcastKeep", 0},
     {257, 10, "SoundCheck"},      // Playback: Sound Check
+    // Playback: Play Movies and TV Shows, Play Music Videos (MENU 1373: in artwork viewer, in the iTunes
+    // window, in a separate window, full screen, full screen with visuals)
+    {257, 14, "PlayMovies", 1}, {257, 16, "PlayMusicVideos", 1},
     {260, 17, "MiniOnTop"},       // Advanced: Keep MiniPlayer on top of all other windows
 };
 
@@ -161,7 +173,7 @@ void PreferencesWindow::select(int pane)
         case DialogItem::Radio: {
             CheckBox *b = c->add<CheckBox>(it.text, it.type == DialogItem::Radio);
             if (k)
-                b->setChecked(s.boolean(k->key, false));
+                b->setChecked(s.boolean(k->key, k->fallback != 0));
             v = b;
             break;
         }
@@ -188,7 +200,7 @@ void PreferencesWindow::select(int pane)
                 for (const std::string &t : classicMenu(it.min))
                     p->items.push_back(t == "-" ? MenuItem::line() : MenuItem(t));
                 if (k)
-                    p->setSelected(s.integer(k->key, 0));
+                    p->setSelected(s.integer(k->key, k->fallback));
                 v = p;
             } else if (it.proc == 48 || it.proc == 49 || it.proc == 50 || it.proc == 51) {
                 Slider *sl = c->add<Slider>();

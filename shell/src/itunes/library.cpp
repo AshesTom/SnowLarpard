@@ -51,8 +51,12 @@ std::string kindOf(const std::string &path)
     const std::string e = extension(path);
     if (e == "mp3")
         return "MPEG audio file";
-    if (e == "m4a" || e == "aac" || e == "mp4")
+    if (e == "m4a" || e == "aac" || e == "mp4" || e == "m4b")
         return "AAC audio file";
+    if (e == "m4v")
+        return "MPEG-4 video file";   // STR# 3301 (QuickTime's): .004, .001
+    if (e == "mov")
+        return "QuickTime movie file";
     if (e == "m4p")
         return "Protected AAC audio file";
     if (e == "aif" || e == "aiff")
@@ -286,6 +290,84 @@ private:
     size_t m_p = 0;
 };
 
+// The media kinds' keys (the plist iTunes 8.2.1 writes, FUN_000ab536's strings): Has Video, Video Width
+// and Height, Movie, Music Video, TV Show, Podcast, Unplayed; Series, Season, Episode, Episode Order,
+// Description, Long Description, Category, Release Date, Podcast URL, External GUID; Remember Bookmark,
+// Bookmark Time
+void readKinds(const Node &t, Track &tr)
+{
+    auto flag = [&](const char *k) { const Node *n = t.get(k); return n && n->text == "true"; };
+    tr.hasVideo = flag("Has Video");
+    tr.videoWidth = int(t.num("Video Width"));
+    tr.videoHeight = int(t.num("Video Height"));
+    int k = 0;
+    if (flag("Movie"))
+        k |= 2;
+    if (flag("Music Video"))
+        k |= 0x20;
+    if (flag("TV Show"))
+        k |= 0x40;
+    if (flag("Podcast"))
+        k |= 4;
+    if (const Node *n = t.get("Media Kind"))   // ours: the kinds the plist has no key for (audiobooks…)
+        k |= int(std::atoll(n->text.c_str()));
+    if (tr.hasVideo && !(k & 0xe62))
+        k |= 2;
+    tr.mediaKind = k ? k : 1;
+    tr.unplayed = flag("Unplayed");
+    tr.series = t.str("Series");
+    tr.season = int(t.num("Season"));
+    tr.episode = t.str("Episode");
+    tr.episodeOrder = int(t.num("Episode Order"));
+    tr.description = t.str("Description");
+    tr.longDescription = t.str("Long Description");
+    tr.category = t.str("Category");
+    tr.releaseDate = t.str("Release Date");
+    tr.podcastURL = t.str("Podcast URL");
+    tr.guid = t.str("External GUID");
+    tr.rememberBookmark = flag("Remember Bookmark");
+    tr.bookmark = int(t.num("Bookmark Time"));
+}
+
+void writeKinds(std::ostream &o, const Track &t)
+{
+    auto str = [&](const char *k, const std::string &v) {
+        if (!v.empty())
+            o << "\t\t\t<key>" << k << "</key><string>" << xmlEscape(v) << "</string>\n";
+    };
+    auto num = [&](const char *k, long long v) {
+        if (v)
+            o << "\t\t\t<key>" << k << "</key><integer>" << v << "</integer>\n";
+    };
+    auto yes = [&](const char *k, bool v) {
+        if (v)
+            o << "\t\t\t<key>" << k << "</key><true/>\n";
+    };
+    if (!t.releaseDate.empty())
+        o << "\t\t\t<key>Release Date</key><date>" << t.releaseDate << "</date>\n";
+    yes("Has Video", t.hasVideo);
+    num("Video Width", t.videoWidth);
+    num("Video Height", t.videoHeight);
+    yes("Movie", (t.mediaKind & 0x8006) == 2);
+    yes("Music Video", t.mediaKind & 0x20);
+    yes("TV Show", t.mediaKind & 0x40);
+    yes("Podcast", t.mediaKind & 4);
+    yes("Unplayed", t.unplayed);
+    if (t.mediaKind & ~(1 | 2 | 4 | 0x20 | 0x40))
+        num("Media Kind", t.mediaKind);
+    str("Series", t.series);
+    num("Season", t.season);
+    str("Episode", t.episode);
+    num("Episode Order", t.episodeOrder);
+    str("Description", t.description);
+    str("Long Description", t.longDescription);
+    str("Category", t.category);
+    str("Podcast URL", t.podcastURL);
+    str("External GUID", t.guid);
+    yes("Remember Bookmark", t.rememberBookmark);
+    num("Bookmark Time", t.bookmark);
+}
+
 } // namespace
 
 std::vector<int> duplicates(const Library &library, const std::vector<int> &ids, bool exact)
@@ -366,7 +448,9 @@ std::string Library::file() const { return musicFolder() + "/iTunes/iTunes Music
 
 bool Library::isAudio(const std::string &path) const
 {
-    static const std::set<std::string> exts = {"mp3", "m4a", "m4p", "aac", "aif", "aiff", "wav", "flac", "ogg", "oga", "opus", "mp4"};
+    static const std::set<std::string> exts = {"mp3", "m4a", "m4p", "aac", "aif", "aiff", "wav", "flac", "ogg", "oga", "opus", "mp4",
+                                                // the spoken and the moving ones (section 29)
+                                                "m4b", "m4r", "m4v", "mov"};
     return exts.count(extension(path)) > 0;
 }
 
@@ -436,9 +520,14 @@ bool Library::load()
             tr.bpm = int(t.num("BPM"));
             tr.rating = int(t.num("Rating"));
             tr.dateAdded = t.str("Date Added");
+            readKinds(t, tr);
             {
                 const std::string loc = t.str("Location");
                 tr.path = loc.rfind("file:", 0) == 0 || loc.find("://") == std::string::npos ? pathFromURL(loc) : loc;
+            }
+            if (!(tr.mediaKind & ~1)) {   // nothing in the plist says: the file's type (FUN_0017b984)
+                const std::string e = extension(tr.path);
+                tr.mediaKind = e == "m4b" || e == "aa" || e == "aax" ? 8 : e == "m4r" ? 0x4000 : tr.mediaKind;
             }
             if (tr.id > 0) {
                 m_tracks[tr.id] = tr;
@@ -447,6 +536,12 @@ bool Library::load()
         }
     if (const Node *lists = root.get("Playlists"))
         for (const Node &p : lists->array) {
+            // the distinguished ones (Music, Movies, TV Shows, Podcasts, Audiobooks) made again from the
+            // media kinds on saving: their IDs kept
+            if (const Node *d = p.get("Distinguished Kind")) {
+                m_distinguishedIds[std::atoi(d->text.c_str())] = p.str("Playlist Persistent ID");
+                continue;
+            }
             Playlist pl;
             pl.name = p.str("Name");
             const Node *m = p.get("Master");
@@ -543,6 +638,7 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
         num("Play Count", t.playCount);
         num("Rating", t.rating);
         str("Comments", t.comments);
+        writeKinds(o, t);
         if (isStream(t)) {
             o << "\t\t\t<key>Track Type</key><string>URL</string>\n";
             str("Location", t.path);
@@ -591,6 +687,8 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
             o << "\t\t\t\t<dict>\n\t\t\t\t\t<key>Track ID</key><integer>" << id << "</integer>\n\t\t\t\t</dict>\n";
         o << "\t\t\t</array>\n\t\t</dict>\n";
     }
+    if (!lists)
+        writeDistinguished(o, songs);
     o << "\t</array>\n</dict>\n</plist>\n";
     const std::string tmp = path + ".tmp";
     {
@@ -600,6 +698,31 @@ bool Library::saveTo(const std::string &path, const std::set<int> *songs, const 
         f << o.str();
     }
     return std::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+void Library::writeDistinguished(std::ostream &o, const std::set<int> *songs) const
+{
+    // FUN_002e68aa's names (STR# 9000: 36 Music, 34 Movies, 35 TV Shows, 37 Audiobooks; 30 Podcasts) and
+    // the plist's own key for each
+    static const struct { int kind; const char *name, *key; } kinds[] = {
+        {Music, "9000.036", nullptr},     {Movies, "9000.034", "Movies"},       {TVShows, "9000.035", "TV Shows"},
+        {Podcasts, "9000.030", "Podcasts"}, {Audiobooks, "9000.037", "Audiobooks"},
+    };
+    for (const auto &k : kinds) {
+        std::string &pid = m_distinguishedIds[k.kind];
+        if (pid.empty())
+            pid = newPersistentId();
+        o << "\t\t<dict>\n\t\t\t<key>Name</key><string>" << xmlEscape(tr(k.name)) << "</string>\n"
+          << "\t\t\t<key>Playlist Persistent ID</key><string>" << pid << "</string>\n"
+          << "\t\t\t<key>Distinguished Kind</key><integer>" << k.kind << "</integer>\n";
+        if (k.key)
+            o << "\t\t\t<key>" << k.key << "</key><true/>\n";
+        o << "\t\t\t<key>All Items</key><true/>\n\t\t\t<key>Playlist Items</key>\n\t\t\t<array>\n";
+        for (int id : items(k.kind))
+            if (!songs || songs->count(id))
+                o << "\t\t\t\t<dict>\n\t\t\t\t\t<key>Track ID</key><integer>" << id << "</integer>\n\t\t\t\t</dict>\n";
+        o << "\t\t\t</array>\n\t\t</dict>\n";
+    }
 }
 
 namespace {
@@ -998,6 +1121,8 @@ void Library::addFile(const std::string &path)
     }
     if (t.name.empty())
         t.name = baseName(path);
+    readMedia(t);
+    m_addedKinds |= t.mediaKind;
     m_tracks[t.id] = t;
     for (Playlist &p : m_playlists)
         if (p.master)

@@ -186,7 +186,8 @@ set_target_properties(TextEdit PROPERTIES AUTOMOC OFF RUNTIME_OUTPUT_DIRECTORY "
 pkg_check_modules(ITUNES_DEPS IMPORTED_TARGET mpv taglib)
 if(ITUNES_DEPS_FOUND)
     add_executable(iTunes src/itunes/main.cpp src/itunes/resources.cpp src/itunes/resources.h
-                   src/itunes/library.cpp src/itunes/library.h src/itunes/player.cpp src/itunes/player.h
+                   src/itunes/library.cpp src/itunes/library.h src/itunes/media.cpp src/itunes/librarysources.cpp src/itunes/librarysources.h
+                   src/itunes/player.cpp src/itunes/player.h
                    src/itunes/store.cpp src/itunes/store.h src/itunes/frame.cpp src/itunes/frame.h
                    src/itunes/equalizer.cpp src/itunes/equalizer.h src/itunes/dialogs.cpp src/itunes/dialogs.h
                    src/itunes/getinfo.cpp src/itunes/getinfo.h

@@ -28,6 +28,11 @@ const std::vector<ListField> &listFields()
         {25, "9006.021", 79, Align::Left, true},   {6, "9006.014", 91, Align::Right, true},
         {12, "9006.008", 60, Align::Right, true},  {13, "9006.009", 59, Align::Right, true},
         {11, "9006.011", 70, Align::Right, true},  {7, "9006.012", 50, Align::Left, true},
+        // the video and podcast sources' (section 29): CWid 9000's Description 0x36 (250), Category 0x37
+        // (80), Release Date 0x22 (94); Show 0x3e, Season 0x3f, Episode ID 0x40 not in CWid 9000 (by eye)
+        {54, "9006.029", 250, Align::Left, false}, {55, "9006.030", 80, Align::Left, false},
+        {34, "9006.024", 94, Align::Left, false},  {62, "9006.033", 125, Align::Left, false},
+        {63, "9006.034", 60, Align::Right, true},  {64, "9006.035", 80, Align::Left, false},
     };
     return fields;
 }
@@ -73,6 +78,7 @@ long long cellNumber(const Track &t, int field)
     case 13: return t.totalTime;
     case 11: return t.trackNumber;
     case 7: return t.year;
+    case 63: return t.season;
     }
     return 0;
 }
@@ -110,6 +116,18 @@ std::string cellText(const Track &t, int field)
     case 13: return formatTime(t.totalTime);
     case 11: return pair(t.trackNumber, t.trackCount);
     case 7: return t.year ? std::to_string(t.year) : std::string();
+    case 54: return t.description;
+    case 55: return t.category;
+    case 34: {
+        int y, mo, d;   // the release date as the list shows it: m/d/yy
+        if (std::sscanf(t.releaseDate.c_str(), "%d-%d-%d", &y, &mo, &d) != 3)
+            return {};
+        std::snprintf(buf, sizeof buf, "%d/%d/%02d", mo, d, y % 100);
+        return buf;
+    }
+    case 62: return t.series;
+    case 63: return t.season ? std::to_string(t.season) : std::string();
+    case 64: return t.episode;
     }
     return {};
 }
@@ -123,6 +141,8 @@ std::string cellKey(const Track &t, int field)
     case 3: return lower(t.album) + "\x01" + track;
     case 8: return lower(t.genre) + "\x01" + lower(t.artist) + "\x01" + lower(t.album) + "\x01" + track;
     case 16: return t.dateAdded;
+    case 34: return t.releaseDate;
+    case 62: return lower(t.series) + "\x01" + std::to_string(1000 + t.season) + std::to_string(10000 + t.episodeOrder);
     }
     return lower(cellText(t, field));
 }

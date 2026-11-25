@@ -42,6 +42,7 @@
 #include "upnext11.h"
 #include "preferences.h"
 #include "library.h"
+#include "librarysources.h"
 #include "player.h"
 #include "resources.h"
 #include "store.h"
@@ -1227,6 +1228,13 @@ public:
     static constexpr double RowHeight = 20;
     std::function<void(int)> onSelect;
     int selected() const { return m_selected; }
+    int rowForTag(int tag) const
+    {
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (!rows[i].header && rows[i].tag == tag)
+                return int(i);
+        return -1;
+    }
     void select(int i, bool notify = false)
     {
         if (i < 0 || size_t(i) >= rows.size() || !rows[size_t(i)].selectable)
@@ -1471,6 +1479,8 @@ public:
         if (!m_library.load()) {
             m_library.add({Library::musicFolder()});
             m_library.save();
+            if (!eleven())
+                showSourcesFor(m_library.takeAddedKinds());
         }
         buildWindow();
         buildMenus();
@@ -1491,6 +1501,8 @@ public:
             return;
         m_library.add(paths);
         m_library.save();
+        if (!eleven() && showSourcesFor(m_library.takeAddedKinds()))
+            rebuildSources();
         loadSource();
     }
 
@@ -2305,6 +2317,9 @@ private:
     void rebuildSources()
     {
         m_sources->cancelRename();
+        m_keptTag = selectedPlaylist();
+        if (m_keptTag >= 0)
+            m_keptTag = 0;   // a playlist: by its row (its index may change with the list)
         // Localizable.strings: STR# 135 (the headers), 137 (the Store), 9000 (Music, untitled playlist)
         const int keep = m_sources->selected();
         m_sources->rows.clear();
@@ -2323,6 +2338,16 @@ private:
         music.icon = 0;
         music.tag = -1;
         m_sources->rows.push_back(music);
+        // 8.2.1's other LIBRARY sources (section 29: FUN_00168254's groups, the General pane's Show boxes)
+        for (const LibrarySource &ls : e ? std::vector<LibrarySource>{} : librarySources()) {
+            if (ls.kind == 4 || !sourceShown(ls))
+                continue;
+            SourceRow r;
+            r.title = tr(ls.nameKey);
+            r.icon = ls.icon;
+            r.tag = sourceTag(ls.kind);
+            m_sources->rows.push_back(r);
+        }
         header(e ? "135.008" : "135.013");
         SourceRow store;
         store.title = tr("137.001");
@@ -2374,7 +2399,9 @@ private:
         };
         add({}, 0);
         m_sources->setNeedsDisplay();
-        m_sources->select(keep >= 0 && size_t(keep) < m_sources->rows.size() ? keep : 1);
+        // the row chosen kept by what it is (a source shown or hidden above it moves it)
+        const int keepRow = m_keptTag != 0 ? m_sources->rowForTag(m_keptTag) : -1;
+        m_sources->select(keepRow >= 0 ? keepRow : keep >= 0 && size_t(keep) < m_sources->rows.size() && m_sources->rows[size_t(keep)].selectable ? keep : 1);
     }
 
     // The songs of the selected source, filtered by the search field, sorted by the column
@@ -2404,11 +2431,14 @@ private:
         std::vector<int> ids;
         const int sel = m_sources->selected();
         const int tag = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)].tag : -1;
+        useSourceColumns(eleven() ? 0 : kindForTag(tag));
         if (tag >= 0 && size_t(tag) < m_library.playlists().size()) {
             const Playlist &p = m_library.playlists()[size_t(tag)];
             // a smart playlist's songs: its rules applied now when it updates live, else as they were
             ids = p.folder ? m_library.folderItems(p) : p.smart && p.info.live ? m_library.evaluate(p.info) : p.items;
         }
+        else if (!eleven() && kindForTag(tag))   // a LIBRARY source: its media kind's (section 29)
+            ids = kindForTag(tag) == RadioKind ? std::vector<int>{} : m_library.items(kindForTag(tag));
         else
             for (const auto &[id, t] : m_library.tracks())
                 ids.push_back(id);
@@ -2556,6 +2586,8 @@ private:
             fields = {&t.composer};
         else if (scope == "Song" || scope == "Name" || scope == "Titl")
             fields = {&t.name};
+        else if (scope == "Seri")
+            fields = {&t.series};
         else {
             fields = {&t.name, &t.album, &t.artist, &t.albumArtist, &t.composer};
             auto shown = [&](int f) { return std::find(m_columnFields.begin(), m_columnFields.end(), f) != m_columnFields.end(); };
@@ -2567,6 +2599,12 @@ private:
                 fields.push_back(&t.grouping);
             if (shown(0x0e))
                 fields.push_back(&t.comments);
+            if (shown(0x36))
+                fields.push_back(&t.description);
+            if (shown(0x37))
+                fields.push_back(&t.category);
+            if (shown(0x3e))
+                fields.push_back(&t.series);
         }
         std::vector<std::string> folded;
         for (const std::string *f : fields)
@@ -2611,7 +2649,16 @@ private:
         const int sel = m_sources->selected();
         const bool music = sel >= 0 && size_t(sel) < m_sources->rows.size() && m_sources->rows[size_t(sel)].tag == -1;
         std::vector<std::pair<std::string, std::string>> scopes{{"All ", tr("kSearchMenuItemAll")}, {"Art ", tr("210.008")}, {"Alb ", tr("210.009")}};
-        if (music) {
+        // the other LIBRARY sources (section 29): Movies, Podcasts All, Title; TV Shows All, Title, Show;
+        // Audiobooks All, Title, Author (STR# 210: 24 Title, 25 Show, 23 Author)
+        const int kind = sel >= 0 && size_t(sel) < m_sources->rows.size() ? kindForTag(m_sources->rows[size_t(sel)].tag) : 0;
+        if (kind == 2 || kind == 3 || kind == 5 || kind == 7 || kind == 10) {
+            scopes = {{"All ", tr("kSearchMenuItemAll")}, {"Titl", tr("210.024")}};
+            if (kind == 3)
+                scopes.push_back({"Seri", tr("210.025")});
+            if (kind == 5)
+                scopes.push_back({"Auth", tr("210.023")});
+        } else if (music) {
             scopes.push_back({"Comp", tr("210.010")});
             scopes.push_back({"Song", tr("210.011")});
         } else
@@ -3164,7 +3211,7 @@ private:
             const std::string ext = dot == std::string::npos || url[dot] != '.' ? std::string() : lower(url.substr(dot + 1));
             if ((scheme == "itms" || scheme == "itmss") && ext != "m3u" && ext != "pls") {
                 if (m_store) {
-                    m_sources->select(3, true);   // the iTunes Store source
+                    m_sources->select(m_sources->rowForTag(-2), true);   // the iTunes Store source
                     m_store->load("https" + url.substr(colon));
                 }
                 return;
@@ -3314,6 +3361,27 @@ private:
                 m_list->rows[i][c] = cellText(*t, field);
     }
 
+    // A LIBRARY source's own columns and sort (section 29: FUN_002e68aa, FUN_003c21fa), Music's and the
+    // playlists' those View Options chose
+    void useSourceColumns(int kind)
+    {
+        if (kind == 4)
+            kind = 0;
+        if (kind == m_columnKind)
+            return;
+        if (m_columnKind == 0) {
+            m_musicColumns = m_columnFields;
+            m_musicSort = m_sortField;
+            m_musicAscending = m_list->ascending;
+        }
+        m_columnKind = kind;
+        m_columnFields = sourceColumns(kind, m_musicColumns);
+        bool asc = true;
+        m_sortField = kind ? sourceSortField(kind, asc) : m_musicSort;
+        m_list->ascending = kind ? asc : m_musicAscending;
+        applyColumns();
+    }
+
     // The list's columns from the fields chosen (View Options), the sorted one kept
     void applyColumns()
     {
@@ -3323,7 +3391,8 @@ private:
             const ListField *lf = listField(f);
             if (f == 25)
                 m_list->ratingColumn = int(m_list->columns.size());
-            m_list->columns.push_back({tr(lf->titleKey), lf->width, lf->align});
+            m_list->columns.push_back({sourceColumnTitle(m_columnKind, f, tr(lf->titleKey)),
+                                       lf->width + (m_columnKind == 10 && f == 54 ? 125 : 0), lf->align});   // FUN_003c21fa
         }
         const auto s = std::find(m_columnFields.begin(), m_columnFields.end(), m_sortField);
         if (s == m_columnFields.end()) {
@@ -3340,10 +3409,7 @@ private:
         const SourceRow row = sel >= 0 && size_t(sel) < m_sources->rows.size() ? m_sources->rows[size_t(sel)] : SourceRow{};
         m_viewOptions = std::make_unique<ViewOptionsWindow>(row.title, std::max(0, row.icon), m_columnFields, [this](const std::vector<int> &cols) {
             m_columnFields = cols;
-            std::string s;
-            for (int f : cols)
-                s += (s.empty() ? "" : " ") + std::to_string(f);
-            Settings("itunes").set("Columns", s);
+            keepSourceColumns(m_columnKind, cols);   // per LIBRARY source (section 29)
             applyColumns();
             loadSource();
         });
@@ -3363,6 +3429,8 @@ private:
         m_list->body()->setNeedsDisplay();
         m_player.setSoundCheck(s.boolean("SoundCheck", false));
         m_window->setFloating(m_mini && s.boolean("MiniOnTop", false));
+        rebuildSources();   // the General pane's Show boxes (section 29)
+        loadSource();
     }
 
     // Cover Flow's full screen button (`full`, PBUT 2020; AlbumCoverDisplay's mode flag 1): the covers
@@ -3614,7 +3682,7 @@ private:
             if (m_nav && !m_nav->store)
                 setStoreMode(true);
             else if (!m_nav && !m_store8)
-                m_sources->select(3, true);   // 8.2.1: the iTunes Store source
+                m_sources->select(m_sources->rowForTag(-2), true);   // 8.2.1: the iTunes Store source
             m_store->command(a == "Msgh" ? "home" : a == "Msrp" ? "reload" : a == "Msgb" ? "back" : "forward");
         }
         else if (a == "volu")
@@ -3744,7 +3812,12 @@ private:
     std::unique_ptr<Window> m_fullWindow;
     Visualizer *m_fullVisualizer = nullptr;
     bool m_visualizerShown = false;
-    std::vector<int> m_columnFields;      // the list's columns, by field (View Options)
+    std::vector<int> m_columnFields;
+    int m_columnKind = 0;
+    std::vector<int> m_musicColumns;
+    int m_musicSort = 2;
+    bool m_musicAscending = true;                 // whose columns those are: 0 Music and the playlists, else a LIBRARY kind
+    int m_keptTag = 0;      // the list's columns, by field (View Options)
     int m_sortField = 2;                  // the field the songs are sorted by
     // File ▸ Show Duplicates: per source (its playlist's tag, -1 the library), 1 the duplicates, 2 the
     // exact ones (the playlist's +0x182 flag 8); the sort it had before (+0x10c), put back by Show All
