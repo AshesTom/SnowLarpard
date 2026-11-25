@@ -1356,6 +1356,123 @@ QString chooseBackupStore()
     return list->selectedItems().first()->data(Qt::UserRole).toString();
 }
 
+// The Finder's alert with the Time Machine icon ('mill'/'peab', FUN_1000d8e4c): the message, the
+// informative text, button 1 the default (Return), 2 Cancel (Escape), 3 the other one, on the left;
+// the number of the button clicked
+int timeMachineAlert(const QString &message, const QString &informative, const QString &b1, const QString &b2, const QString &b3 = {})
+{
+    // NSAlert's layout: the 64-point icon at 24, 15; the message in the bold system font, the
+    // informative text in the small one; the buttons on the right, the third one on the left
+    QDialog box;
+    box.setWindowTitle(QApplication::applicationName());
+    auto *grid = new QGridLayout(&box);
+    grid->setContentsMargins(24, 15, 20, 20);
+    grid->setHorizontalSpacing(16);
+    grid->setVerticalSpacing(8);
+    auto *icon = new QLabel;
+    icon->setPixmap(QPixmap::fromImage(Assets::image("/Applications/Time Machine.app/Contents/Resources/backup.icns", QSize(64, 64))));
+    icon->setAlignment(Qt::AlignTop);
+    grid->addWidget(icon, 0, 0, 2, 1);
+    auto *text = new QLabel(message);
+    QFont bold = text->font();
+    bold.setBold(true);
+    text->setFont(bold);
+    text->setWordWrap(true);
+    text->setMinimumWidth(360);
+    grid->addWidget(text, 0, 1);
+    if (!informative.isEmpty()) {
+        auto *info = new QLabel(informative);
+        QFont small = info->font();
+        small.setPointSizeF(small.pointSizeF() * 11 / 13);
+        info->setFont(small);
+        info->setWordWrap(true);
+        grid->addWidget(info, 1, 1);
+    }
+    auto *row = new QHBoxLayout;
+    row->setSpacing(12);
+    int clicked = 2;
+    auto button = [&](const QString &title, int n) {
+        auto *b = new QPushButton(title);
+        b->setMinimumWidth(82);
+        QObject::connect(b, &QPushButton::clicked, &box, [&, n] { clicked = n; box.accept(); });
+        return b;
+    };
+    if (!b3.isEmpty())
+        row->addWidget(button(b3, 3));
+    row->addStretch();
+    row->addWidget(button(b2, 2));
+    QPushButton *def = button(b1, 1);
+    def->setDefault(true);
+    row->addWidget(def);
+    grid->addLayout(row, 2, 0, 1, 2);
+    grid->setRowMinimumHeight(1, 0);
+    box.exec();     // Escape rejects: Cancel (2)
+    return clicked;
+}
+
+bool timemachineAlertSetUp(const QString &message, const QString &informative)
+{
+    return timeMachineAlert(message, informative, finder("BU3", "Set Up Time Machine"), finder("AL1", "Cancel")) == 1;
+}
+
+// TBackup::PreflightShowBackup (0x1001db08c) when the session isn't configured, and
+// TBackup::BackupStoreNotAvailable (0x1001de02a) when the mounting task finds no store: which alert by
+// whether a backup disk is set (timemachine.conf's BackupPath, the session's) and whether any mounted
+// disk holds backups (FUN_10012bf0e, the chooser's rows). True: Use Previous Disk… (the chooser).
+bool preflightAlert()
+{
+    QSettings st(configDir() + "/timemachine.conf", QSettings::IniFormat);
+    const bool configured = !st.value("BackupPath").toString().isEmpty() || !st.value("BackupAlias").toString().isEmpty();
+    const bool others = !backupStores().isEmpty();
+    if (!configured) {
+        if (!others) {
+            // rBackupNotConfiguredIndex, configure: BU1 / BU2, Set Up Time Machine, Cancel
+            if (timemachineAlertSetUp(finder("BU1", "You haven’t selected a location for Time Machine backups."),
+                                      finder("BU2", "To select a location for backups, set up Time Machine.")))
+                openPreferences();
+            return false;
+        }
+        // rBackupNotConfiguredIndex, disk not found: Use Previous Disk… (1), Cancel (2), Time Machine Preferences… (3)
+        const int b = timeMachineAlert(finder("BU1", "You haven’t selected a location for Time Machine backups."),
+                                       finder("BU32", "You can set up a new backup disk in Time Machine preferences, or use a previous backup disk."),
+                                       finder("BU33", "Use Previous Disk…"), finder("AL1", "Cancel"), finder("BU34", "Time Machine Preferences…"));
+        if (b == 3)
+            openPreferences();
+        return b == 1;
+    }
+    if (!others) {
+        // BU2.1 / BU2.2 (empty), Set Up Time Machine, Cancel
+        if (timemachineAlertSetUp(finder("BU2.1", "Your Time Machine backup disk can’t be found."), finder("BU2.2", "")))
+            openPreferences();
+        return false;
+    }
+    // BU31 / BU32: Time Machine Preferences… (1), Cancel (2), Use Previous Disk… (3)
+    const int b = timeMachineAlert(finder("BU31", "The current Time Machine backup disk can‘t be found."),
+                                   finder("BU32", "You can set up a new backup disk in Time Machine preferences, or use a previous backup disk."),
+                                   finder("BU34", "Time Machine Preferences…"), finder("AL1", "Cancel"), finder("BU33", "Use Previous Disk…"));
+    if (b == 1)
+        openPreferences();
+    return b == 3;
+}
+
+// UAlerts::FrontWindowIsModal (FUN_10002d817): the active window a modal one (_NET_WM_STATE_MODAL);
+// PreflightShowBackup then brings it forward (FUN_10009bdba) and beeps (FUN_10012a228)
+bool frontWindowIsModal()
+{
+    if (X11::wayland() || !X11::conn())
+        return false;
+    const xcb_window_t w = X11::activeWindow();
+    if (!w)
+        return false;
+    for (uint32_t state : X11::cardinals(w, X11::atom("_NET_WM_STATE"), XCB_ATOM_ATOM))
+        if (state == X11::atom("_NET_WM_STATE_MODAL")) {
+            X11::activate(w);
+            QApplication::beep();
+            return true;
+        }
+    return false;
+}
+
 int main(int argc, char **argv)
 {
     Aqua::preinit();
@@ -1403,6 +1520,9 @@ int main(int argc, char **argv)
             kill(pid, SIGTERM);
         return 0;
     }
+    // UAlerts::FrontWindowIsModal: a modal window in front is brought forward with a beep
+    if (frontWindowIsModal())
+        return 0;
     // Browse Other Time Machine Disks: the chooser, then EnterBackupWithStore with the Computer as target
     QString machine;
     if (command == 4) {
@@ -1412,20 +1532,15 @@ int main(int argc, char **argv)
         folder = ComputerTarget;
     } else {
         machine = machineFolder();
-    }
-
-    // PreflightShowBackup: no backup disk
-    if (machine.isEmpty()) {
-        QMessageBox box;
-        box.setIconPixmap(QPixmap::fromImage(Assets::image("/Applications/Time Machine.app/Contents/Resources/backup.icns", QSize(64, 64))));
-        box.setText(finder("BU1", "You haven’t selected a location for Time Machine backups."));
-        box.setInformativeText(finder("BU2", "To select a location for backups, set up Time Machine."));
-        QPushButton *setUp = box.addButton(finder("BU3", "Set Up Time Machine"), QMessageBox::AcceptRole);
-        box.addButton(finder("AL1", "Cancel"), QMessageBox::RejectRole);
-        box.exec();
-        if (box.clickedButton() == setUp)
-            openPreferences();
-        return 0;
+        // PreflightShowBackup's and BackupStoreNotAvailable's alerts; Use Previous Disk… shows the chooser
+        if (machine.isEmpty()) {
+            if (!preflightAlert())
+                return 0;
+            machine = chooseBackupStore();
+            if (machine.isEmpty())
+                return 0;
+            folder = ComputerTarget;
+        }
     }
 
     // windowForTimeMachineWithDefaultTarget: the Finder's front window, else the Desktop
