@@ -1031,7 +1031,10 @@ hover, Restore with a conflict (Keep Both: "notes (original).txt"), Restore All 
 then the chooser in a user and mount namespace (a second backup disk bind-mounted on /mnt), the Dock's
 tile and its menu, the restored items' layers in slow motion, the timeline's auto-scroll with 150
 snapshots, and the entry on the Wayland window server (WindowServer-wayland nested in Xvfb, the
-Finder's window flying from its place).
+Finder's window flying from its place); then the preflight's alerts (the disk not found, Use Previous Disk… into the chooser), Quick
+Look following the snapshots and Get Info over the browser (FinderWindows in the same session), a
+search stepping between the snapshots where its results change and a result restored into a
+recreated folder, and the clusters with 876 snapshots.
 
 | What | Where (docs/timemachine-reverse.md, -host.md) | Status |
 |---|---|---|
@@ -1058,6 +1061,10 @@ Finder's window flying from its place).
 
 ## Next
 
+- Time Machine (section 39): Delete Backup / Delete All Backups of (cmdDeleteBackupSnapshot:, DA4 /
+  DA6), Restore to… and Choose Location (BU35, FUN_1001dc83e), the search's scope bar and Spotlight's
+  contents search, FUN_00049d22's regrouping of the timeline, the Info and Quick Look windows' level on
+  the Wayland window server, the galaxy's wider gas in vortex.png (no cause found in the binary).
 - The menus' shadow (the window server's, for menu windows).
 - The Dock's labels over the icons: look for their drawing in CoreUI (a widget like the menus').
 - HIToolbox's menu metrics (item height, indents, the command keys' column) for the menus' layout.
