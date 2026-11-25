@@ -18,7 +18,8 @@ public:
     ~Player();
     bool available() const { return m_mpv != nullptr; }
 
-    void play(const std::string &path, bool video = false);   // from its start; its picture too when video
+    // from its start (or `from` seconds in: a bookmark); its picture too when video
+    void play(const std::string &path, bool video = false, double from = 0);
     // The picture of a movie playing (docs/itunes-reverse.md section 29): libmpv's software renderer,
     // a frame drawn into a buffer (cairo's RGB24) of the size given; onFrame when a new one is ready
     bool hasVideo() const { return m_video && m_render; }

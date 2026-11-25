@@ -3105,6 +3105,17 @@ private:
             showVideo(t);
     }
 
+    // the position of the track playing kept (Remember Bookmark / Bookmark Time, section 29)
+    void keepBookmark()
+    {
+        Track *t = m_library.track(m_current);
+        if (!t || !t->rememberBookmark || m_player.isStopped())
+            return;
+        const int at = int(m_player.position() * 1000);
+        t->bookmark = at < t->totalTime - 2000 ? at : 0;
+        m_library.save();
+    }
+
     // ---- playback
 
     void markPlaying()
@@ -3146,8 +3157,11 @@ private:
         Track *t = m_library.track(id);
         if (!t)
             return;
+        keepBookmark();
         m_current = id;
-        m_player.play(t->path, t->hasVideo);
+        // Remember playback position (the audiobooks', the podcasts', the movies'): from where it was left
+        const bool resume = t->rememberBookmark && t->bookmark > 0 && t->bookmark < t->totalTime - 2000;
+        m_player.play(t->path, t->hasVideo, resume ? t->bookmark / 1000.0 : 0);
         showVideo(t->hasVideo ? t : nullptr);
         t->playCount++;
         t->unplayed = false;   // the podcasts' blue dot
@@ -3160,8 +3174,10 @@ private:
 
     void playPause()
     {
-        if (m_player.isPlaying())
+        if (m_player.isPlaying()) {
             m_player.pause();
+            keepBookmark();
+        }
         else if (m_player.isPaused())
             m_player.resume();
         else if (m_list->selected >= 0)
@@ -3173,6 +3189,7 @@ private:
 
     void stop()
     {
+        keepBookmark();
         showVideo(nullptr);
         m_player.stop();
         m_current = -1;
@@ -3183,6 +3200,11 @@ private:
 
     void advance(int step, bool atEnd)
     {
+        if (atEnd)   // played to its end: the bookmark back to its start
+            if (Track *t = m_library.track(m_current); t && t->bookmark) {
+                t->bookmark = 0;
+                m_library.save();
+            }
         if (m_queue.empty()) {
             if (!atEnd)
                 playPause();
@@ -4168,8 +4190,10 @@ private:
         else if (a.size() == 4 && a.rfind("SRT", 0) == 0)
             for (int id : selectedIds())   // File ▸ Rating: every song chosen
                 rate(id, (a[3] - '0') * 20);
-        else if (a == "terminate:")
+        else if (a == "terminate:") {
+            keepBookmark();
             App::shared().quit();
+        }
     }
 
     Library m_library;

@@ -112,10 +112,12 @@ void Player::drain()
     }
 }
 
-void Player::play(const std::string &path, bool video)
+void Player::play(const std::string &path, bool video, double from)
 {
     if (!m_mpv)
         return;
+    // the file's start: mpv's per-file option, set for this one only
+    mpv_set_property_string(m_mpv, "start", from > 0 ? std::to_string(from).c_str() : "none");
     m_video = video && m_render;
     mpv_set_property_string(m_mpv, "vid", m_video ? "auto" : "no");
     setVolume(m_volume);
